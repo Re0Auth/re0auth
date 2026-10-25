@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -198,7 +198,9 @@ async function startRe0auth(): Promise<void> {
 	// command fails with "read encryption key file", which reads like a code bug
 	// rather than a missing fixture.
 	await mkdir(path.join(work, 'data'), { recursive: true });
-	await writeFile(path.join(work, 'data', 'master.key'), `${'ab'.repeat(32)}\n`, 'utf8');
+	const masterKey = path.join(work, 'data', 'master.key');
+	await writeFile(masterKey, `${'ab'.repeat(32)}\n`, { encoding: 'utf8', mode: 0o600 });
+	await chmod(masterKey, 0o600);
 	await writeFile(
 		config,
 		`[server]\nbind = "127.0.0.1:${APP_PORT}"\nissuer = "${APP}"\ntrusted_proxies = []\n\n` +
