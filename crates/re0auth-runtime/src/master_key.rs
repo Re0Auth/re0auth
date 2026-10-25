@@ -76,6 +76,12 @@ mod tests {
     fn key_file() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("re0auth-key-{}.hex", uuid::Uuid::now_v7()));
         std::fs::write(&path, MASTER).expect("write key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("set key permissions");
+        }
         path
     }
 

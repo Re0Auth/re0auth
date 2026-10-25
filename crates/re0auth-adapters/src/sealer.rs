@@ -443,6 +443,12 @@ mod tests {
         let file =
             std::env::temp_dir().join(format!("re0auth-master-{}.hex", uuid::Uuid::now_v7()));
         std::fs::write(&file, MASTER).expect("write key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                .expect("set key permissions");
+        }
         let random: Arc<dyn Random> = Arc::new(FixedRandom(0));
 
         assert!(
