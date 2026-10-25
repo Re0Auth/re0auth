@@ -15,4 +15,5 @@ coverage/
 lcov.info
 .DS_Store
 .commandcode/
+/config.toml
 docs
