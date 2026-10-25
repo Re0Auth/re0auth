@@ -1,4 +1,4 @@
-# r0auth 示例配置。CI 会用 --check-config 校验本文件。
+# re0auth 示例配置。CI 会用 --check-config 校验本文件。
 # 优先级：环境变量 RE0AUTH_* > 本文件 > 默认值。
 
 [server]
