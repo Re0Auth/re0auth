@@ -104,6 +104,34 @@ async fn app() -> App {
     build_app(1024 * 1024).await
 }
 
+/// Seeds the consent a directly-inserted auth code would have received from the
+/// real approval flow. The edge tests skip the consent page on purpose; without
+/// this row the code exchange is correctly refused by the consent gate.
+async fn grant_consent(app: &App, client_id: ClientId, scopes: &[&str]) {
+    let now = app.clock.now();
+    app.store
+        .consents()
+        .grant(
+            &re0auth_api::ports::Consent {
+                id: re0auth_api::ConsentId::new(),
+                user_id: app.user_id,
+                client_id,
+                scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+                created_at: now,
+                updated_at: now,
+                revoked_at: None,
+                version: re0auth_api::oauth::ConsentVersion(0),
+            },
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::ConsentGranted,
+                now,
+                "consent:test",
+            ),
+        )
+        .await
+        .expect("grant consent");
+}
+
 async fn build_app(inbound_body: usize) -> App {
     let store = SqliteStore::connect("sqlite::memory:")
         .await
@@ -2064,6 +2092,8 @@ async fn revoking_a_token_requires_it_to_belong_to_the_caller() {
         .await
         .expect("seed code");
 
+    grant_consent(&app, app.confidential.id, &["openid"]).await;
+
     let (status, body, _) = post(
         &app,
         "/oauth/token",
@@ -2162,6 +2192,8 @@ async fn a_wrong_secret_does_not_burn_the_authorization_code() {
         )
         .await
         .expect("seed code");
+
+    grant_consent(&app, app.confidential.id, &["openid"]).await;
 
     let exchange = |secret: &str| {
         form(&[

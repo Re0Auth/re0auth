@@ -468,6 +468,7 @@ impl TokenSigner for RsaTokenSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use re0auth_api::oauth::ConsentVersion;
 
     struct TempDir(PathBuf);
 
@@ -505,6 +506,7 @@ mod tests {
             iat: 1_000,
             jti: "jti".to_string(),
             token_use: ACCESS_TOKEN_USE.to_string(),
+            consent_version: ConsentVersion(1),
         }
     }
 

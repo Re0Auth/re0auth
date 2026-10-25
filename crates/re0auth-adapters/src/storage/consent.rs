@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use sqlx::{Row, sqlite::SqliteRow};
 
 use re0auth_api::audit::SecurityFact;
+use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
     Consent, ConsentRepo, PendingAuthorization, PendingAuthorizationRepo, RepoError, RepoResult,
 };
@@ -25,6 +26,7 @@ fn row_to_consent(row: &SqliteRow) -> RepoResult<Consent> {
         created_at: row.try_get("created_at").map_err(db_error)?,
         updated_at: row.try_get("updated_at").map_err(db_error)?,
         revoked_at: row.try_get("revoked_at").map_err(db_error)?,
+        version: ConsentVersion(row.try_get::<i64, _>("version").map_err(db_error)? as u64),
     })
 }
 
@@ -58,7 +60,7 @@ fn row_to_pending_authorization(row: &SqliteRow) -> RepoResult<PendingAuthorizat
 impl ConsentRepo for SqliteStore {
     async fn find(&self, user: &UserId, client: &ClientId) -> RepoResult<Option<Consent>> {
         sqlx::query(
-            "SELECT id, user_id, client_id, scopes, created_at, updated_at, revoked_at \
+            "SELECT id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version \
              FROM consents WHERE user_id = ? AND client_id = ? AND revoked_at IS NULL",
         )
         .bind(user.0.to_string())
@@ -72,7 +74,7 @@ impl ConsentRepo for SqliteStore {
 
     async fn list_by_user(&self, user: &UserId) -> RepoResult<Vec<Consent>> {
         sqlx::query(
-            "SELECT id, user_id, client_id, scopes, created_at, updated_at, revoked_at \
+            "SELECT id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version \
              FROM consents WHERE user_id = ? AND revoked_at IS NULL ORDER BY updated_at DESC",
         )
         .bind(user.0.to_string())
@@ -84,14 +86,16 @@ impl ConsentRepo for SqliteStore {
         .collect()
     }
 
-    async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<()> {
+    async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<Consent> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
-        sqlx::query(
+        let row = sqlx::query(
             "INSERT INTO consents \
-             (id, user_id, client_id, scopes, created_at, updated_at, revoked_at) \
-             VALUES (?, ?, ?, ?, ?, ?, NULL) \
+             (id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version) \
+             VALUES (?, ?, ?, ?, ?, ?, NULL, 1) \
              ON CONFLICT(user_id, client_id) DO UPDATE SET \
-             scopes = excluded.scopes, updated_at = excluded.updated_at, revoked_at = NULL",
+             scopes = excluded.scopes, updated_at = excluded.updated_at, revoked_at = NULL, \
+             version = consents.version + 1 \
+             RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
         )
         .bind(consent.id.0.to_string())
         .bind(consent.user_id.0.to_string())
@@ -99,12 +103,12 @@ impl ConsentRepo for SqliteStore {
         .bind(scopes_json(&consent.scopes)?)
         .bind(consent.created_at)
         .bind(consent.updated_at)
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await
         .map_err(db_error)?;
         record_fact(&mut tx, fact).await?;
         tx.commit().await.map_err(db_error)?;
-        Ok(())
+        row_to_consent(&row)
     }
 
     async fn revoke(
@@ -116,7 +120,7 @@ impl ConsentRepo for SqliteStore {
     ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         let result = sqlx::query(
-            "UPDATE consents SET revoked_at = ?, updated_at = ? \
+            "UPDATE consents SET revoked_at = ?, updated_at = ?, version = version + 1 \
              WHERE user_id = ? AND client_id = ? AND revoked_at IS NULL",
         )
         .bind(now)

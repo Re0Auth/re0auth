@@ -898,9 +898,38 @@ impl RefreshTokenRepo for SqliteStore {
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
-        record_fact(&mut tx, fact).await?;
+        let revoked = result.rows_affected();
+        if revoked > 0 {
+            record_fact(&mut tx, fact).await?;
+        }
         tx.commit().await.map_err(db_error)?;
-        Ok(result.rows_affected())
+        Ok(revoked)
+    }
+
+    async fn revoke_all_for_client(
+        &self,
+        user: &UserId,
+        client: &ClientId,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<u64> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let result = sqlx::query(
+            "UPDATE refresh_tokens SET revoked_at = ? \
+             WHERE user_id = ? AND client_id = ? AND revoked_at IS NULL",
+        )
+        .bind(now)
+        .bind(user.0.to_string())
+        .bind(client.0.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let revoked = result.rows_affected();
+        if revoked > 0 {
+            record_fact(&mut tx, fact).await?;
+        }
+        tx.commit().await.map_err(db_error)?;
+        Ok(revoked)
     }
 
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {

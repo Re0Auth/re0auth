@@ -8,6 +8,7 @@ use async_trait::async_trait;
 
 use crate::audit::{AccessTelemetry, AuditAction, AuditRecord, AuditTier, SecurityFact};
 use crate::connector::ResourceSpec;
+use crate::oauth::ConsentVersion;
 use crate::secret::{ClientSecretHash, SealedSecret};
 use crate::{
     AuditId, AuthCodeId, BindingId, ClientId, ConnectorId, ConsentId, DeviceCodeId, FamilyId,
@@ -616,6 +617,7 @@ pub struct Consent {
     pub created_at: Unix,
     pub updated_at: Unix,
     pub revoked_at: Option<Unix>,
+    pub version: ConsentVersion,
 }
 
 /// INV-NOLOG-01: `nonce` and `state` are secrets.
@@ -812,6 +814,18 @@ pub trait RefreshTokenRepo: Send + Sync {
         fact: &SecurityFact,
         now: Unix,
     ) -> RepoResult<u64>;
+
+    /// Revokes every live refresh family for one `(user, client)` pair.
+    ///
+    /// Used when the user withdraws the whole authorization, not just one
+    /// token. Records `fact` only when at least one row moved.
+    async fn revoke_all_for_client(
+        &self,
+        user: &UserId,
+        client: &ClientId,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<u64>;
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64>;
 }
 
@@ -915,8 +929,9 @@ pub trait ConsentRepo: Send + Sync {
     async fn find(&self, user: &UserId, client: &ClientId) -> RepoResult<Option<Consent>>;
     async fn list_by_user(&self, user: &UserId) -> RepoResult<Vec<Consent>>;
     /// Inserts or replaces the consent record for `(user, client)` and records
-    /// the grant in the same transaction (INV-AUDIT-01).
-    async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<()>;
+    /// the grant in the same transaction (INV-AUDIT-01). The returned row is the
+    /// stored one; its `version` is what newly issued access tokens must carry.
+    async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<Consent>;
     async fn revoke(
         &self,
         user: &UserId,

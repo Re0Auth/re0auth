@@ -305,7 +305,7 @@ pub(crate) async fn token(
                 .ok_or_else(|| invalid_request("device_code is required", Shape::Rfc6749))?;
             state
                 .oauth
-                .exchange_device_code(client_id, secret, device_code)
+                .exchange_device_code(client_id, secret, device_code, request_id::of(&headers))
                 .await
                 .map_err(|error| oauth_error(error, Shape::Rfc6749))?
         }
@@ -363,7 +363,7 @@ pub(crate) async fn revoke(
     }
     state
         .oauth
-        .revoke_access_token(
+        .revoke_token(
             token,
             credentials.id,
             credentials.secret.as_deref(),

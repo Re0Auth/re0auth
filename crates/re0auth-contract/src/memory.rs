@@ -12,6 +12,7 @@ use std::sync::{Mutex, MutexGuard};
 use async_trait::async_trait;
 use re0auth_api::audit::{AuditRecord, AuditTier, SecurityFact};
 use re0auth_api::connector::ResourceSpec;
+use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
     ANONYMIZED_UPSTREAM_USER_ID, AccessTokenRepo, ApprovalDecision, ApprovalTicket,
     ApprovalTicketRepo, AuditRepo, AuthCode, AuthCodeRepo, AuthGrant, Binding, BindingQuery,
@@ -416,6 +417,27 @@ impl RefreshTokenRepo for MemoryStore {
         let mut revoked = 0;
         for token in inner.refresh_tokens.values_mut() {
             if token.family_id == *family && token.revoked_at.is_none() {
+                token.revoked_at = Some(now);
+                revoked += 1;
+            }
+        }
+        if revoked > 0 {
+            Self::push_fact(&mut inner, fact);
+        }
+        Ok(revoked)
+    }
+
+    async fn revoke_all_for_client(
+        &self,
+        user: &UserId,
+        client: &ClientId,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<u64> {
+        let mut inner = self.lock();
+        let mut revoked = 0;
+        for token in inner.refresh_tokens.values_mut() {
+            if token.user_id == *user && token.client_id == *client && token.revoked_at.is_none() {
                 token.revoked_at = Some(now);
                 revoked += 1;
             }
@@ -1059,18 +1081,26 @@ impl ConsentRepo for MemoryStore {
         Ok(consents)
     }
 
-    async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<()> {
+    async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<Consent> {
         let mut inner = self.lock();
         if !inner.users.contains_key(&consent.user_id)
             || !inner.clients.contains_key(&consent.client_id)
         {
             return Err(RepoError::NotFound);
         }
-        inner
-            .consents
-            .insert((consent.user_id, consent.client_id), consent.clone());
+        let key = (consent.user_id, consent.client_id);
+        let mut stored = consent.clone();
+        if let Some(existing) = inner.consents.get(&key) {
+            stored.id = existing.id;
+            stored.created_at = existing.created_at;
+            stored.version = ConsentVersion(existing.version.0 + 1);
+        } else {
+            stored.version = ConsentVersion(1);
+        }
+        stored.revoked_at = None;
+        inner.consents.insert(key, stored.clone());
         Self::push_fact(&mut inner, fact);
-        Ok(())
+        Ok(stored)
     }
 
     async fn revoke(
@@ -1089,6 +1119,7 @@ impl ConsentRepo for MemoryStore {
         }
         consent.revoked_at = Some(now);
         consent.updated_at = now;
+        consent.version = ConsentVersion(consent.version.0 + 1);
         Self::push_fact(&mut inner, fact);
         Ok(())
     }

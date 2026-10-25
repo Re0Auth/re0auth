@@ -579,7 +579,26 @@ impl AuthService {
             )
             .await
         {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                // The consent row is now revoked, so every token check fails.
+                // Revoking the families is defense in depth and makes the
+                // revocation visible in the refresh-token ledger instead of
+                // leaving live rows that only fail because of the consent gate.
+                let fact = SecurityFact::new(
+                    AuditAction::RefreshTokenRevoked,
+                    now,
+                    format!("user:{}:client:{}", user_id.0, client_id.0),
+                )
+                .actor(user_id)
+                .client(client_id)
+                .with_request_id(correlation_id);
+                self.storage
+                    .refresh_tokens()
+                    .revoke_all_for_client(&user_id, &client_id, &fact, now)
+                    .await
+                    .map_err(AuthError::Repo)?;
+                Ok(())
+            }
             Err(RepoError::NotFound) => Err(AuthError::NotFound),
             Err(error) => Err(AuthError::Repo(error)),
         }

@@ -148,12 +148,16 @@ fn token_form(pairs: &[(&str, &str)]) -> String {
 }
 
 async fn post_form(app: &TestApp, form: String) -> axum::response::Response {
+    post_form_path(app, "/oauth/token", form).await
+}
+
+async fn post_form_path(app: &TestApp, path: &str, form: String) -> axum::response::Response {
     app.router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oauth/token")
+                .uri(path)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
                 .expect("request"),
@@ -508,6 +512,18 @@ async fn refresh_tokens(app: &TestApp, refresh_token: &str) -> axum::response::R
     .await
 }
 
+async fn revoke_token(app: &TestApp, token: &str) -> axum::response::Response {
+    post_form_path(
+        app,
+        "/oauth/revoke",
+        token_form(&[
+            ("token", token),
+            ("client_id", &app.client_id.0.to_string()),
+        ]),
+    )
+    .await
+}
+
 async fn userinfo(app: &TestApp, access_token: &str) -> axum::response::Response {
     app.router
         .clone()
@@ -716,6 +732,79 @@ async fn revoking_consent_blocks_userinfo() {
         StatusCode::UNAUTHORIZED,
         "revoking consent must invalidate outstanding access tokens"
     );
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn regranting_consent_keeps_old_access_tokens_invalid() {
+    let app = setup().await;
+    let old_code = approve_authorization(&app, "state-old").await;
+    let response = exchange_code(&app, &old_code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let old_access = body_json(response).await["access_token"]
+        .as_str()
+        .expect("old access token")
+        .to_string();
+
+    let revoked = revoke_authorization(&app).await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    // Re-granting creates a new consent version. The old token must stay dead;
+    // otherwise the version check would only be an "is there any consent"
+    // check and re-authorizing would resurrect tokens the user already killed.
+    let new_code = approve_authorization(&app, "state-new").await;
+    let response = userinfo(&app, &old_access).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "re-granting must not resurrect an access token from the old version"
+    );
+
+    let response = exchange_code(&app, &new_code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let new_access = body_json(response).await["access_token"]
+        .as_str()
+        .expect("new access token")
+        .to_string();
+    let response = userinfo(&app, &new_access).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_a_refresh_token_revokes_the_family() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-revoke-refresh").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let tokens = body_json(response).await;
+    let refresh_token = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    let revoked = revoke_token(&app, &refresh_token).await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+
+    let response = refresh_tokens(&app, &refresh_token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "revoking a refresh token must revoke its family"
+    );
+    let error = body_json(response).await;
+    assert_eq!(error["error"], "invalid_grant");
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_an_unknown_token_returns_200() {
+    let app = setup().await;
+    let response = revoke_token(&app, "not-a-real-token").await;
+    assert_eq!(response.status(), StatusCode::OK);
 
     drop(app.key);
 }

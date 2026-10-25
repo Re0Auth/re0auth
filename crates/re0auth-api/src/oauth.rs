@@ -13,6 +13,18 @@ pub const SUPPORTED_SCOPES: &[&str] = &[
 pub const ACCESS_TOKEN_USE: &str = "access";
 pub const APPROVAL_TICKET_USE: &str = "approval_ticket";
 
+/// Monotonic version of one `(user, client)` consent record.
+///
+/// Revoking or re-granting increments it. Access tokens carry the version they
+/// were issued under, so an old token fails after the consent changes even if
+/// its JWT is still valid. The default is 0 only for tokens issued before this
+/// field existed; such tokens are rejected by the consent gate.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct ConsentVersion(pub u64);
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AccessTokenClaims {
     pub iss: String,
@@ -24,6 +36,8 @@ pub struct AccessTokenClaims {
     pub iat: Unix,
     pub jti: String,
     pub token_use: String,
+    #[serde(default)]
+    pub consent_version: ConsentVersion,
 }
 
 /// INV-NOLOG-01: `nonce` is a replay-guard secret.

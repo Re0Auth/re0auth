@@ -18,6 +18,7 @@ pub use device_code::device_code_contract;
 use re0auth_api::audit::{
     AuditAction, AuditOutcome, AuditRecord, AuditTier, SecurityFact, Severity,
 };
+use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
     AuditFilter, AuthCode, Binding, BindingQuery, BindingStatus, Client, ClientStatus, Consent,
     ConsumeAuthCode, DeviceCode, DeviceCodeState, Identity, LoginTransaction, PendingAuthorization,
@@ -656,6 +657,52 @@ pub async fn refresh_token_contract<S: Storage>(store: &S) {
             .expect("expired rotate"),
         RotateOutcome::Expired
     ));
+    let second_user = User {
+        id: UserId::new(),
+        display_name: "second-contract-user".to_string(),
+        role: UserRole::User,
+        created_at: now + 1,
+        updated_at: now + 1,
+    };
+    store
+        .users()
+        .create(&second_user)
+        .await
+        .expect("second user");
+    let other_client = ClientId::new();
+    let first_family = refresh(second_user.id, client, FamilyId::new(), 40, 10_000);
+    let second_family = refresh(second_user.id, client, FamilyId::new(), 41, 10_000);
+    let untouched = refresh(second_user.id, other_client, FamilyId::new(), 42, 10_000);
+    for token in [&first_family, &second_family, &untouched] {
+        store
+            .refresh_tokens()
+            .insert(token)
+            .await
+            .expect("insert revoke-all token");
+    }
+    assert_eq!(
+        store
+            .refresh_tokens()
+            .revoke_all_for_client(
+                &second_user.id,
+                &client,
+                &fact(AuditAction::RefreshTokenRevoked, 1_400, "consent"),
+                1_400,
+            )
+            .await
+            .expect("revoke all for client"),
+        2
+    );
+    let stored_untouched = store
+        .refresh_tokens()
+        .find(&untouched.token_hash)
+        .await
+        .expect("find untouched")
+        .expect("untouched exists");
+    assert!(
+        stored_untouched.revoked_at.is_none(),
+        "another client's family must stay live"
+    );
 
     let purged = store
         .refresh_tokens()
@@ -926,19 +973,21 @@ pub async fn consent_contract<S: Storage>(store: &S) {
         created_at: 1_000,
         updated_at: 1_000,
         revoked_at: None,
+        version: ConsentVersion(0),
     };
-    store
+    let granted = store
         .consents()
         .grant(&first, &fact(AuditAction::ConsentGranted, 1_000, "consent"))
         .await
         .expect("grant");
+    assert_eq!(granted.version, ConsentVersion(1));
     assert_eq!(
         store
             .consents()
             .find(&owner.id, &client.id)
             .await
             .expect("find"),
-        Some(first.clone())
+        Some(granted.clone())
     );
     assert_eq!(
         store
@@ -946,15 +995,15 @@ pub async fn consent_contract<S: Storage>(store: &S) {
             .list_by_user(&owner.id)
             .await
             .expect("list"),
-        vec![first.clone()]
+        vec![granted.clone()]
     );
 
     let expanded = Consent {
         scopes: vec!["openid".to_string(), "phigros.stats.read".to_string()],
         updated_at: 1_100,
-        ..first.clone()
+        ..granted.clone()
     };
-    store
+    let regranted = store
         .consents()
         .grant(
             &expanded,
@@ -962,13 +1011,14 @@ pub async fn consent_contract<S: Storage>(store: &S) {
         )
         .await
         .expect("regrant");
+    assert_eq!(regranted.version, ConsentVersion(2));
     assert_eq!(
         store
             .consents()
             .find(&owner.id, &client.id)
             .await
             .expect("find"),
-        Some(expanded)
+        Some(regranted)
     );
 
     store
