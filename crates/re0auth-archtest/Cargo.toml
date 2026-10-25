@@ -1,0 +1,17 @@
+[package]
+name = "re0auth-archtest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+serde_json.workspace = true
+syn = { version = "2", features = ["full", "visit"] }
+toml.workspace = true
+# `api_contract` asserts the serialised shape of these DTOs against the zod
+# schemas the SPA uses. It has to name them; no other crate does.
+re0auth-api = { version = "0.4.0", path = "../re0auth-api" }
+re0auth-http = { version = "0.1.0", path = "../re0auth-http" }
+re0auth-app = { version = "0.1.0", path = "../re0auth-app" }

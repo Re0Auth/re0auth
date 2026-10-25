@@ -1,0 +1,15 @@
+[package]
+name = "re0auth-contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+async-trait.workspace = true
+re0auth-api = { version = "0.4.0", path = "../re0auth-api" }
+secrecy.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

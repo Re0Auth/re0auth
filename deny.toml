@@ -1,0 +1,34 @@
+[graph]
+targets = []
+
+[advisories]
+version = 2
+# A yanked release was withdrawn for a reason. Leaving this at "warn" let tokio
+# 1.54.0 (timer use-after-free, ISSUE-0013) sit in the lockfile unnoticed; the
+# warning was buried among duplicate-version output that does not fail the run.
+yanked = "deny"
+
+[licenses]
+version = 2
+allow = [
+    "AGPL-3.0-or-later",
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    # webpki-root-certs ships Mozilla's root store under a permissive data license,
+    # pulled in by reqwest's rustls-platform-verifier.
+    "CDLA-Permissive-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

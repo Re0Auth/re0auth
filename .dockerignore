@@ -1,0 +1,11 @@
+target
+**/target
+.git
+.github
+web/node_modules
+web/.svelte-kit
+web/build
+spikes
+backups
+conformance/results
+*.log

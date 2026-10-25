@@ -1,0 +1,35 @@
+# Container configuration. The image writes only under /app/data.
+[server]
+bind = "0.0.0.0:8080"
+issuer = "http://127.0.0.1:8080"
+trusted_proxies = []
+
+[database]
+url = "sqlite:///app/data/re0auth.db"
+
+[crypto]
+master_key_file = "/app/data/keys/master.key"
+signing_key_file = "/app/data/keys/signing-key.pem"
+
+[limits]
+upstream_response_bytes = 4194304
+upstream_inflight_bytes = 67108864
+inbound_body_bytes = 1048576
+
+[rate_limit]
+unauthenticated_burst = 30
+unauthenticated_period_secs = 60
+authenticated_burst = 120
+authenticated_period_secs = 60
+per_user_burst = 60
+per_user_period_secs = 60
+
+[cache]
+enabled = true
+ttl_secs = 300
+max_bytes = 8388608
+
+# Mozilla trust bundle only; no extra CA, no private-network or loopback exemption.
+[tls]
+allow_private_net = false
+allow_loopback = false

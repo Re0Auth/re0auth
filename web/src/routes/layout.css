@@ -1,0 +1,336 @@
+@import 'tailwindcss';
+
+@theme inline {
+	--font-sans:
+		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', 'Microsoft YaHei',
+		sans-serif;
+	--font-mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', 'SFMono-Regular', monospace;
+	--color-bg: var(--bg);
+	--color-fg: var(--fg);
+	--color-muted: var(--muted);
+	--color-border: var(--border);
+	--color-primary: var(--primary);
+	--color-primary-fg: var(--primary-fg);
+	--color-accent: var(--accent);
+	--color-danger: var(--danger);
+}
+
+:root {
+	color-scheme: light dark;
+	--bg: #ffffff;
+	--fg: #171717;
+	--muted: #4d4d4d;
+	--border: rgb(0 0 0 / 0.08);
+	--primary: #171717;
+	--primary-fg: #ffffff;
+	--accent: #0a72ef;
+	--danger: #d92d20;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #0a0a0a;
+		--fg: #fafafa;
+		--muted: #a1a1a1;
+		--border: rgb(255 255 255 / 0.12);
+		--primary: #fafafa;
+		--primary-fg: #171717;
+		--accent: #3b82f6;
+		--danger: #f97066;
+	}
+}
+
+html,
+body {
+	min-height: 100%;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font-family: var(--font-sans);
+	font-size: 16px;
+	line-height: 1.5;
+}
+
+::selection {
+	background: color-mix(in oklch, var(--accent) 22%, transparent);
+}
+
+@layer components {
+	.auth-page {
+		min-height: 100dvh;
+		display: grid;
+		place-items: center;
+		padding: 24px;
+	}
+
+	.auth-card {
+		width: 100%;
+		max-width: 460px;
+		background: var(--bg);
+		border-radius: 8px;
+		box-shadow: 0 0 0 1px var(--border);
+		padding: 28px;
+	}
+
+	.account-card {
+		width: 100%;
+		max-width: 720px;
+		background: var(--bg);
+		border-radius: 8px;
+		box-shadow: 0 0 0 1px var(--border);
+		padding: 28px;
+	}
+
+	.account-header {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 20px;
+	}
+
+	.account-header .auth-subtitle {
+		margin-bottom: 0;
+	}
+
+	.account-list {
+		margin-top: 24px;
+		border-radius: 8px;
+		box-shadow: 0 0 0 1px var(--border);
+	}
+
+	.bindings {
+		margin-top: 32px;
+	}
+
+	.bindings .account-list {
+		margin-top: 12px;
+	}
+
+	.section-title {
+		margin: 0 0 4px;
+		font-size: 15px;
+		font-weight: 600;
+	}
+
+	.auth-row {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 18px;
+		padding: 16px;
+	}
+
+	.auth-row + .auth-row {
+		border-top: 1px solid var(--border);
+	}
+
+	.auth-row-main {
+		min-width: 0;
+	}
+
+	.auth-row-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-weight: 600;
+	}
+
+	.auth-row-scopes {
+		margin: 6px 0 0;
+		font-size: 14px;
+	}
+
+	.btn-primary.compact,
+	.btn-secondary.compact {
+		width: auto;
+		min-height: 36px;
+		padding: 0 12px;
+		font-size: 13px;
+		white-space: nowrap;
+	}
+
+	.btn-secondary.revoke {
+		color: var(--danger);
+	}
+
+	.brand {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		color: var(--muted);
+		font-size: 13px;
+		font-weight: 500;
+		margin-bottom: 28px;
+	}
+
+	.auth-title {
+		margin: 0 0 8px;
+		font-size: 24px;
+		line-height: 1.2;
+		font-weight: 600;
+		letter-spacing: normal;
+	}
+
+	.auth-subtitle {
+		margin: 0 0 24px;
+		color: var(--muted);
+	}
+
+	.auth-actions {
+		display: grid;
+		gap: 10px;
+		margin-top: 24px;
+	}
+
+	.btn-primary,
+	.btn-secondary {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+		width: 100%;
+		min-height: 44px;
+		border: 0;
+		border-radius: 6px;
+		padding: 0 16px;
+		font: inherit;
+		font-weight: 500;
+		cursor: pointer;
+		text-decoration: none;
+		transition:
+			opacity 140ms ease,
+			background-color 140ms ease;
+	}
+
+	.btn-primary {
+		background: var(--primary);
+		color: var(--primary-fg);
+	}
+
+	.btn-secondary {
+		background: transparent;
+		color: var(--fg);
+		box-shadow: 0 0 0 1px var(--border);
+	}
+
+	.btn-primary:hover,
+	.btn-secondary:hover {
+		opacity: 0.86;
+	}
+
+	.btn-primary:disabled,
+	.btn-secondary:disabled {
+		cursor: not-allowed;
+		opacity: 0.45;
+	}
+
+	.btn-primary:focus-visible,
+	.btn-secondary:focus-visible,
+	.input:focus-visible,
+	a:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+
+	.input {
+		display: block;
+		width: 100%;
+		min-height: 44px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: transparent;
+		color: var(--fg);
+		padding: 10px 12px;
+		font: inherit;
+	}
+
+	.input::placeholder {
+		color: color-mix(in oklch, var(--muted) 70%, transparent);
+	}
+
+	.mono {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+		font-feature-settings: 'tnum' 1, 'liga' 0;
+	}
+
+	.field-label {
+		display: block;
+		margin-bottom: 6px;
+		font-size: 14px;
+		font-weight: 500;
+	}
+
+	.field-hint {
+		margin: 8px 0 0;
+		color: var(--muted);
+		font-size: 13px;
+	}
+
+	.alert {
+		display: flex;
+		gap: 8px;
+		align-items: flex-start;
+		margin: 16px 0 0;
+		border-radius: 6px;
+		background: color-mix(in oklch, var(--danger) 8%, transparent);
+		color: var(--danger);
+		padding: 10px 12px;
+		font-size: 14px;
+	}
+
+	/* Advisory rather than a failure: an unmet prerequisite the user can act on
+	   later, so it must not borrow the failure colour. */
+	.notice {
+		display: flex;
+		gap: 8px;
+		align-items: flex-start;
+		margin: 16px 0 0;
+		border-radius: 6px;
+		background: color-mix(in oklch, var(--accent) 8%, transparent);
+		color: var(--accent);
+		padding: 10px 12px;
+		font-size: 14px;
+	}
+
+	.scope-list {
+		display: grid;
+		gap: 0;
+		margin: 16px 0 0;
+		padding: 0;
+		list-style: none;
+		border-radius: 8px;
+		box-shadow: 0 0 0 1px var(--border);
+	}
+
+	.scope-item {
+		display: flex;
+		gap: 12px;
+		align-items: flex-start;
+		padding: 12px 14px;
+	}
+
+	.scope-item + .scope-item {
+		border-top: 1px solid var(--border);
+	}
+
+	.scope-name {
+		font-family: var(--font-mono);
+		font-size: 13px;
+		color: var(--muted);
+	}
+
+	.meta {
+		margin: 16px 0 0;
+		color: var(--muted);
+		font-size: 13px;
+	}
+
+	.meta code {
+		font-family: var(--font-mono);
+		color: var(--fg);
+	}
+}

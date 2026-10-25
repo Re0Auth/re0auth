@@ -1,0 +1,160 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Reusable so release.yml can call exactly this workflow instead of a
+  # hand-maintained subset. A release that skipped a job here would be a
+  # published binary whose checks never ran.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # rust-embed embeds web/build at compile time. A clean checkout cannot
+      # build the workspace until the SPA has been built.
+      - name: web assets
+        run: |
+          cd web
+          npm ci --include=dev
+          npm run build
+
+      # rust-toolchain.toml pins 1.98.0; rustup installs it on first use.
+      - name: toolchain
+        run: rustup show
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --all-targets
+
+      # The dependency firewall and the other machine-checkable invariants.
+      # It runs in the normal suite too; this step makes the failure obvious.
+      - name: architecture checks
+        run: cargo test -p re0auth-archtest -- --nocapture
+
+      # HR-06 / INV-CONFIG-01: every shipped config is a checked artifact.
+      - name: config check
+        run: |
+          sh tools/check-config.sh config.example.toml
+          sh tools/check-config.sh config.docker.toml
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # NODE_ENV=production on a dev machine would omit devDependencies; keep
+      # the flag explicit in CI so the build cannot depend on ambient state.
+      - name: install
+        run: npm ci --include=dev
+
+      - name: check
+        run: npm run check
+
+      - name: build
+        run: npm run build
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: toolchain
+        run: rustup show
+
+      - name: web assets
+        run: |
+          cd web
+          npm ci --include=dev
+          npm run build
+
+      - name: release binary
+        run: cargo build --release --locked -p re0auth-server
+
+      - name: browser
+        run: |
+          cd web
+          npx playwright install --with-deps chromium
+
+      - name: browser e2e
+        run: |
+          cd web
+          npm run test:e2e
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # A Dockerfile is not accepted until it boots, serves health, and runs
+      # without root. This is the anti-rot gate for deployment claims.
+      - name: build, boot, and smoke
+        run: bash tools/docker-smoke.sh
+
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: toolchain
+        run: rustup show
+
+      # The contract crate is the public surface. Breaking changes need a major
+      # version and a decision record, not a silent edit.
+      - name: install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked --version 0.51.0
+
+      - name: api semver
+        run: bash tools/check-semver.sh
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Bootstrap: pinned to the version verified locally (cargo-deny 0.20.2).
+      - name: install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.20.2
+
+      # cargo-deny covers advisories, licenses, bans, and sources. A second
+      # advisory scanner is optional locally, not a second CI gate.
+      - name: licenses, advisories, sources
+        run: cargo deny check
+
+# Release is intentionally not stubbed here: a skipped check is not a check.
+# Frontend checks live in the `web` job above; release digests land separately.

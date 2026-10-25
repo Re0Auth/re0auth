@@ -1,0 +1,237 @@
+# r0auth 示例配置。CI 会用 --check-config 校验本文件。
+# 优先级：环境变量 RE0AUTH_* > 本文件 > 默认值。
+
+[server]
+bind = "127.0.0.1:8080"
+issuer = "https://auth.example.com"
+# 只有这些代理可以写 X-Forwarded-For；空列表表示不信任任何代理。
+trusted_proxies = []
+
+[database]
+url = "sqlite://data/re0auth.db"
+
+[crypto]
+master_key_file = "data/master.key"
+signing_key_file = "data/signing-key.pem"
+# 密钥轮换期间仍需能解开的旧主密钥（ADR-0042）。稳态下留空。
+# 每条写明版本号与文件；两者都必须给，因为「版本」是密文里记录的，
+# 「文件」是解开它所需的。轮换报告 failed=0 之前不要删掉这些文件。
+# retired_master_key_files = [{ version = 2, file = "data/master.old.key" }]
+# 可选：Connector 根凭证保险柜（ADR-0039）。留空表示不启用。
+# 必须是独立文件：不能与数据库同路径，也不能是上面那把主密钥文件本身。
+# 文件里只有密文（AES-256-GCM，密钥由主密钥经 HKDF 独立 info 串派生）。
+# connector_secret_file = "data/connector-secrets.json"
+
+[limits]
+upstream_response_bytes = 4194304
+upstream_inflight_bytes = 67108864
+inbound_body_bytes = 1048576
+
+# 分层限流（INV-RATE-01）。三条车道互相独立：
+# unauthenticated 按客户端 IP 计数，保护匿名入口（设备码申请、令牌端点）；
+# authenticated 按 client_id 计数，保证单个 Bot 不会吃掉别人的配额；
+# per_user 按 user_id 计数，防止多个 Bot 共用一个 client_id 反复打同一玩家的数据。
+# 网关请求会同时计入 authenticated 与 per_user 两条车道。
+# 未写本段时使用下列默认值；disabled = true 只用于压测与开发。
+# [rate_limit]
+# unauthenticated_burst = 30
+# unauthenticated_period_secs = 60
+# authenticated_burst = 120
+# authenticated_period_secs = 60
+# per_user_burst = 60
+# per_user_period_secs = 60
+# disabled = false
+
+# 响应缓存（INV-CACHE-01..03）。默认关闭：缓存会改变上游故障期间调用者
+# 看到的内容，因此由运维显式开启。
+# 开启后：读取永远发生在 scope 与 binding 校验之后；解绑会清掉该 binding
+# 的全部条目；raw 视图永不读写缓存。
+# [cache]
+# enabled = true
+# ttl_secs = 300
+# max_bytes = 8388608
+
+# 保留期（天）。安全审计与访问流水分档，默认值即已定策略。
+# 三项都必须 > 0：0 天会让证据刚写入就被删，不是「关闭清理」。
+# [retention]
+# audit_fact_days = 365
+# access_telemetry_days = 90
+# revoked_binding_anonymize_days = 30
+
+# 日志走环境变量，不在本文件配置：
+#   RUST_LOG=info            控制级别（默认 info）
+#   RE0AUTH_LOG_FORMAT=pretty 输出人类可读文本；默认 JSON
+
+# 出网 TLS 信任。信任列表以 Mozilla 静态清单打底，不读宿主系统信任库。
+# extra_ca_file 只做「追加」，不替换；路径不可读或 PEM 非法时启动直接失败。
+# [tls]
+# extra_ca_file = "/etc/ssl/private-ca.pem"
+# allow_private_net = false   # 自建内网 Connector（BYOC）时才开
+# allow_loopback = false      # 仅本机 IdP/Connector；生产保持关闭
+
+# 可选：配置后启用外部 IdP 登录。未配置时 /auth/login 返回 503。
+#
+# client_secret 的两种注入方式（二选一，同时设置会拒绝启动）：
+#   1. 环境变量按索引覆盖：[ [identity_providers] ] 的第 N 个用
+#      RE0AUTH_IDENTITY_PROVIDERS__N__CLIENT_SECRET（只能覆盖标量字段，scopes 必须在文件里）
+#   2. client_secret_file = "/run/secrets/xxx"：从文件读取，适合挂载的 secret
+# 旧的单块 [identity_provider] 写法仍可用 RE0AUTH_IDENTITY_PROVIDER__CLIENT_SECRET。
+#
+# scopes 必填且不能为空：各家词汇不通（oidc 用 openid，github 用 read:user，
+# qq 用 get_user_info），没有能同时适配的默认值，留空会拒绝启动。
+#
+# 单个 IdP 可省略 name，省略时默认取 issuer 的主机名。
+#
+# 三家已实测的供应商（discovery 于 2026-10-20 直接抓取确认）：
+#
+# Google：issuer 固定，标准 OIDC。
+# [[identity_providers]]
+# name = "google"
+# issuer = "https://accounts.google.com"
+# client_id = "<id>.apps.googleusercontent.com"
+# redirect_uri = "https://auth.example.com/auth/callback"
+# scopes = ["openid", "profile", "email"]
+#
+# Microsoft 个人账号：issuer 必须是这个固定 GUID，不能写 consumers 或 common。
+# 那两个别名返回的 issuer 含 {tenantid} 模板，与本配置逐字比较必然失败。
+# [[identity_providers]]
+# name = "microsoft"
+# issuer = "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0"
+# client_id = "<application (client) id>"
+# redirect_uri = "https://auth.example.com/auth/callback"
+# scopes = ["openid", "profile", "email"]
+#
+# Discord：必须含 openid，否则拿不到 id_token。
+# [[identity_providers]]
+# name = "discord"
+# issuer = "https://discord.com"
+# client_id = "<application id>"
+# redirect_uri = "https://auth.example.com/auth/callback"
+# scopes = ["openid", "sso.connections"]
+#
+# GitHub：纯 OAuth2，无 id_token / JWKS。issuer 是固定命名空间，不可改。
+# 三个端点必须全写，jwks_uri 必须留空。
+# [[identity_providers]]
+# name = "github"
+# kind = "github"
+# issuer = "https://github.com"
+# client_id = "<OAuth App client id>"
+# redirect_uri = "https://auth.example.com/auth/callback"
+# scopes = ["read:user"]
+# authorization_endpoint = "https://github.com/login/oauth/authorize"
+# token_endpoint = "https://github.com/login/oauth/access_token"
+# userinfo_endpoint = "https://api.github.com/user"
+#
+# QQ：同上，token 端点返回 form-encoded，openid 走 JSONP 包裹的端点。
+# [[identity_providers]]
+# name = "qq"
+# kind = "qq"
+# issuer = "https://graph.qq.com"
+# client_id = "<APP ID>"
+# redirect_uri = "https://auth.example.com/auth/callback"
+# scopes = ["get_user_info"]
+# authorization_endpoint = "https://graph.qq.com/oauth2.0/authorize"
+# token_endpoint = "https://graph.qq.com/oauth2.0/token"
+# userinfo_endpoint = "https://graph.qq.com/user/get_user_info"
+#
+# 通用形态，四个端点可全部手工指定以跳过 discovery：
+# [[identity_providers]]
+# name = "example"
+# issuer = "https://idp.example.com"
+# client_id = "re0auth"
+# client_secret = "replace-me"
+# redirect_uri = "https://auth.example.com/auth/callback"
+# scopes = ["openid", "profile"]
+# discovery_url = "https://idp.example.com/.well-known/openid-configuration"
+# authorization_endpoint = "https://idp.example.com/oauth2/authorize"
+# token_endpoint = "https://idp.example.com/oauth2/token"
+# jwks_uri = "https://idp.example.com/oauth2/jwks"
+#
+# 配置多个 IdP 时，登录链接必须带选择器：/auth/login?idp=<name>
+# 省略选择器会返回 400，而不是猜测用哪一个——猜错会把用户登进别家的账号体系。
+# [[identity_providers]]
+# name = "example"
+# issuer = "https://idp.example.com"
+# [[identity_providers]]
+# name = "backup"
+# issuer = "https://backup-idp.example.com"
+# 旧的 [identity_provider] 单块写法仍然可用，等价于只配一个 provider；两种写法同时出现会拒绝启动。
+
+# 可选：注册上游 Connector。留空时数据面关闭，身份面不受影响。
+# 路径模板只能写在这里，请求方无权限指定 URL。`{subject}` 会替换为绑定里的上游用户 ID。
+# 未写 scope 时默认为 `upstream.<name>.read`。
+# [[connectors]]
+# id = "phigros"
+# base_url = "https://api.example.com"
+# allow_private_net = false
+# allow_link_local_metadata = false
+#
+# [[connectors.resources]]
+# name = "scores"
+# path = "/v1/scores/{subject}"
+# scope = "phigros.records.read"
+#
+# 读取方法对上游无感（ADR-0046）：默认 GET。上游只提供 POST + 请求体时，
+# 声明 method 与 body；body 的值只能是常量、{subject} 或 {credential}，
+# 由服务端生成，请求方无法添加字段。
+# idempotent 默认：GET 为 true，POST 为 false（POST 未被声明为可重试前不重试）。
+# [[connectors.resources]]
+# name = "read_scores"
+# path = "/get/scoreList/user"
+# scope = "phihub.scores.read"
+# method = "post"
+# idempotent = true
+# [connectors.resources.body]
+# api_user_id = "{subject}"
+# credential = "{credential}"
+#
+# 可选：让用户在本实例上绑定这个上游（INV-BIND-03）。
+# 不写这一段，绑定路由对这个 connector 返回 404——它仍可服务
+# 在别处创建的绑定，但用户没法在本实例发起新的绑定。
+# 与 [[identity_providers]] 是两回事：那些是「用户登录到我们」，
+# 这里是「我们把用户授权给上游」。
+#
+# [connectors.oauth]
+# authorization_endpoint = "https://api.example.com/oauth/authorize"
+# token_endpoint = "https://api.example.com/oauth/token"
+# client_id = "re0auth"
+# 二选一；部署时优先 client_secret_file。
+# client_secret = "replace-me"
+# client_secret_file = "/run/secrets/phigros-oauth-secret"
+# 必填：没有跨供应商的通用默认值。
+# scopes = ["read"]
+# 必填：交换完凭据后，去哪里读「这个凭据属于哪个上游账号」。
+# 少了它，绑定照样存得下，但网关无法寻址——每次读取都要带 subject，
+# 而这个值只能由上游给出。`subject_field` 只能是 id / openid / login / name。
+# userinfo_endpoint = "https://api.example.com/oauth/userinfo"
+# subject_field = "id"
+#
+# PhiHub + Re0Auth 委托（ADR-0045）：授权页在 PhiHub Web，token 端点走
+# `/delegations/token`，数据面复用 `/get/*` 的 POST。
+# [[connectors]]
+# id = "phihub"
+# base_url = "https://phib19.top:8080"
+# [[connectors.resources]]
+# name = "save_info"
+# path = "/get/cloud/saveInfo"
+# scope = "phihub.save.read"
+# method = "post"
+# idempotent = true
+# [connectors.resources.body]
+# delegation_token = "{credential}"
+# [[connectors.resources]]
+# name = "save"
+# path = "/get/cloud/saves"
+# scope = "phihub.save.read"
+# method = "post"
+# idempotent = true
+# [connectors.resources.body]
+# delegation_token = "{credential}"
+# [connectors.oauth]
+# authorization_endpoint = "https://phi.example.com/delegations/authorize"
+# token_endpoint = "https://phib19.top:8080/delegations/token"
+# client_id = "re0auth"
+# client_secret_file = "/run/secrets/phihub-delegation-secret"
+# scopes = ["phihub.save.read"]
+# userinfo_endpoint = "https://phib19.top:8080/delegations/me"
+# subject_field = "id"

@@ -1,0 +1,25 @@
+[package]
+name = "re0auth-upstream-kit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reference kit for Re0Auth upstream data sources"
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower.workspace = true
