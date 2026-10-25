@@ -5,16 +5,32 @@ cd "$(dirname "$0")/.."
 
 IMAGE=${IMAGE:-re0auth:ci}
 NAME=${NAME:-re0auth-ci-smoke}
+VOLUME=${VOLUME:-re0auth-ci-smoke-data}
 PORT=${PORT:-18080}
 
 cleanup() {
     docker rm -f "$NAME" >/dev/null 2>&1 || true
+    docker volume rm "$VOLUME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 docker build -t "$IMAGE" .
 
-docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:8080" "$IMAGE" >/dev/null
+# The server refuses to start without a master key. Create one in a volume as
+# root, then hand the volume to the runtime user so the 0600 file is readable.
+docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+docker volume create "$VOLUME" >/dev/null
+docker run --rm --user 0 -v "$VOLUME:/app/data" --entrypoint sh "$IMAGE" -c '
+    set -eu
+    umask 077
+    mkdir -p /app/data/keys
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > /app/data/keys/master.key
+    test "$(wc -c < /app/data/keys/master.key)" -eq 64
+    chmod 600 /app/data/keys/master.key
+    chown -R 65532:65532 /app/data
+'
+
+docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:8080" -v "$VOLUME:/app/data" "$IMAGE" >/dev/null
 
 user=$(docker inspect --format '{{.Config.User}}' "$NAME")
 if [ "$user" != "65532:65532" ]; then
