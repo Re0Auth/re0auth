@@ -1,0 +1,7 @@
+# 网关不变量（CI 专用摘录）
+
+INV-LOGIN-02
+INV-LOGIN-03
+INV-LOGIN-04
+INV-GW-01
+INV-GW-06

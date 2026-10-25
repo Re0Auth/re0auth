@@ -735,8 +735,8 @@ fn gateway_invariants_have_executable_tests() {
             "gateway invariant test {invariant_test} is missing"
         );
     }
-    let docs = fs::read_to_string(root().join("docs/invariants-connector-gateway.md"))
-        .expect("invariant documentation");
+    let docs = fs::read_to_string(root().join("crates/re0auth-archtest/contract/invariants.md"))
+        .expect("invariant contract");
     for invariant in [
         "INV-LOGIN-02",
         "INV-LOGIN-03",
@@ -1119,8 +1119,8 @@ fn published_error_codes_match_the_code() {
     // The API surface document is a promise. This gate is what stops it from
     // drifting into fiction: a code listed as implemented must exist somewhere,
     // and a code listed as unimplemented must not be emitted by anything.
-    let doc =
-        fs::read_to_string(root().join("docs/design/API-SURFACE.md")).expect("API-SURFACE.md");
+    let doc = fs::read_to_string(root().join("crates/re0auth-archtest/contract/api-surface.md"))
+        .expect("api-surface contract");
     // Only files that define error codes. Scanning every source file would also
     // pick up unrelated string tables (audit actions, scope names) that happen
     // to share a spelling with a planned error code.
@@ -1175,8 +1175,8 @@ fn the_routes_in_api_surface_match_the_router() {
         served.len()
     );
 
-    let doc =
-        fs::read_to_string(root().join("docs/design/API-SURFACE.md")).expect("API-SURFACE.md");
+    let doc = fs::read_to_string(root().join("crates/re0auth-archtest/contract/api-surface.md"))
+        .expect("api-surface contract");
     let documented = appendix_a_routes(&doc);
     assert!(
         documented.len() >= 20,
