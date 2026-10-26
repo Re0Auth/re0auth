@@ -757,6 +757,52 @@ async fn revoking_consent_stops_refresh() {
 }
 
 #[tokio::test]
+async fn retrying_revocation_cleans_tokens_after_consent_is_already_revoked() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-retry-revoke").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let refresh_token = body_json(response).await["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    // Simulate the first attempt committing the consent revoke and then
+    // crashing before the refresh-family cleanup.
+    let now = SystemClock.now();
+    app.store
+        .consents()
+        .revoke(
+            &app.user_id,
+            &app.client_id,
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::ConsentRevoked,
+                now,
+                "consent:test",
+            ),
+            now,
+        )
+        .await
+        .expect("first consent revoke");
+
+    let retry = revoke_authorization(&app).await;
+    assert_eq!(retry.status(), StatusCode::NOT_FOUND);
+    let stored = app
+        .store
+        .refresh_tokens()
+        .find(&hash_secret(&refresh_token))
+        .await
+        .expect("find refresh token")
+        .expect("refresh token exists");
+    assert!(
+        stored.revoked_at.is_some(),
+        "a retry must still clean the family even when consent is already revoked"
+    );
+
+    drop(app.key);
+}
+
+#[tokio::test]
 async fn revoking_consent_blocks_userinfo() {
     let app = setup().await;
     let code = approve_authorization(&app, "state-userinfo").await;
