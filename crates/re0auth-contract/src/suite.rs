@@ -8,12 +8,14 @@ pub mod binding;
 pub mod connector;
 pub mod device_attempt;
 pub mod device_code;
+pub mod refresh_revoke;
 
 pub use approval_ticket::approval_ticket_contract;
 pub use binding::binding_contract;
 pub use connector::connector_contract;
 pub use device_attempt::device_attempt_contract;
 pub use device_code::device_code_contract;
+pub use refresh_revoke::revoke_all_for_client_contract;
 
 use re0auth_api::audit::{
     AuditAction, AuditOutcome, AuditRecord, AuditTier, SecurityFact, Severity,
@@ -657,52 +659,6 @@ pub async fn refresh_token_contract<S: Storage>(store: &S) {
             .expect("expired rotate"),
         RotateOutcome::Expired
     ));
-    let second_user = User {
-        id: UserId::new(),
-        display_name: "second-contract-user".to_string(),
-        role: UserRole::User,
-        created_at: now + 1,
-        updated_at: now + 1,
-    };
-    store
-        .users()
-        .create(&second_user)
-        .await
-        .expect("second user");
-    let other_client = ClientId::new();
-    let first_family = refresh(second_user.id, client, FamilyId::new(), 40, 10_000);
-    let second_family = refresh(second_user.id, client, FamilyId::new(), 41, 10_000);
-    let untouched = refresh(second_user.id, other_client, FamilyId::new(), 42, 10_000);
-    for token in [&first_family, &second_family, &untouched] {
-        store
-            .refresh_tokens()
-            .insert(token)
-            .await
-            .expect("insert revoke-all token");
-    }
-    assert_eq!(
-        store
-            .refresh_tokens()
-            .revoke_all_for_client(
-                &second_user.id,
-                &client,
-                &fact(AuditAction::RefreshTokenRevoked, 1_400, "consent"),
-                1_400,
-            )
-            .await
-            .expect("revoke all for client"),
-        2
-    );
-    let stored_untouched = store
-        .refresh_tokens()
-        .find(&untouched.token_hash)
-        .await
-        .expect("find untouched")
-        .expect("untouched exists");
-    assert!(
-        stored_untouched.revoked_at.is_none(),
-        "another client's family must stay live"
-    );
 
     let purged = store
         .refresh_tokens()
@@ -1484,6 +1440,7 @@ pub async fn storage_contract_suite<S: Storage>(store: &S) {
     session_contract(store).await;
     auth_code_contract(store).await;
     refresh_token_contract(store).await;
+    revoke_all_for_client_contract(store).await;
     login_transaction_contract(store).await;
     pending_binding_contract(store).await;
     approval_ticket_contract(store).await;

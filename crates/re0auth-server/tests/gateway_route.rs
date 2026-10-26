@@ -208,6 +208,10 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
 /// Mints a real access token through the real signer, so the route verifies a
 /// genuine JWT rather than a stub.
 fn access_token(fixture: &Fixture, scope: &str) -> String {
+    access_token_with_version(fixture, scope, ConsentVersion(1))
+}
+
+fn access_token_with_version(fixture: &Fixture, scope: &str, version: ConsentVersion) -> String {
     let now = chrono_like_now();
     fixture
         .signer
@@ -221,7 +225,7 @@ fn access_token(fixture: &Fixture, scope: &str) -> String {
             iat: now,
             jti: "test-jti".to_string(),
             token_use: "access".to_string(),
-            consent_version: ConsentVersion(1),
+            consent_version: version,
         })
         .expect("sign access token")
 }
@@ -400,5 +404,27 @@ async fn revoked_consent_blocks_the_gateway_before_the_upstream() {
         fixture.connector.calls().len(),
         1,
         "the revoked token must not reach the upstream"
+    );
+}
+
+#[tokio::test]
+async fn an_old_access_token_version_is_rejected_before_the_upstream() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "scores",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"rks":15.2}"#.to_vec(),
+        }),
+    );
+    // Version 0 is what a pre-consent-version token decodes to.
+    let token = access_token_with_version(&fixture, SCOPE, ConsentVersion(0));
+
+    let (status, _) = get(&fixture, "/api/v1/upstreams/probe/scores", Some(&token)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fixture.connector.calls().len(),
+        0,
+        "an old token must not reach the upstream"
     );
 }

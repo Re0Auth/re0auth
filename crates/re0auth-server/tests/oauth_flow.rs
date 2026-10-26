@@ -732,6 +732,18 @@ async fn revoking_consent_stops_refresh() {
     let revoked = revoke_authorization(&app).await;
     assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
 
+    let stored = app
+        .store
+        .refresh_tokens()
+        .find(&hash_secret(&refresh_token))
+        .await
+        .expect("find refresh token")
+        .expect("refresh token exists");
+    assert!(
+        stored.revoked_at.is_some(),
+        "consent revocation must revoke the refresh family row"
+    );
+
     let response = refresh_tokens(&app, &refresh_token).await;
     assert_eq!(
         response.status(),
@@ -899,19 +911,26 @@ async fn revoking_a_refresh_token_revokes_the_family() {
     let response = exchange_code(&app, &code).await;
     assert_eq!(response.status(), StatusCode::OK);
     let tokens = body_json(response).await;
-    let refresh_token = tokens["refresh_token"]
+    let first_refresh = tokens["refresh_token"]
         .as_str()
         .expect("refresh token")
         .to_string();
 
-    let revoked = revoke_token(&app, &refresh_token).await;
+    let response = refresh_tokens(&app, &first_refresh).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let second_refresh = body_json(response).await["refresh_token"]
+        .as_str()
+        .expect("rotated refresh token")
+        .to_string();
+
+    let revoked = revoke_token(&app, &first_refresh).await;
     assert_eq!(revoked.status(), StatusCode::OK);
 
-    let response = refresh_tokens(&app, &refresh_token).await;
+    let response = refresh_tokens(&app, &second_refresh).await;
     assert_eq!(
         response.status(),
         StatusCode::BAD_REQUEST,
-        "revoking a refresh token must revoke its family"
+        "revoking one family member must revoke the whole family"
     );
     let error = body_json(response).await;
     assert_eq!(error["error"], "invalid_grant");

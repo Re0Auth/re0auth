@@ -2113,6 +2113,10 @@ async fn revoking_a_token_requires_it_to_belong_to_the_caller() {
         .as_str()
         .expect("access token")
         .to_string();
+    let refresh = payload["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
 
     let userinfo = |token: &str| {
         Request::builder()
@@ -2156,6 +2160,67 @@ async fn revoking_a_token_requires_it_to_belong_to_the_caller() {
     assert_eq!(status, StatusCode::OK);
     let (status, _, _) = send(&app, userinfo(&access)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // The same ownership rule applies to the opaque refresh-token branch.
+    let (status, _, _) = post(
+        &app,
+        "/oauth/revoke",
+        form(&[
+            ("token", refresh.as_str()),
+            ("client_id", app.client_id.0.to_string().as_str()),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _) = post(
+        &app,
+        "/oauth/token",
+        form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh.as_str()),
+            ("client_id", app.confidential.id.0.to_string().as_str()),
+            ("client_secret", CONFIDENTIAL_SECRET),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a foreign client must not revoke the refresh token"
+    );
+    let rotated: Value = serde_json::from_str(&body).expect("rotated token json");
+    let rotated = rotated["refresh_token"]
+        .as_str()
+        .expect("rotated refresh token")
+        .to_string();
+
+    let (status, _, _) = post(
+        &app,
+        "/oauth/revoke",
+        form(&[
+            ("token", rotated.as_str()),
+            ("client_id", app.confidential.id.0.to_string().as_str()),
+            ("client_secret", CONFIDENTIAL_SECRET),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body, _) = post(
+        &app,
+        "/oauth/token",
+        form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", rotated.as_str()),
+            ("client_id", app.confidential.id.0.to_string().as_str()),
+            ("client_secret", CONFIDENTIAL_SECRET),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.contains("invalid_grant"),
+        "revoked refresh token must fail as invalid_grant: {body}"
+    );
 }
 
 #[tokio::test]

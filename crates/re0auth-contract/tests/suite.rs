@@ -2,8 +2,8 @@ use re0auth_contract::{
     MemoryStore, admin_query_contract, approval_ticket_contract, audit_contract,
     auth_code_contract, binding_contract, client_contract, consent_contract,
     device_attempt_contract, device_code_contract, login_transaction_contract,
-    pending_authorization_contract, refresh_token_contract, session_contract,
-    storage_contract_suite, user_contract,
+    pending_authorization_contract, refresh_token_contract, revoke_all_for_client_contract,
+    session_contract, storage_contract_suite, user_contract,
 };
 
 #[tokio::test]
@@ -24,6 +24,11 @@ async fn memory_store_passes_auth_code_contract() {
 #[tokio::test]
 async fn memory_store_passes_refresh_token_contract() {
     refresh_token_contract(&MemoryStore::new()).await;
+}
+
+#[tokio::test]
+async fn memory_store_passes_revoke_all_for_client_contract() {
+    revoke_all_for_client_contract(&MemoryStore::new()).await;
 }
 
 #[tokio::test]

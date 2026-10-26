@@ -532,6 +532,17 @@ mod tests {
         assert!(signer.jwks().contains("\"kid\""));
     }
 
+    #[test]
+    fn claims_without_consent_version_default_to_zero() {
+        let mut value = serde_json::to_value(access_claims()).expect("claims json");
+        value
+            .as_object_mut()
+            .expect("claims object")
+            .remove("consent_version");
+        let decoded: AccessTokenClaims = serde_json::from_value(value).expect("decode old claims");
+        assert_eq!(decoded.consent_version, ConsentVersion(0));
+    }
+
     /// The served key set is parsed by clients, so every member they need has to
     /// be present and correctly named. This is the assertion the old hand-built
     /// JSON literal could not make: a typo there still produced valid JSON.
