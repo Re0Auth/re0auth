@@ -561,6 +561,12 @@ impl AuthService {
         correlation_id: Option<&str>,
     ) -> AuthResult<()> {
         let now = self.clock.now();
+        // 先拒绝已批准的设备码，避免撤销后仍能换 token
+        self.storage
+            .device_codes()
+            .revoke_approved_for_client(&user_id, &client_id)
+            .await
+            .map_err(AuthError::Repo)?;
         match self
             .storage
             .consents()

@@ -966,6 +966,13 @@ pub trait DeviceCodeRepo: Send + Sync {
     async fn find_by_user_code_hash(&self, hash: &[u8]) -> RepoResult<Option<DeviceCode>>;
     async fn approve(&self, user_code_hash: &[u8], user_id: UserId, now: Unix) -> RepoResult<()>;
     async fn deny(&self, user_code_hash: &[u8], now: Unix) -> RepoResult<()>;
+    /// Denies every approved device code for one `(user, client)` pair.
+    ///
+    /// Called when the user withdraws the authorization. Consumed codes have
+    /// already minted tokens and are handled by the consent gate, so only the
+    /// still-exchangeable approvals are touched.
+    async fn revoke_approved_for_client(&self, user: &UserId, client: &ClientId)
+    -> RepoResult<u64>;
     /// Atomically applies the polling rate limit and consumes approved codes
     /// (INV-DEV-01).
     async fn poll(&self, device_code_hash: &[u8], now: Unix) -> RepoResult<DevicePoll>;

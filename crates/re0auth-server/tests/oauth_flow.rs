@@ -9,6 +9,7 @@ use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
 use re0auth_api::ports::{Client, ClientStatus, Session, Storage, User, UserRole};
 use re0auth_api::{ClientId, Clock, SessionId, UserId};
+use re0auth_app::admin;
 use re0auth_app::auth::AuthService;
 use re0auth_app::oauth::{OAuthService, hash_secret};
 use re0auth_domain::pkce;
@@ -33,7 +34,9 @@ impl Drop for KeyGuard {
 
 struct TestApp {
     router: axum::Router,
+    store: SqliteStore,
     client_id: ClientId,
+    user_id: UserId,
     key: KeyGuard,
 }
 
@@ -127,7 +130,9 @@ async fn setup() -> TestApp {
                 4444,
             ))),
         ),
+        store,
         client_id,
+        user_id,
         key,
     }
 }
@@ -524,6 +529,33 @@ async fn revoke_token(app: &TestApp, token: &str) -> axum::response::Response {
     .await
 }
 
+async fn start_device(app: &TestApp) -> Value {
+    let response = post_form_path(
+        app,
+        "/oauth/device_authorization",
+        token_form(&[
+            ("client_id", &app.client_id.0.to_string()),
+            ("scope", "openid profile"),
+        ]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+async fn poll_device(app: &TestApp, device_code: &str) -> axum::response::Response {
+    post_form_path(
+        app,
+        "/oauth/token",
+        token_form(&[
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ("client_id", &app.client_id.0.to_string()),
+            ("device_code", device_code),
+        ]),
+    )
+    .await
+}
+
 async fn userinfo(app: &TestApp, access_token: &str) -> axum::response::Response {
     app.router
         .clone()
@@ -731,6 +763,42 @@ async fn revoking_consent_blocks_userinfo() {
         response.status(),
         StatusCode::UNAUTHORIZED,
         "revoking consent must invalidate outstanding access tokens"
+    );
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_consent_denies_an_already_approved_device_code() {
+    let app = setup().await;
+
+    // 先建立有效 consent，否则没有可撤销对象
+    let code = approve_authorization(&app, "state-device-existing").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let authorization = start_device(&app).await;
+    let device_code = authorization["device_code"].as_str().expect("device code");
+    let user_code = authorization["user_code"].as_str().expect("user code");
+    admin::approve_device(&app.store, &SystemClock, user_code, app.user_id)
+        .await
+        .expect("approve device");
+
+    let revoked = revoke_authorization(&app).await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    // D2=A 在换 token 时写 consent；这里必须挡住重建
+    let response = poll_device(&app, device_code).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "access_denied");
+    assert!(
+        app.store
+            .consents()
+            .find(&app.user_id, &app.client_id)
+            .await
+            .expect("consent lookup")
+            .is_none(),
+        "the revoked authorization must not be recreated by the device poll"
     );
 
     drop(app.key);

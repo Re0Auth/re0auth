@@ -2,7 +2,7 @@
 
 use super::{client, device_code, fact, user};
 use re0auth_api::audit::AuditAction;
-use re0auth_api::ports::{DevicePoll, RepoError, Storage};
+use re0auth_api::ports::{DeviceCodeState, DevicePoll, RepoError, Storage};
 
 pub async fn device_code_contract<S: Storage>(store: &S) {
     let now = 1_000;
@@ -112,6 +112,83 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
             .await
             .expect("second poll"),
         DevicePoll::Consumed
+    );
+
+    // 只拒绝该用户在该 client 下的已批准设备码
+    let revocable = device_code(0x40, client.id, 3_000);
+    let other_user = super::user(1_000);
+    store.users().create(&other_user).await.expect("other user");
+    let other_user_code = device_code(0x50, client.id, 3_000);
+    let other_client = super::client(1_000);
+    store
+        .clients()
+        .insert(
+            &other_client,
+            &fact(AuditAction::ClientCreated, 1_000, "other-client"),
+        )
+        .await
+        .expect("other client");
+    let other_client_code = device_code(0x60, other_client.id, 3_000);
+    for pending in [&revocable, &other_user_code, &other_client_code] {
+        store
+            .device_codes()
+            .insert(pending)
+            .await
+            .expect("insert approved candidate");
+    }
+    store
+        .device_codes()
+        .approve(&revocable.user_code_hash, user.id, 1_010)
+        .await
+        .expect("approve revocable");
+    store
+        .device_codes()
+        .approve(&other_user_code.user_code_hash, other_user.id, 1_010)
+        .await
+        .expect("approve other user");
+    store
+        .device_codes()
+        .approve(&other_client_code.user_code_hash, user.id, 1_010)
+        .await
+        .expect("approve other client");
+
+    assert_eq!(
+        store
+            .device_codes()
+            .revoke_approved_for_client(&user.id, &client.id)
+            .await
+            .expect("revoke approved device codes"),
+        1
+    );
+    assert_eq!(
+        store
+            .device_codes()
+            .poll(&revocable.device_code_hash, 1_020)
+            .await
+            .expect("revoked poll"),
+        DevicePoll::Denied
+    );
+    assert_eq!(
+        store
+            .device_codes()
+            .find_by_device_hash(&other_user_code.device_code_hash)
+            .await
+            .expect("find other user code")
+            .expect("other user code exists")
+            .state,
+        DeviceCodeState::Approved {
+            approver: other_user.id
+        }
+    );
+    assert_eq!(
+        store
+            .device_codes()
+            .find_by_device_hash(&other_client_code.device_code_hash)
+            .await
+            .expect("find other client code")
+            .expect("other client code exists")
+            .state,
+        DeviceCodeState::Approved { approver: user.id }
     );
 
     store.users().delete(&user.id).await.expect("delete user");

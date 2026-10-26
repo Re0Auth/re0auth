@@ -549,6 +549,29 @@ impl DeviceCodeRepo for MemoryStore {
         Ok(())
     }
 
+    async fn revoke_approved_for_client(
+        &self,
+        user: &UserId,
+        client: &ClientId,
+    ) -> RepoResult<u64> {
+        let mut inner = self.lock();
+        let mut revoked = 0;
+        for code in inner.device_codes.values_mut() {
+            if code.client_id == *client
+                && matches!(
+                    &code.state,
+                    DeviceCodeState::Approved { approver } if *approver == *user
+                )
+            {
+                code.state = DeviceCodeState::Denied {
+                    approver: Some(*user),
+                };
+                revoked += 1;
+            }
+        }
+        Ok(revoked)
+    }
+
     async fn poll(&self, device_code_hash: &[u8], now: Unix) -> RepoResult<DevicePoll> {
         let mut inner = self.lock();
         let Some(code) = inner.device_codes.get_mut(device_code_hash) else {
