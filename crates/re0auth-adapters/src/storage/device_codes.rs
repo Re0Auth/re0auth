@@ -10,7 +10,7 @@ use re0auth_api::ports::{
     DeviceCode, DeviceCodeRepo, DeviceCodeState, DeviceCodeStatus, DevicePoll, RepoError,
     RepoResult,
 };
-use re0auth_api::{Unix, UserId};
+use re0auth_api::{ClientId, Unix, UserId};
 use sqlx::Row;
 
 use super::{SqliteStore, db_error, device_status_to_str, row_to_device_code, scopes_json};
@@ -162,6 +162,23 @@ impl DeviceCodeRepo for SqliteStore {
             return Err(RepoError::Expired);
         }
         Err(RepoError::Conflict("device code is not pending"))
+    }
+
+    async fn revoke_approved_for_client(
+        &self,
+        user: &UserId,
+        client: &ClientId,
+    ) -> RepoResult<u64> {
+        let result = sqlx::query(
+            "UPDATE device_codes SET status = 'denied' \
+             WHERE user_id = ? AND client_id = ? AND status = 'approved'",
+        )
+        .bind(user.0.to_string())
+        .bind(client.0.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected())
     }
 
     async fn poll(&self, device_code_hash: &[u8], now: Unix) -> RepoResult<DevicePoll> {

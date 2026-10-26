@@ -561,6 +561,25 @@ impl AuthService {
         correlation_id: Option<&str>,
     ) -> AuthResult<()> {
         let now = self.clock.now();
+        // 先收令牌再撤销 consent；清理失败时授权仍有效，可重试
+        self.storage
+            .device_codes()
+            .revoke_approved_for_client(&user_id, &client_id)
+            .await
+            .map_err(AuthError::Repo)?;
+        let fact = SecurityFact::new(
+            AuditAction::RefreshTokenRevoked,
+            now,
+            format!("user:{}:client:{}", user_id.0, client_id.0),
+        )
+        .actor(user_id)
+        .client(client_id)
+        .with_request_id(correlation_id);
+        self.storage
+            .refresh_tokens()
+            .revoke_all_for_client(&user_id, &client_id, &fact, now)
+            .await
+            .map_err(AuthError::Repo)?;
         match self
             .storage
             .consents()

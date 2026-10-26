@@ -8,16 +8,19 @@ pub mod binding;
 pub mod connector;
 pub mod device_attempt;
 pub mod device_code;
+pub mod refresh_revoke;
 
 pub use approval_ticket::approval_ticket_contract;
 pub use binding::binding_contract;
 pub use connector::connector_contract;
 pub use device_attempt::device_attempt_contract;
 pub use device_code::device_code_contract;
+pub use refresh_revoke::revoke_all_for_client_contract;
 
 use re0auth_api::audit::{
     AuditAction, AuditOutcome, AuditRecord, AuditTier, SecurityFact, Severity,
 };
+use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
     AuditFilter, AuthCode, Binding, BindingQuery, BindingStatus, Client, ClientStatus, Consent,
     ConsumeAuthCode, DeviceCode, DeviceCodeState, Identity, LoginTransaction, PendingAuthorization,
@@ -926,19 +929,21 @@ pub async fn consent_contract<S: Storage>(store: &S) {
         created_at: 1_000,
         updated_at: 1_000,
         revoked_at: None,
+        version: ConsentVersion(0),
     };
-    store
+    let granted = store
         .consents()
         .grant(&first, &fact(AuditAction::ConsentGranted, 1_000, "consent"))
         .await
         .expect("grant");
+    assert_eq!(granted.version, ConsentVersion(1));
     assert_eq!(
         store
             .consents()
             .find(&owner.id, &client.id)
             .await
             .expect("find"),
-        Some(first.clone())
+        Some(granted.clone())
     );
     assert_eq!(
         store
@@ -946,15 +951,15 @@ pub async fn consent_contract<S: Storage>(store: &S) {
             .list_by_user(&owner.id)
             .await
             .expect("list"),
-        vec![first.clone()]
+        vec![granted.clone()]
     );
 
     let expanded = Consent {
         scopes: vec!["openid".to_string(), "phigros.stats.read".to_string()],
         updated_at: 1_100,
-        ..first.clone()
+        ..granted.clone()
     };
-    store
+    let regranted = store
         .consents()
         .grant(
             &expanded,
@@ -962,13 +967,14 @@ pub async fn consent_contract<S: Storage>(store: &S) {
         )
         .await
         .expect("regrant");
+    assert_eq!(regranted.version, ConsentVersion(2));
     assert_eq!(
         store
             .consents()
             .find(&owner.id, &client.id)
             .await
             .expect("find"),
-        Some(expanded)
+        Some(regranted)
     );
 
     store
@@ -1434,6 +1440,7 @@ pub async fn storage_contract_suite<S: Storage>(store: &S) {
     session_contract(store).await;
     auth_code_contract(store).await;
     refresh_token_contract(store).await;
+    revoke_all_for_client_contract(store).await;
     login_transaction_contract(store).await;
     pending_binding_contract(store).await;
     approval_ticket_contract(store).await;

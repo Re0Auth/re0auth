@@ -431,6 +431,7 @@ async fn every_audited_method_writes_its_action() {
                 created_at: 1_000,
                 updated_at: 1_000,
                 revoked_at: None,
+                version: re0auth_api::oauth::ConsentVersion(0),
             },
             &fact(AuditAction::ConsentGranted),
         )

@@ -6,8 +6,8 @@ use re0auth_contract::{
     MockSealer, admin_query_contract, approval_ticket_contract, audit_contract, auth_code_contract,
     binding_contract, client_contract, consent_contract, device_attempt_contract,
     device_code_contract, login_transaction_contract, pending_authorization_contract,
-    pending_binding_contract, refresh_token_contract, session_contract, storage_contract_suite,
-    user_contract,
+    pending_binding_contract, refresh_token_contract, revoke_all_for_client_contract,
+    session_contract, storage_contract_suite, user_contract,
 };
 
 async fn store() -> SqliteStore {
@@ -104,6 +104,11 @@ async fn sqlite_passes_auth_code_contract() {
 #[tokio::test]
 async fn sqlite_passes_refresh_token_contract() {
     refresh_token_contract(&store().await).await;
+}
+
+#[tokio::test]
+async fn sqlite_passes_revoke_all_for_client_contract() {
+    revoke_all_for_client_contract(&store().await).await;
 }
 
 #[tokio::test]

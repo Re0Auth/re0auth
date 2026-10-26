@@ -7,8 +7,10 @@ use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::crypto::RsaTokenSigner;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
+use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{Client, ClientStatus, Session, Storage, User, UserRole};
 use re0auth_api::{ClientId, Clock, SessionId, UserId};
+use re0auth_app::admin;
 use re0auth_app::auth::AuthService;
 use re0auth_app::oauth::{OAuthService, hash_secret};
 use re0auth_domain::pkce;
@@ -33,7 +35,9 @@ impl Drop for KeyGuard {
 
 struct TestApp {
     router: axum::Router,
+    store: SqliteStore,
     client_id: ClientId,
+    user_id: UserId,
     key: KeyGuard,
 }
 
@@ -127,7 +131,9 @@ async fn setup() -> TestApp {
                 4444,
             ))),
         ),
+        store,
         client_id,
+        user_id,
         key,
     }
 }
@@ -148,12 +154,16 @@ fn token_form(pairs: &[(&str, &str)]) -> String {
 }
 
 async fn post_form(app: &TestApp, form: String) -> axum::response::Response {
+    post_form_path(app, "/oauth/token", form).await
+}
+
+async fn post_form_path(app: &TestApp, path: &str, form: String) -> axum::response::Response {
     app.router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oauth/token")
+                .uri(path)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(form))
                 .expect("request"),
@@ -283,73 +293,6 @@ async fn authorization_code_flow_reaches_userinfo_and_refresh() {
             .map(|(_, value)| value.to_string()),
         Some("state-123".to_string())
     );
-
-    let list = app
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/me/authorizations")
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("authorizations");
-    assert_eq!(list.status(), StatusCode::OK);
-    let list_body = body_json(list).await;
-    assert_eq!(list_body[0]["client_name"], "flow-client");
-    assert_eq!(list_body[0]["scopes"][0], "openid");
-    let client_id = list_body[0]["client_id"]
-        .as_str()
-        .expect("client id")
-        .to_string();
-
-    let missing_csrf = app
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::DELETE)
-                .uri(format!("/api/me/authorizations/{client_id}"))
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("delete without csrf");
-    assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
-
-    let revoked = app
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(Method::DELETE)
-                .uri(format!("/api/me/authorizations/{client_id}"))
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
-                .header("x-csrf-token", "csrf")
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("delete authorization");
-    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
-
-    let empty = app
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/me/authorizations")
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
-                .body(Body::empty())
-                .expect("request"),
-        )
-        .await
-        .expect("authorizations after revoke");
-    assert_eq!(empty.status(), StatusCode::OK);
-    assert!(body_json(empty).await.as_array().expect("list").is_empty());
 
     let response = post_form(
         &app,
@@ -488,6 +431,146 @@ fn consent_request_id(response: &axum::response::Response) -> String {
         .expect("request id")
 }
 
+async fn approve_authorization(app: &TestApp, state: &str) -> String {
+    let response = authorize_request(app, state).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let request_id = consent_request_id(&response);
+    let consent = post_json(
+        app,
+        "/api/oauth/consent",
+        serde_json::json!({
+            "request_id": request_id,
+            "decision": "approve",
+        }),
+        &[
+            ("cookie", &format!("re0auth_session={SESSION_RAW}")),
+            ("x-csrf-token", "csrf"),
+        ],
+    )
+    .await;
+    assert_eq!(consent.status(), StatusCode::OK);
+    let body = body_json(consent).await;
+    let redirect =
+        url::Url::parse(body["redirect_to"].as_str().expect("redirect_to")).expect("redirect URL");
+    redirect
+        .query_pairs()
+        .find(|(key, _)| key == "code")
+        .map(|(_, value)| value.to_string())
+        .expect("code")
+}
+
+async fn revoke_authorization(app: &TestApp) -> axum::response::Response {
+    app.router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/me/authorizations/{}", app.client_id.0))
+                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header("x-csrf-token", "csrf")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("revoke authorization")
+}
+
+async fn list_authorizations(app: &TestApp) -> Value {
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/me/authorizations")
+                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("authorizations");
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+async fn exchange_code(app: &TestApp, code: &str) -> axum::response::Response {
+    post_form(
+        app,
+        token_form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", &app.client_id.0.to_string()),
+            ("code", code),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_verifier", VERIFIER),
+        ]),
+    )
+    .await
+}
+
+async fn refresh_tokens(app: &TestApp, refresh_token: &str) -> axum::response::Response {
+    post_form(
+        app,
+        token_form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", &app.client_id.0.to_string()),
+            ("refresh_token", refresh_token),
+        ]),
+    )
+    .await
+}
+
+async fn revoke_token(app: &TestApp, token: &str) -> axum::response::Response {
+    post_form_path(
+        app,
+        "/oauth/revoke",
+        token_form(&[
+            ("token", token),
+            ("client_id", &app.client_id.0.to_string()),
+        ]),
+    )
+    .await
+}
+
+async fn start_device(app: &TestApp) -> Value {
+    let response = post_form_path(
+        app,
+        "/oauth/device_authorization",
+        token_form(&[
+            ("client_id", &app.client_id.0.to_string()),
+            ("scope", "openid profile"),
+        ]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+async fn poll_device(app: &TestApp, device_code: &str) -> axum::response::Response {
+    post_form_path(
+        app,
+        "/oauth/token",
+        token_form(&[
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ("client_id", &app.client_id.0.to_string()),
+            ("device_code", device_code),
+        ]),
+    )
+    .await
+}
+
+async fn userinfo(app: &TestApp, access_token: &str) -> axum::response::Response {
+    app.router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/userinfo")
+                .header(header::AUTHORIZATION, format!("Bearer {access_token}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("userinfo")
+}
+
 #[tokio::test]
 async fn consent_denial_and_existing_consent_shortcut() {
     let app = setup().await;
@@ -570,6 +653,342 @@ async fn consent_denial_and_existing_consent_shortcut() {
     let redirect = url::Url::parse(location).expect("client redirect");
     assert_eq!(redirect.host_str(), Some("client.example"));
     assert!(redirect.query_pairs().any(|(key, _)| key == "code"));
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_consent_removes_authorization_from_the_list() {
+    let app = setup().await;
+    let _code = approve_authorization(&app, "state-list").await;
+
+    let before = list_authorizations(&app).await;
+    assert_eq!(before[0]["client_name"], "flow-client");
+
+    let revoked = revoke_authorization(&app).await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    let after = list_authorizations(&app).await;
+    assert!(after.as_array().expect("list").is_empty());
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_consent_requires_csrf() {
+    let app = setup().await;
+    let _code = approve_authorization(&app, "state-csrf").await;
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/api/me/authorizations/{}", app.client_id.0))
+                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("revoke without csrf");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_consent_invalidates_outstanding_code() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-code").await;
+
+    let revoked = revoke_authorization(&app).await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a code issued before consent revocation must not mint tokens"
+    );
+    let error = body_json(response).await;
+    assert_eq!(error["error"], "invalid_grant");
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_consent_stops_refresh() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-refresh").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let tokens = body_json(response).await;
+    let refresh_token = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    let revoked = revoke_authorization(&app).await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    let stored = app
+        .store
+        .refresh_tokens()
+        .find(&hash_secret(&refresh_token))
+        .await
+        .expect("find refresh token")
+        .expect("refresh token exists");
+    assert!(
+        stored.revoked_at.is_some(),
+        "consent revocation must revoke the refresh family row"
+    );
+
+    let response = refresh_tokens(&app, &refresh_token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "revoking consent must stop the refresh family"
+    );
+    let error = body_json(response).await;
+    assert_eq!(error["error"], "invalid_grant");
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn retrying_revocation_cleans_tokens_after_consent_is_already_revoked() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-retry-revoke").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let refresh_token = body_json(response).await["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    // Simulate the first attempt committing the consent revoke and then
+    // crashing before the refresh-family cleanup.
+    let now = SystemClock.now();
+    app.store
+        .consents()
+        .revoke(
+            &app.user_id,
+            &app.client_id,
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::ConsentRevoked,
+                now,
+                "consent:test",
+            ),
+            now,
+        )
+        .await
+        .expect("first consent revoke");
+
+    let retry = revoke_authorization(&app).await;
+    assert_eq!(retry.status(), StatusCode::NOT_FOUND);
+    let stored = app
+        .store
+        .refresh_tokens()
+        .find(&hash_secret(&refresh_token))
+        .await
+        .expect("find refresh token")
+        .expect("refresh token exists");
+    assert!(
+        stored.revoked_at.is_some(),
+        "a retry must still clean the family even when consent is already revoked"
+    );
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_consent_blocks_userinfo() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-userinfo").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let tokens = body_json(response).await;
+    let access_token = tokens["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+
+    let revoked = revoke_authorization(&app).await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    let response = userinfo(&app, &access_token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "revoking consent must invalidate outstanding access tokens"
+    );
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_consent_denies_an_already_approved_device_code() {
+    let app = setup().await;
+
+    // 先建立有效 consent，否则没有可撤销对象
+    let code = approve_authorization(&app, "state-device-existing").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let authorization = start_device(&app).await;
+    let device_code = authorization["device_code"].as_str().expect("device code");
+    let user_code = authorization["user_code"].as_str().expect("user code");
+    admin::approve_device(&app.store, &SystemClock, user_code, app.user_id)
+        .await
+        .expect("approve device");
+
+    let revoked = revoke_authorization(&app).await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    // D2=A 在换 token 时写 consent；这里必须挡住重建
+    let response = poll_device(&app, device_code).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "access_denied");
+    assert!(
+        app.store
+            .consents()
+            .find(&app.user_id, &app.client_id)
+            .await
+            .expect("consent lookup")
+            .is_none(),
+        "the revoked authorization must not be recreated by the device poll"
+    );
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn device_login_reuses_an_existing_consent_without_bumping_version() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-device-reuse").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let first_access = body_json(response).await["access_token"]
+        .as_str()
+        .expect("first access token")
+        .to_string();
+
+    let before = app
+        .store
+        .consents()
+        .find(&app.user_id, &app.client_id)
+        .await
+        .expect("consent lookup")
+        .expect("consent exists");
+    assert_eq!(before.version, ConsentVersion(1));
+
+    let authorization = start_device(&app).await;
+    let device_code = authorization["device_code"].as_str().expect("device code");
+    let user_code = authorization["user_code"].as_str().expect("user code");
+    admin::approve_device(&app.store, &SystemClock, user_code, app.user_id)
+        .await
+        .expect("approve device");
+    let response = poll_device(&app, device_code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let after = app
+        .store
+        .consents()
+        .find(&app.user_id, &app.client_id)
+        .await
+        .expect("consent lookup")
+        .expect("consent still exists");
+    assert_eq!(
+        after.version, before.version,
+        "a device login that already has consent must not bump the version"
+    );
+    let response = userinfo(&app, &first_access).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "an unrelated device login must not invalidate existing access tokens"
+    );
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn regranting_consent_keeps_old_access_tokens_invalid() {
+    let app = setup().await;
+    let old_code = approve_authorization(&app, "state-old").await;
+    let response = exchange_code(&app, &old_code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let old_access = body_json(response).await["access_token"]
+        .as_str()
+        .expect("old access token")
+        .to_string();
+
+    let revoked = revoke_authorization(&app).await;
+    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+    // Re-granting creates a new consent version. The old token must stay dead;
+    // otherwise the version check would only be an "is there any consent"
+    // check and re-authorizing would resurrect tokens the user already killed.
+    let new_code = approve_authorization(&app, "state-new").await;
+    let response = userinfo(&app, &old_access).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "re-granting must not resurrect an access token from the old version"
+    );
+
+    let response = exchange_code(&app, &new_code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let new_access = body_json(response).await["access_token"]
+        .as_str()
+        .expect("new access token")
+        .to_string();
+    let response = userinfo(&app, &new_access).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_a_refresh_token_revokes_the_family() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-revoke-refresh").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let tokens = body_json(response).await;
+    let first_refresh = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    let response = refresh_tokens(&app, &first_refresh).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let second_refresh = body_json(response).await["refresh_token"]
+        .as_str()
+        .expect("rotated refresh token")
+        .to_string();
+
+    let revoked = revoke_token(&app, &first_refresh).await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+
+    let response = refresh_tokens(&app, &second_refresh).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "revoking one family member must revoke the whole family"
+    );
+    let error = body_json(response).await;
+    assert_eq!(error["error"], "invalid_grant");
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn revoking_an_unknown_token_returns_200() {
+    let app = setup().await;
+    let response = revoke_token(&app, "not-a-real-token").await;
+    assert_eq!(response.status(), StatusCode::OK);
 
     drop(app.key);
 }

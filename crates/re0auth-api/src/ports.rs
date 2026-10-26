@@ -8,6 +8,7 @@ use async_trait::async_trait;
 
 use crate::audit::{AccessTelemetry, AuditAction, AuditRecord, AuditTier, SecurityFact};
 use crate::connector::ResourceSpec;
+use crate::oauth::ConsentVersion;
 use crate::secret::{ClientSecretHash, SealedSecret};
 use crate::{
     AuditId, AuthCodeId, BindingId, ClientId, ConnectorId, ConsentId, DeviceCodeId, FamilyId,
@@ -616,6 +617,7 @@ pub struct Consent {
     pub created_at: Unix,
     pub updated_at: Unix,
     pub revoked_at: Option<Unix>,
+    pub version: ConsentVersion,
 }
 
 /// INV-NOLOG-01: `nonce` and `state` are secrets.
@@ -812,6 +814,18 @@ pub trait RefreshTokenRepo: Send + Sync {
         fact: &SecurityFact,
         now: Unix,
     ) -> RepoResult<u64>;
+
+    /// Revokes every live refresh family for one `(user, client)` pair.
+    ///
+    /// Used when the user withdraws the whole authorization, not just one
+    /// token. Records `fact` only when at least one row moved.
+    async fn revoke_all_for_client(
+        &self,
+        user: &UserId,
+        client: &ClientId,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<u64>;
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64>;
 }
 
@@ -915,8 +929,9 @@ pub trait ConsentRepo: Send + Sync {
     async fn find(&self, user: &UserId, client: &ClientId) -> RepoResult<Option<Consent>>;
     async fn list_by_user(&self, user: &UserId) -> RepoResult<Vec<Consent>>;
     /// Inserts or replaces the consent record for `(user, client)` and records
-    /// the grant in the same transaction (INV-AUDIT-01).
-    async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<()>;
+    /// the grant in the same transaction (INV-AUDIT-01). The returned row is the
+    /// stored one; its `version` is what newly issued access tokens must carry.
+    async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<Consent>;
     async fn revoke(
         &self,
         user: &UserId,
@@ -951,6 +966,13 @@ pub trait DeviceCodeRepo: Send + Sync {
     async fn find_by_user_code_hash(&self, hash: &[u8]) -> RepoResult<Option<DeviceCode>>;
     async fn approve(&self, user_code_hash: &[u8], user_id: UserId, now: Unix) -> RepoResult<()>;
     async fn deny(&self, user_code_hash: &[u8], now: Unix) -> RepoResult<()>;
+    /// Denies every approved device code for one `(user, client)` pair.
+    ///
+    /// Called when the user withdraws the authorization. Consumed codes have
+    /// already minted tokens and are handled by the consent gate, so only the
+    /// still-exchangeable approvals are touched.
+    async fn revoke_approved_for_client(&self, user: &UserId, client: &ClientId)
+    -> RepoResult<u64>;
     /// Atomically applies the polling rate limit and consumes approved codes
     /// (INV-DEV-01).
     async fn poll(&self, device_code_hash: &[u8], now: Unix) -> RepoResult<DevicePoll>;

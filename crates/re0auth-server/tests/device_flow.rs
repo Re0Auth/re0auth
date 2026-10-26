@@ -370,6 +370,19 @@ async fn device_flow_pending_slow_down_approval_and_reuse() {
     assert!(!access_token.is_empty());
     assert!(tokens["refresh_token"].as_str().is_some());
 
+    let consent = app
+        .store
+        .consents()
+        .find(&app.user_id, &app.client_id)
+        .await
+        .expect("consent lookup")
+        .expect("a device token must create a consent record");
+    assert_eq!(
+        consent.scopes,
+        vec!["openid".to_string(), "profile".to_string()]
+    );
+    assert_eq!(consent.version, re0auth_api::oauth::ConsentVersion(1));
+
     let userinfo = app
         .router
         .clone()

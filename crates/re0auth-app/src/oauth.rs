@@ -10,7 +10,9 @@ use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
 
-use re0auth_api::oauth::{ACCESS_TOKEN_USE, AccessTokenClaims, IdTokenClaims, TokenSigner};
+use re0auth_api::oauth::{
+    ACCESS_TOKEN_USE, AccessTokenClaims, ConsentVersion, IdTokenClaims, TokenSigner,
+};
 use re0auth_api::ports::{
     AuthCode, BindingHints, Client, ClientStatus, Consent, ConsumeAuthCode, DeviceCode,
     DeviceCodeState, DevicePoll, MissingBinding, NoBindingHints, PendingAuthorization,
@@ -74,6 +76,19 @@ pub struct TokenResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id_token: Option<String>,
     pub scope: String,
+}
+
+/// What a revocation request actually did.
+///
+/// RFC 7009 requires the HTTP response to stay 200 for unknown and non-owned
+/// tokens, but the application layer still needs the distinction for audit and
+/// metrics. Collapsing all three into `Ok(())` is what made the old endpoint
+/// look successful while doing nothing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevocationOutcome {
+    Revoked,
+    Unknown,
+    NotOwned,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -515,7 +530,7 @@ impl OAuthService {
         requested: &[String],
         now: Unix,
         correlation_id: Option<&str>,
-    ) -> Result<(), OAuthError> {
+    ) -> Result<Consent, OAuthError> {
         // INV-CONSENT-01: the consent record stores only the union of scopes.
         let existing = self
             .storage
@@ -523,6 +538,12 @@ impl OAuthService {
             .find(&user_id, &client_id)
             .await
             .map_err(map_repo)?;
+        // 覆盖已授权 scopes 时不重复写入，避免误 bump version
+        if let Some(consent) = &existing
+            && scope::is_subset(requested, &consent.scopes)
+        {
+            return Ok(consent.clone());
+        }
         let (id, created_at, mut scopes) = match existing {
             Some(consent) => (consent.id, consent.created_at, consent.scopes),
             None => (ConsentId::new(), now, Vec::new()),
@@ -534,7 +555,8 @@ impl OAuthService {
         }
         scopes.sort();
         scopes.dedup();
-        self.storage
+        let stored = self
+            .storage
             .consents()
             .grant(
                 &Consent {
@@ -545,6 +567,7 @@ impl OAuthService {
                     created_at,
                     updated_at: now,
                     revoked_at: None,
+                    version: ConsentVersion(0),
                 },
                 &SecurityFact::new(
                     AuditAction::ConsentGranted,
@@ -556,7 +579,8 @@ impl OAuthService {
                 .with_request_id(correlation_id),
             )
             .await
-            .map_err(map_repo)
+            .map_err(map_repo)?;
+        Ok(stored)
     }
 
     fn redirect_with_code(
@@ -665,6 +689,7 @@ impl OAuthService {
         client_id: ClientId,
         client_secret: Option<&str>,
         device_code: &str,
+        correlation_id: Option<&str>,
     ) -> Result<TokenResponse, OAuthError> {
         self.authenticate_client(client_id, client_secret).await?;
         let now = self.clock.now();
@@ -698,6 +723,12 @@ impl OAuthService {
                     return Err(OAuthError::InvalidGrant("client mismatch"));
                 }
                 self.require_approved_client(client_id).await?;
+                // D2=A: the token exchange is the point where the device
+                // authorization becomes a consent record. A token can never
+                // exist without one.
+                let consent = self
+                    .grant_consent(user_id, client_id, &scopes, now, correlation_id)
+                    .await?;
                 let (refresh_raw, refresh_hash) = new_secret(self.random.as_ref());
                 let refresh = RefreshToken {
                     id: RefreshTokenId::new(),
@@ -717,7 +748,15 @@ impl OAuthService {
                     .insert(&refresh)
                     .await
                     .map_err(map_repo)?;
-                self.issue(user_id, client_id, &scopes, now, Some(refresh_raw), None)
+                self.issue(
+                    user_id,
+                    client_id,
+                    &scopes,
+                    now,
+                    Some(refresh_raw),
+                    None,
+                    consent.version,
+                )
             }
             DevicePoll::Denied => Err(OAuthError::AccessDenied),
             DevicePoll::Expired => Err(OAuthError::ExpiredToken),
@@ -756,6 +795,9 @@ impl OAuthService {
             .map_err(map_repo)?;
 
         self.require_approved_client(client_id).await?;
+        let consent = self
+            .require_grant_consent(grant.user_id, client_id, &grant.scopes)
+            .await?;
 
         let (refresh_raw, refresh_hash) = new_secret(self.random.as_ref());
         let refresh = RefreshToken {
@@ -784,6 +826,7 @@ impl OAuthService {
             now,
             Some(refresh_raw),
             grant.nonce,
+            consent.version,
         )
     }
 
@@ -812,6 +855,9 @@ impl OAuthService {
             return Err(OAuthError::InvalidGrant("expired or revoked"));
         }
         self.require_approved_client(client_id).await?;
+        let consent = self
+            .require_grant_consent(old.user_id, client_id, &old.scopes)
+            .await?;
 
         let (new_raw, new_hash) = new_secret(self.random.as_ref());
         let new = RefreshToken {
@@ -858,6 +904,7 @@ impl OAuthService {
                 now,
                 Some(new_raw),
                 None,
+                consent.version,
             ),
             RotateOutcome::ReuseDetected { .. } => {
                 Err(OAuthError::InvalidGrant("refresh token reuse"))
@@ -901,6 +948,12 @@ impl OAuthService {
         {
             return Err(OAuthError::InvalidToken);
         }
+        let client_id = Uuid::parse_str(&claims.client_id)
+            .map(ClientId)
+            .map_err(|_| OAuthError::InvalidToken)?;
+        let scopes = scope::parse_scope(&claims.scope);
+        self.require_token_consent(user_id, client_id, &scopes, claims.consent_version)
+            .await?;
         Ok((user_id, claims.scope, claims.client_id))
     }
 
@@ -928,6 +981,12 @@ impl OAuthService {
             .await
             .map_err(map_repo)?
             .ok_or(OAuthError::InvalidToken)?;
+        let client_id = Uuid::parse_str(&claims.client_id)
+            .map(ClientId)
+            .map_err(|_| OAuthError::InvalidToken)?;
+        let scopes = scope::parse_scope(&claims.scope);
+        self.require_token_consent(user_id, client_id, &scopes, claims.consent_version)
+            .await?;
         Ok(UserInfo {
             sub: claims.sub,
             name: user.display_name,
@@ -950,55 +1009,88 @@ impl OAuthService {
         Ok(())
     }
 
-    /// Revokes the access token in `token`, per RFC 7009.
+    /// Revokes the token in `token`, per RFC 7009.
     ///
-    /// The endpoint must answer 200 even for unknown or malformed tokens: a
-    /// different status would let a caller probe whether a token exists.
-    /// A token that fails signature verification is therefore silently ignored.
-    pub async fn revoke_access_token(
+    /// The token may be an access JWT or an opaque refresh token. The endpoint
+    /// must answer 200 even for unknown or malformed tokens: a different status
+    /// would let a caller probe whether a token exists. The returned outcome
+    /// records which branch actually ran without changing the response.
+    pub async fn revoke_token(
         &self,
         token: &str,
         client_id: ClientId,
         client_secret: Option<&str>,
         correlation_id: Option<&str>,
-    ) -> Result<(), OAuthError> {
+    ) -> Result<RevocationOutcome, OAuthError> {
         self.authenticate_client(client_id, client_secret).await?;
-        let Ok(claims) = self.signer.verify_access(token) else {
-            return Ok(());
-        };
-        if claims.token_use != ACCESS_TOKEN_USE {
-            return Ok(());
-        }
-        // RFC 7009 §2.1: a client may only revoke tokens issued to it. The
-        // response stays 200 either way so this cannot become an oracle.
-        if claims.client_id != client_id.0.to_string() {
-            return Ok(());
-        }
         let now = self.clock.now();
-        let revoked_by = Uuid::parse_str(&claims.sub).ok().map(UserId);
-        let mut fact = SecurityFact::new(
-            AuditAction::AccessTokenRevoked,
-            now,
-            format!("jti:{}", claims.jti),
-        )
-        .client(client_id)
-        .with_request_id(correlation_id);
-        if let Some(user) = revoked_by {
-            fact = fact.actor(user);
-        }
-        self.storage
-            .access_tokens()
-            .revoke(
-                &claims.jti,
-                Some(client_id),
-                revoked_by,
-                claims.exp,
-                &fact,
+
+        if let Ok(claims) = self.signer.verify_access(token) {
+            if claims.token_use != ACCESS_TOKEN_USE {
+                return Ok(RevocationOutcome::Unknown);
+            }
+            // RFC 7009 §2.1: a client may only revoke tokens issued to it. The
+            // response stays 200 either way so this cannot become an oracle.
+            if claims.client_id != client_id.0.to_string() {
+                return Ok(RevocationOutcome::NotOwned);
+            }
+            let revoked_by = Uuid::parse_str(&claims.sub).ok().map(UserId);
+            let mut fact = SecurityFact::new(
+                AuditAction::AccessTokenRevoked,
                 now,
+                format!("jti:{}", claims.jti),
             )
+            .client(client_id)
+            .with_request_id(correlation_id);
+            if let Some(user) = revoked_by {
+                fact = fact.actor(user);
+            }
+            self.storage
+                .access_tokens()
+                .revoke(
+                    &claims.jti,
+                    Some(client_id),
+                    revoked_by,
+                    claims.exp,
+                    &fact,
+                    now,
+                )
+                .await
+                .map_err(map_repo)?;
+            return Ok(RevocationOutcome::Revoked);
+        }
+
+        // Not an access JWT: it may be the opaque refresh token. Look it up by
+        // hash and revoke the whole family, because the caller asked to end the
+        // grant that token represents.
+        let hash = hash_secret(token);
+        let Some(stored) = self
+            .storage
+            .refresh_tokens()
+            .find(&hash)
+            .await
+            .map_err(map_repo)?
+        else {
+            return Ok(RevocationOutcome::Unknown);
+        };
+        if stored.client_id != client_id {
+            return Ok(RevocationOutcome::NotOwned);
+        }
+        let fact = SecurityFact::new(
+            AuditAction::RefreshTokenRevoked,
+            now,
+            format!("family:{}", stored.family_id.0),
+        )
+        .actor(stored.user_id)
+        .client(stored.client_id)
+        .with_request_id(correlation_id);
+        // TODO(accepted-risk): RFC 7009 的 access 连带失效暂不做，接受 15 分钟 TTL
+        self.storage
+            .refresh_tokens()
+            .revoke_family(&stored.family_id, &fact, now)
             .await
             .map_err(map_repo)?;
-        Ok(())
+        Ok(RevocationOutcome::Revoked)
     }
 
     async fn require_approved_client(&self, client_id: ClientId) -> Result<(), OAuthError> {
@@ -1015,6 +1107,56 @@ impl OAuthService {
         Ok(())
     }
 
+    /// Consent check for token issuance (code exchange, refresh, device flow).
+    ///
+    /// A missing or revoked consent is `invalid_grant`: the grant itself is no
+    /// longer valid. This is deliberately separate from the token check below,
+    /// whose failure is `invalid_token` at the bearer boundary.
+    async fn require_grant_consent(
+        &self,
+        user_id: UserId,
+        client_id: ClientId,
+        scopes: &[String],
+    ) -> Result<Consent, OAuthError> {
+        let consent = self
+            .storage
+            .consents()
+            .find(&user_id, &client_id)
+            .await
+            .map_err(map_repo)?
+            .ok_or(OAuthError::InvalidGrant("consent revoked"))?;
+        if !scope::is_subset(scopes, &consent.scopes) {
+            return Err(OAuthError::InvalidGrant("consent scope"));
+        }
+        Ok(consent)
+    }
+
+    /// Consent check for an already-signed access token.
+    ///
+    /// The version comparison is what makes revocation immediate: the consent
+    /// row increments its version on revoke/re-grant, so every token issued
+    /// under an older version fails even though its JWT still verifies.
+    async fn require_token_consent(
+        &self,
+        user_id: UserId,
+        client_id: ClientId,
+        scopes: &[String],
+        version: ConsentVersion,
+    ) -> Result<(), OAuthError> {
+        let consent = self
+            .storage
+            .consents()
+            .find(&user_id, &client_id)
+            .await
+            .map_err(map_repo)?
+            .ok_or(OAuthError::InvalidToken)?;
+        if consent.version != version || !scope::is_subset(scopes, &consent.scopes) {
+            return Err(OAuthError::InvalidToken);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn issue(
         &self,
         user_id: UserId,
@@ -1023,6 +1165,7 @@ impl OAuthService {
         now: i64,
         refresh_token: Option<String>,
         nonce: Option<String>,
+        consent_version: ConsentVersion,
     ) -> Result<TokenResponse, OAuthError> {
         let scope_value = scopes.join(" ");
         let access_claims = AccessTokenClaims {
@@ -1035,6 +1178,7 @@ impl OAuthService {
             iat: now,
             jti: URL_SAFE_NO_PAD.encode(self.random.bytes(16)),
             token_use: ACCESS_TOKEN_USE.to_string(),
+            consent_version,
         };
         let access_token = self
             .signer

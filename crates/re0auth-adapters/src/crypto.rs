@@ -468,6 +468,7 @@ impl TokenSigner for RsaTokenSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use re0auth_api::oauth::ConsentVersion;
 
     struct TempDir(PathBuf);
 
@@ -505,6 +506,7 @@ mod tests {
             iat: 1_000,
             jti: "jti".to_string(),
             token_use: ACCESS_TOKEN_USE.to_string(),
+            consent_version: ConsentVersion(1),
         }
     }
 
@@ -528,6 +530,17 @@ mod tests {
             .expect("sign id");
         assert!(signer.verify_access(&id).is_err());
         assert!(signer.jwks().contains("\"kid\""));
+    }
+
+    #[test]
+    fn claims_without_consent_version_default_to_zero() {
+        let mut value = serde_json::to_value(access_claims()).expect("claims json");
+        value
+            .as_object_mut()
+            .expect("claims object")
+            .remove("consent_version");
+        let decoded: AccessTokenClaims = serde_json::from_value(value).expect("decode old claims");
+        assert_eq!(decoded.consent_version, ConsentVersion(0));
     }
 
     /// The served key set is parsed by clients, so every member they need has to

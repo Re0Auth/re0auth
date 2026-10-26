@@ -15,10 +15,12 @@ use re0auth_adapters::sealer::AesGcmSealer;
 use re0auth_adapters::storage::SqliteStore;
 use re0auth_api::audit::{AuditAction, SecurityFact};
 use re0auth_api::connector::{ConnectorEndpoint, ResourceSpec, UpstreamPayload};
-use re0auth_api::oauth::{AccessTokenClaims, TokenSigner};
-use re0auth_api::ports::{Binding, BindingStatus, Storage, User, UserRole};
+use re0auth_api::oauth::{AccessTokenClaims, ConsentVersion, TokenSigner};
+use re0auth_api::ports::{
+    Binding, BindingStatus, Client, ClientStatus, Consent, Storage, User, UserRole,
+};
 use re0auth_api::secret::SecretSealer;
-use re0auth_api::{BindingId, Clock, SecretString, UserId};
+use re0auth_api::{BindingId, ClientId, Clock, ConsentId, SecretString, UserId};
 use re0auth_app::auth::AuthService;
 use re0auth_app::circuit::{CircuitPolicy, CircuitTracker};
 use re0auth_app::gateway::GatewayService;
@@ -35,6 +37,8 @@ struct Fixture {
     router: axum::Router,
     signer: Arc<RsaTokenSigner>,
     user: UserId,
+    client_id: ClientId,
+    store: Arc<SqliteStore>,
     connector: Arc<MockConnector>,
 }
 
@@ -68,6 +72,44 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
         })
         .await
         .expect("insert user");
+
+    let client_id = ClientId::new();
+    let allowed_scopes = vec![SCOPE.to_string(), "openid".to_string()];
+    store
+        .clients()
+        .insert(
+            &Client {
+                id: client_id,
+                name: "test-client".to_string(),
+                redirect_uris: vec![],
+                allowed_scopes: allowed_scopes.clone(),
+                raw_access: false,
+                status: ClientStatus::Approved,
+                secret_hash: None,
+                created_at: now,
+                updated_at: now,
+            },
+            &SecurityFact::new(AuditAction::ClientCreated, now, "client:test"),
+        )
+        .await
+        .expect("insert client");
+    store
+        .consents()
+        .grant(
+            &Consent {
+                id: ConsentId::new(),
+                user_id: user,
+                client_id,
+                scopes: allowed_scopes,
+                created_at: now,
+                updated_at: now,
+                revoked_at: None,
+                version: ConsentVersion(0),
+            },
+            &SecurityFact::new(AuditAction::ConsentGranted, now, "consent:test"),
+        )
+        .await
+        .expect("insert consent");
 
     let connector = Arc::new(MockConnector::new());
     let connector_id = re0auth_app::gateway::connector_id_for_name("probe");
@@ -141,7 +183,7 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
         ISSUER,
     );
     let gateway = GatewayService::new(
-        store,
+        store.clone(),
         connector.clone() as Arc<dyn re0auth_api::connector::ConnectorRegistry>,
         connector.clone() as Arc<dyn re0auth_api::connector::ConnectorBroker>,
         sealer,
@@ -157,6 +199,8 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
         router: re0auth_http::router(state),
         signer,
         user,
+        client_id,
+        store,
         connector,
     }
 }
@@ -164,6 +208,10 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
 /// Mints a real access token through the real signer, so the route verifies a
 /// genuine JWT rather than a stub.
 fn access_token(fixture: &Fixture, scope: &str) -> String {
+    access_token_with_version(fixture, scope, ConsentVersion(1))
+}
+
+fn access_token_with_version(fixture: &Fixture, scope: &str, version: ConsentVersion) -> String {
     let now = chrono_like_now();
     fixture
         .signer
@@ -171,12 +219,13 @@ fn access_token(fixture: &Fixture, scope: &str) -> String {
             iss: ISSUER.to_string(),
             sub: fixture.user.0.to_string(),
             aud: format!("{ISSUER}/api/v1"),
-            client_id: "test-client".to_string(),
+            client_id: fixture.client_id.0.to_string(),
             scope: scope.to_string(),
             exp: now + 900,
             iat: now,
             jti: "test-jti".to_string(),
             token_use: "access".to_string(),
+            consent_version: version,
         })
         .expect("sign access token")
 }
@@ -313,4 +362,69 @@ async fn the_gateway_charges_the_user_lane_not_just_the_client_lane() {
     );
     // Only the first call reached the upstream; the second was refused before it.
     assert_eq!(fixture.connector.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn revoked_consent_blocks_the_gateway_before_the_upstream() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "scores",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"rks":15.2}"#.to_vec(),
+        }),
+    );
+    let token = access_token(&fixture, SCOPE);
+    let uri = "/api/v1/upstreams/probe/scores";
+
+    let (status, _) = get(&fixture, uri, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.connector.calls().len(), 1);
+
+    let now = SystemClock.now();
+    fixture
+        .store
+        .consents()
+        .revoke(
+            &fixture.user,
+            &fixture.client_id,
+            &SecurityFact::new(AuditAction::ConsentRevoked, now, "consent:test"),
+            now,
+        )
+        .await
+        .expect("revoke consent");
+
+    let (status, _) = get(&fixture, uri, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked consent must fail before the gateway is reached"
+    );
+    assert_eq!(
+        fixture.connector.calls().len(),
+        1,
+        "the revoked token must not reach the upstream"
+    );
+}
+
+#[tokio::test]
+async fn an_old_access_token_version_is_rejected_before_the_upstream() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "scores",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"rks":15.2}"#.to_vec(),
+        }),
+    );
+    // Version 0 is what a pre-consent-version token decodes to.
+    let token = access_token_with_version(&fixture, SCOPE, ConsentVersion(0));
+
+    let (status, _) = get(&fixture, "/api/v1/upstreams/probe/scores", Some(&token)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fixture.connector.calls().len(),
+        0,
+        "an old token must not reach the upstream"
+    );
 }
