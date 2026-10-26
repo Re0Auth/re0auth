@@ -7,6 +7,7 @@ use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::crypto::RsaTokenSigner;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
+use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{Client, ClientStatus, Session, Storage, User, UserRole};
 use re0auth_api::{ClientId, Clock, SessionId, UserId};
 use re0auth_app::admin;
@@ -799,6 +800,56 @@ async fn revoking_consent_denies_an_already_approved_device_code() {
             .expect("consent lookup")
             .is_none(),
         "the revoked authorization must not be recreated by the device poll"
+    );
+
+    drop(app.key);
+}
+
+#[tokio::test]
+async fn device_login_reuses_an_existing_consent_without_bumping_version() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-device-reuse").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let first_access = body_json(response).await["access_token"]
+        .as_str()
+        .expect("first access token")
+        .to_string();
+
+    let before = app
+        .store
+        .consents()
+        .find(&app.user_id, &app.client_id)
+        .await
+        .expect("consent lookup")
+        .expect("consent exists");
+    assert_eq!(before.version, ConsentVersion(1));
+
+    let authorization = start_device(&app).await;
+    let device_code = authorization["device_code"].as_str().expect("device code");
+    let user_code = authorization["user_code"].as_str().expect("user code");
+    admin::approve_device(&app.store, &SystemClock, user_code, app.user_id)
+        .await
+        .expect("approve device");
+    let response = poll_device(&app, device_code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let after = app
+        .store
+        .consents()
+        .find(&app.user_id, &app.client_id)
+        .await
+        .expect("consent lookup")
+        .expect("consent still exists");
+    assert_eq!(
+        after.version, before.version,
+        "a device login that already has consent must not bump the version"
+    );
+    let response = userinfo(&app, &first_access).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "an unrelated device login must not invalidate existing access tokens"
     );
 
     drop(app.key);

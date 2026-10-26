@@ -538,6 +538,12 @@ impl OAuthService {
             .find(&user_id, &client_id)
             .await
             .map_err(map_repo)?;
+        // 覆盖已授权 scopes 时不重复写入，避免误 bump version
+        if let Some(consent) = &existing
+            && scope::is_subset(requested, &consent.scopes)
+        {
+            return Ok(consent.clone());
+        }
         let (id, created_at, mut scopes) = match existing {
             Some(consent) => (consent.id, consent.created_at, consent.scopes),
             None => (ConsentId::new(), now, Vec::new()),
