@@ -621,18 +621,12 @@ fn is_https_or_local_http(raw: &str, allow_loopback: bool) -> bool {
     }
 }
 
-/// Maps a config kind to the adapter kind it drives.
-///
-/// One conversion, in one place: the namespace a provider stores its subjects
-/// under is defined by the adapter, so config checks that value instead of
-/// repeating the string.
-pub fn oauth2_kind(kind: IdentityProviderKind) -> re0auth_idp::oauth2::OAuth2Kind {
+/// Oidc 无适配器，返回 None
+pub fn oauth2_kind(kind: IdentityProviderKind) -> Option<re0auth_idp::oauth2::OAuth2Kind> {
     match kind {
-        IdentityProviderKind::Github => re0auth_idp::oauth2::OAuth2Kind::GitHub,
-        IdentityProviderKind::Qq => re0auth_idp::oauth2::OAuth2Kind::Qq,
-        IdentityProviderKind::Oidc => {
-            unreachable!("oidc has no oauth2 equivalent")
-        }
+        IdentityProviderKind::Github => Some(re0auth_idp::oauth2::OAuth2Kind::GitHub),
+        IdentityProviderKind::Qq => Some(re0auth_idp::oauth2::OAuth2Kind::Qq),
+        IdentityProviderKind::Oidc => None,
     }
 }
 
@@ -657,7 +651,10 @@ fn validate_provider_kind(idp: &IdentityProviderConfig, label: &str) -> anyhow::
             }
         }
         IdentityProviderKind::Github | IdentityProviderKind::Qq => {
-            let expected = oauth2_kind(idp.kind).namespace();
+            let oauth2 = oauth2_kind(idp.kind).ok_or_else(|| {
+                anyhow::anyhow!("{label}.kind {:?} has no oauth2 adapter", idp.kind)
+            })?;
+            let expected = oauth2.namespace();
             if idp.issuer.trim_end_matches('/') != expected {
                 anyhow::bail!(
                     "{label}.issuer must be {expected:?} for the {:?} kind; it is a namespace \

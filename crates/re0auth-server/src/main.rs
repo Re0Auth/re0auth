@@ -652,7 +652,12 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
             IdentityProviderKind::Github | IdentityProviderKind::Qq => {
                 Arc::new(OAuth2Provider::new(
                     OAuth2Config {
-                        kind: oauth2_kind(idp.kind),
+                        kind: oauth2_kind(idp.kind).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "provider {} is not an oauth2 kind",
+                                idp.effective_name()
+                            )
+                        })?,
                         client_id: idp.client_id.clone(),
                         client_secret: idp.client_secret.clone(),
                         redirect_uri: idp.redirect_uri.clone(),
