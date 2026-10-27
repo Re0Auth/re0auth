@@ -20,25 +20,86 @@ use crate::config::{Config, IdentityProviderConfig, IdentityProviderKind};
 /// Prefix (after `RE0AUTH_`) that marks a per-provider override.
 const PROVIDERS: &str = "identity_providers";
 
-/// Scalar fields an operator may override.
-///
-/// `scopes` is deliberately absent: it is a list, and any separator we picked
-/// would be ambiguous because RFC 6749 allows `,` inside a scope token. Set it
-/// in the file instead.
-const SCALAR_FIELDS: &[&str] = &[
-    "name",
-    "issuer",
-    "kind",
-    "client_id",
-    "client_secret",
-    "client_secret_file",
-    "redirect_uri",
-    "discovery_url",
-    "authorization_endpoint",
-    "token_endpoint",
-    "jwks_uri",
-    "userinfo_endpoint",
-];
+/// 可覆盖字段；scopes 含逗号故排除
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScalarField {
+    Name,
+    Issuer,
+    Kind,
+    ClientId,
+    ClientSecret,
+    ClientSecretFile,
+    RedirectUri,
+    DiscoveryUrl,
+    AuthorizationEndpoint,
+    TokenEndpoint,
+    JwksUri,
+    UserinfoEndpoint,
+}
+
+impl ScalarField {
+    const ALL: [ScalarField; 12] = [
+        ScalarField::Name,
+        ScalarField::Issuer,
+        ScalarField::Kind,
+        ScalarField::ClientId,
+        ScalarField::ClientSecret,
+        ScalarField::ClientSecretFile,
+        ScalarField::RedirectUri,
+        ScalarField::DiscoveryUrl,
+        ScalarField::AuthorizationEndpoint,
+        ScalarField::TokenEndpoint,
+        ScalarField::JwksUri,
+        ScalarField::UserinfoEndpoint,
+    ];
+
+    fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.as_key() == key)
+    }
+
+    fn as_key(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Issuer => "issuer",
+            Self::Kind => "kind",
+            Self::ClientId => "client_id",
+            Self::ClientSecret => "client_secret",
+            Self::ClientSecretFile => "client_secret_file",
+            Self::RedirectUri => "redirect_uri",
+            Self::DiscoveryUrl => "discovery_url",
+            Self::AuthorizationEndpoint => "authorization_endpoint",
+            Self::TokenEndpoint => "token_endpoint",
+            Self::JwksUri => "jwks_uri",
+            Self::UserinfoEndpoint => "userinfo_endpoint",
+        }
+    }
+
+    fn apply(self, idp: &mut IdentityProviderConfig, value: &str) -> anyhow::Result<()> {
+        match self {
+            Self::Name => idp.name = value.to_string(),
+            Self::Issuer => idp.issuer = value.to_string(),
+            Self::Kind => idp.kind = parse_kind(value)?,
+            Self::ClientId => idp.client_id = value.to_string(),
+            Self::ClientSecret => idp.client_secret = value.to_string(),
+            Self::ClientSecretFile => idp.client_secret_file = Some(value.to_string()),
+            Self::RedirectUri => idp.redirect_uri = value.to_string(),
+            Self::DiscoveryUrl => idp.discovery_url = Some(value.to_string()),
+            Self::AuthorizationEndpoint => idp.authorization_endpoint = Some(value.to_string()),
+            Self::TokenEndpoint => idp.token_endpoint = Some(value.to_string()),
+            Self::JwksUri => idp.jwks_uri = Some(value.to_string()),
+            Self::UserinfoEndpoint => idp.userinfo_endpoint = Some(value.to_string()),
+        }
+        Ok(())
+    }
+}
+
+fn known_fields() -> String {
+    ScalarField::ALL
+        .iter()
+        .map(|field| field.as_key())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// True when `key` (already stripped of `RE0AUTH_`) is a provider override.
 ///
@@ -54,7 +115,7 @@ pub fn is_provider_override_key(key: &str) -> bool {
 #[derive(Debug, Eq, PartialEq)]
 struct Override {
     index: usize,
-    field: String,
+    field: ScalarField,
     value: String,
 }
 
@@ -73,12 +134,12 @@ pub fn apply_provider_overrides(cfg: &mut Config, vars: &[(String, String)]) -> 
                 "RE0AUTH_{}__{}__{} refers to provider index {}, but the file defines {}",
                 PROVIDERS.to_uppercase(),
                 entry.index,
-                entry.field.to_uppercase(),
+                entry.field.as_key().to_uppercase(),
                 entry.index,
                 count
             )
         })?;
-        set_field(slot, &entry.field, &entry.value)?;
+        entry.field.apply(slot, &entry.value)?;
     }
     Ok(())
 }
@@ -103,19 +164,19 @@ fn parse_overrides(vars: &[(String, String)]) -> anyhow::Result<Vec<Override>> {
             anyhow::bail!(
                 "RE0AUTH_{}__{index}__ is missing a field name; expected one of {}",
                 PROVIDERS.to_uppercase(),
-                SCALAR_FIELDS.join(", ")
+                known_fields()
             );
         }
-        let field = field.to_ascii_lowercase();
-        if !SCALAR_FIELDS.contains(&field.as_str()) {
+        let key = field.to_ascii_lowercase();
+        let Some(field) = ScalarField::from_key(&key) else {
             anyhow::bail!(
                 "RE0AUTH_{}__{index}__{} is not an overridable field; expected one of {} \
                  (scopes must be set in the file)",
                 PROVIDERS.to_uppercase(),
-                field.to_uppercase(),
-                SCALAR_FIELDS.join(", ")
+                key.to_uppercase(),
+                known_fields()
             );
-        }
+        };
         out.push(Override {
             index,
             field,
@@ -123,25 +184,6 @@ fn parse_overrides(vars: &[(String, String)]) -> anyhow::Result<Vec<Override>> {
         });
     }
     Ok(out)
-}
-
-fn set_field(idp: &mut IdentityProviderConfig, field: &str, value: &str) -> anyhow::Result<()> {
-    match field {
-        "name" => idp.name = value.to_string(),
-        "issuer" => idp.issuer = value.to_string(),
-        "kind" => idp.kind = parse_kind(value)?,
-        "client_id" => idp.client_id = value.to_string(),
-        "client_secret" => idp.client_secret = value.to_string(),
-        "client_secret_file" => idp.client_secret_file = Some(value.to_string()),
-        "redirect_uri" => idp.redirect_uri = value.to_string(),
-        "discovery_url" => idp.discovery_url = Some(value.to_string()),
-        "authorization_endpoint" => idp.authorization_endpoint = Some(value.to_string()),
-        "token_endpoint" => idp.token_endpoint = Some(value.to_string()),
-        "jwks_uri" => idp.jwks_uri = Some(value.to_string()),
-        "userinfo_endpoint" => idp.userinfo_endpoint = Some(value.to_string()),
-        other => unreachable!("field {other} passed the allowlist but has no setter"),
-    }
-    Ok(())
 }
 
 fn parse_kind(raw: &str) -> anyhow::Result<IdentityProviderKind> {
@@ -276,6 +318,20 @@ scopes = ["openid"]
             cfg.identity_providers[1].issuer,
             "https://guild-idp.example.com"
         );
+    }
+
+    #[test]
+    fn every_allowlisted_field_has_a_setter() {
+        let mut cfg = two_providers();
+        for field in ScalarField::ALL {
+            let value = match field {
+                ScalarField::Kind => "github",
+                _ => "x",
+            };
+            field
+                .apply(&mut cfg.identity_providers[0], value)
+                .expect("every allowlisted field applies");
+        }
     }
 
     #[test]
