@@ -72,9 +72,9 @@ pub(crate) async fn device_start(
     }
     state.auth.clear_device_attempts(&client_ip);
     let return_to = {
-        let mut serializer = form_urlencoded::Serializer::new("/device?".to_string());
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
         serializer.append_pair("user_code", &user_code);
-        serializer.finish()
+        format!("/device?{}", serializer.finish())
     };
     match state
         .auth
@@ -88,6 +88,14 @@ pub(crate) async fn device_start(
                 login_intent_cookie(state.auth.secure_cookies(), &start.state),
             );
             response
+        }
+        // Several providers: the device page owns the selector, so send the
+        // browser back there with the code intact rather than showing an error.
+        Err(AuthError::IdentityProviderRequired) => {
+            let mut serializer = form_urlencoded::Serializer::new(String::new());
+            serializer.append_pair("user_code", &user_code);
+            let location = format!("/device?{}", serializer.finish());
+            Redirect::to(&location).into_response()
         }
         Err(error) => auth_error_html(error).into_response(),
     }

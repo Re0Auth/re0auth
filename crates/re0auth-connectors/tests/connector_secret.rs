@@ -7,6 +7,7 @@ use std::sync::Arc;
 use re0auth_api::connector::ConnectorSecretStore;
 use re0auth_api::{Random, SecretString};
 use re0auth_connectors::connector_secret::EncryptedFileSecretStore;
+use secrecy::ExposeSecret;
 
 const MASTER: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
 
@@ -193,4 +194,66 @@ async fn the_vault_must_not_be_the_core_database() {
         .reject_core_database_path(None)
         .expect("a memory database has no file to collide with");
     let _ = std::fs::remove_dir_all(directory);
+}
+
+const V2: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+/// A vault written under v1 must stay readable when the deployment moves to v2
+/// and keeps v1 retired; new writes must carry v2.
+#[tokio::test]
+async fn a_retired_key_reads_old_entries_and_new_writes_use_the_current_version() {
+    let path = std::env::temp_dir().join(format!(
+        "re0auth-connector-secret-rotation-{}.json",
+        uuid::Uuid::now_v7()
+    ));
+    let old = EncryptedFileSecretStore::new(
+        path.clone(),
+        MASTER,
+        Arc::new(CounterRandom(std::sync::atomic::AtomicU8::new(0))),
+    )
+    .expect("v1");
+    old.put("connector/old", &secret("old-token"))
+        .await
+        .expect("put v1");
+
+    let rotated = EncryptedFileSecretStore::with_keys(
+        path.clone(),
+        2,
+        [(1, MASTER), (2, V2)],
+        Arc::new(CounterRandom(std::sync::atomic::AtomicU8::new(1))),
+    )
+    .expect("v2 with retired v1");
+    assert_eq!(
+        rotated
+            .get("connector/old")
+            .await
+            .expect("get v1")
+            .expect("present")
+            .expose_secret(),
+        "old-token"
+    );
+    assert_eq!(rotated.rewrap_all().await.expect("rewrap"), 1);
+    assert!(
+        old.get("connector/old").await.is_err(),
+        "once re-wrapped, the v1-only vault cannot read the entry"
+    );
+    assert_eq!(rotated.rewrap_all().await.expect("idempotent"), 0);
+    rotated
+        .put("connector/new", &secret("new-token"))
+        .await
+        .expect("put v2");
+    assert_eq!(
+        rotated
+            .get("connector/new")
+            .await
+            .expect("get v2")
+            .expect("present")
+            .expose_secret(),
+        "new-token"
+    );
+    assert!(
+        old.get("connector/new").await.is_err(),
+        "the old vault does not hold v2"
+    );
+    let _ = std::fs::remove_file(path);
 }

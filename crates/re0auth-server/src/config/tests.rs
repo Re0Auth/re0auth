@@ -199,6 +199,7 @@ fn duplicate_provider_names_are_rejected() {
 fn oauth2_provider(kind: IdentityProviderKind, issuer: &str) -> IdentityProviderConfig {
     IdentityProviderConfig {
         name: "external".to_string(),
+        display_name: String::new(),
         issuer: issuer.to_string(),
         kind,
         client_id: "client".to_string(),
@@ -261,6 +262,7 @@ fn an_oidc_provider_without_scopes_is_also_rejected() {
     let mut cfg = example();
     cfg.identity_providers = vec![IdentityProviderConfig {
         name: "corp".to_string(),
+        display_name: String::new(),
         issuer: "https://corp-idp.example.com".to_string(),
         kind: IdentityProviderKind::Oidc,
         client_id: "re0auth".to_string(),
@@ -450,6 +452,7 @@ fn a_loopback_idp_endpoint_fails_config_check_when_loopback_is_off() {
     let mut cfg = example();
     cfg.identity_providers.push(IdentityProviderConfig {
         name: "local".to_string(),
+        display_name: String::new(),
         kind: IdentityProviderKind::Oidc,
         issuer: "http://127.0.0.1:9000".to_string(),
         client_id: "client".to_string(),
@@ -653,4 +656,67 @@ fn metadata_egress_still_needs_a_non_public_global_ceiling() {
     );
     cfg.tls.allow_private_net = true;
     validate(&cfg).expect("metadata under private ceiling");
+}
+
+#[test]
+fn master_key_version_defaults_to_one() {
+    let cfg = example();
+    assert_eq!(cfg.crypto.master_key_version, 1);
+}
+
+#[test]
+fn a_retired_key_must_be_lower_than_the_current_version() {
+    let mut cfg = example();
+    cfg.crypto.master_key_version = 2;
+    cfg.crypto.retired_master_key_files = vec![RetiredKeyConfig {
+        version: 1,
+        file: "data/master.old.key".to_string(),
+    }];
+    validate(&cfg).expect("v1 retired under current v2");
+
+    for version in [0, 2, 3] {
+        cfg.crypto.retired_master_key_files = vec![RetiredKeyConfig {
+            version,
+            file: "data/master.old.key".to_string(),
+        }];
+        let error = validate(&cfg).expect_err("invalid retired version");
+        assert!(
+            error.to_string().contains("must be"),
+            "version {version}: {error}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_retired_versions_are_rejected() {
+    let mut cfg = example();
+    cfg.crypto.master_key_version = 3;
+    cfg.crypto.retired_master_key_files = vec![
+        RetiredKeyConfig {
+            version: 1,
+            file: "data/master.old1.key".to_string(),
+        },
+        RetiredKeyConfig {
+            version: 1,
+            file: "data/master.old2.key".to_string(),
+        },
+    ];
+    let error = validate(&cfg).expect_err("duplicate retired version");
+    assert!(error.to_string().contains("twice"), "{error}");
+}
+
+#[test]
+fn current_master_key_version_cannot_be_zero() {
+    let mut cfg = example();
+    cfg.crypto.master_key_version = 0;
+    let error = validate(&cfg).expect_err("zero current version");
+    assert!(error.to_string().contains("greater than zero"), "{error}");
+}
+
+#[test]
+fn provider_display_name_defaults_to_its_selector_name() {
+    let mut provider = oauth2_provider(IdentityProviderKind::Github, "https://github.com");
+    assert_eq!(provider.effective_display_name(), "external");
+    provider.display_name = "  GitHub  ".to_string();
+    assert_eq!(provider.effective_display_name(), "GitHub");
 }

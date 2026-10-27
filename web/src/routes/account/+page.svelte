@@ -15,7 +15,7 @@
 		bindingStartSchema,
 		bindingsSchema,
 		meSchema,
-		startLogin,
+		openLogin,
 		type Authorization,
 		type Binding,
 		type Me
@@ -55,7 +55,7 @@
 			}
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				startLogin('/account');
+				openLogin('/account');
 				return;
 			}
 			error = describeError(cause);
@@ -73,7 +73,7 @@
 			bindings = bindings.filter((item) => item.id !== id);
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				startLogin('/account');
+				openLogin('/account');
 				return;
 			}
 			error = describeError(cause);
@@ -91,7 +91,7 @@
 			authorizations = authorizations.filter((item) => item.client_id !== clientId);
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				startLogin('/account');
+				openLogin('/account');
 				return;
 			}
 			error = describeError(cause);
@@ -109,7 +109,7 @@
 			bindings = [];
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				startLogin('/account');
+				openLogin('/account');
 				return;
 			}
 			error = describeError(cause);
@@ -131,7 +131,7 @@
 			window.location.assign(started.authorization_url);
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				startLogin('/account');
+				openLogin('/account');
 				return;
 			}
 			error = describeError(cause);

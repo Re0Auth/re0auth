@@ -9,6 +9,7 @@
 		bindingStartSchema,
 		consentResultSchema,
 		currentLocation,
+		openLogin,
 		pendingSchema,
 		readQuery,
 		type PendingConsent
@@ -94,7 +95,7 @@
 			window.location.assign(started.authorization_url);
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				window.location.assign(`/auth/login?return_to=${encodeURIComponent(currentLocation())}`);
+				openLogin(currentLocation());
 				return;
 			}
 			error = describeError(cause);

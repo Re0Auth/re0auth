@@ -1888,6 +1888,7 @@ dependencies = [
  "re0auth-http",
  "re0auth-idp",
  "re0auth-runtime",
+ "secrecy",
  "serde",
  "serde_json",
  "tokio",

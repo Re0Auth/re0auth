@@ -96,6 +96,7 @@ async fn harness() -> Harness {
     let idps = vec![
         NamedIdp {
             name: "first".to_string(),
+            display_name: "First provider".to_string(),
             client: Arc::new(CountingIdp {
                 name: "first",
                 exchanges: Arc::clone(&first),
@@ -104,6 +105,7 @@ async fn harness() -> Harness {
         },
         NamedIdp {
             name: "second".to_string(),
+            display_name: "Second provider".to_string(),
             client: Arc::new(CountingIdp {
                 name: "second",
                 exchanges: Arc::clone(&second),
@@ -216,6 +218,7 @@ async fn a_vanished_provider_does_not_fall_back_to_the_first() {
         vec![
             NamedIdp {
                 name: "first".to_string(),
+                display_name: "first".to_string(),
                 client: Arc::new(CountingIdp {
                     name: "first",
                     exchanges: Arc::clone(&first),
@@ -224,6 +227,7 @@ async fn a_vanished_provider_does_not_fall_back_to_the_first() {
             },
             NamedIdp {
                 name: "second".to_string(),
+                display_name: "second".to_string(),
                 client: Arc::new(CountingIdp {
                     name: "second",
                     exchanges: Arc::new(AtomicUsize::new(0)),
@@ -247,6 +251,7 @@ async fn a_vanished_provider_does_not_fall_back_to_the_first() {
         store,
         vec![NamedIdp {
             name: "first".to_string(),
+            display_name: "first".to_string(),
             client: Arc::new(CountingIdp {
                 name: "first",
                 exchanges: Arc::clone(&first),
@@ -267,4 +272,15 @@ async fn a_vanished_provider_does_not_fall_back_to_the_first() {
         0,
         "must not silently log the user in through a different provider"
     );
+}
+
+#[tokio::test]
+async fn providers_are_listed_in_configuration_order_with_display_names() {
+    let harness = harness().await;
+    let providers = harness.service.providers();
+    assert_eq!(providers.len(), 2);
+    assert_eq!(providers[0].name, "first");
+    assert_eq!(providers[0].display_name, "First provider");
+    assert_eq!(providers[1].name, "second");
+    assert_eq!(providers[1].display_name, "Second provider");
 }

@@ -96,6 +96,7 @@ GET    /healthz
 GET    /readyz
 GET    /.well-known/openid-configuration
 GET    /jwks.json
+GET    /api/auth/providers
 GET    /auth/login
 GET    /auth/callback
 GET    /oauth/authorize

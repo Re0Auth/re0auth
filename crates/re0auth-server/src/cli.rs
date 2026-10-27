@@ -120,10 +120,11 @@ pub enum AdminCommand {
     RotateSigningKey,
     /// Re-wrap every stored credential onto the current master key.
     ///
-    /// Only the per-record key envelope is rewritten; payloads are never decrypted
-    /// and never re-encrypted. Keys a record may still use must be listed under
-    /// `crypto.retired_master_key_files`; anything left wrapped under an
-    /// undeclared key is reported as a failure rather than skipped.
+    /// Sub-credential envelopes are re-wrapped without touching their payload
+    /// ciphertext; connector-vault entries are decrypted and re-encrypted under
+    /// the current key. Client-secret hashes keep the version that produced them,
+    /// so keep retired keys until those secrets are rotated. Anything wrapped
+    /// under an undeclared key fails rather than being skipped.
     ///
     /// Exits non-zero when anything failed or when there was nothing to rotate:
     /// an empty result looks identical to a finished one, and dropping the old
@@ -282,17 +283,53 @@ pub async fn run(cfg: &Config, command: AdminCommand) -> anyhow::Result<()> {
                 .await
                 .context("rotate credentials")?;
             println!("{}", report.summary());
+            if let Some(vault) = crate::connector_vault(cfg, std::sync::Arc::new(OsRandom))? {
+                let moved = vault
+                    .rewrap_all()
+                    .await
+                    .context("rewrap connector secrets")?;
+                println!("connector_secrets_rewrapped={moved}");
+            }
             if !report.is_clean() {
                 bail!(
-                    "rotation is not clean; keep the retired key configured and re-run once \
-                     the cause is fixed"
+                    "rotation is not clean; keep the retired key configured and re-run once the cause is fixed"
                 );
             }
-            println!("retired_keys_may_be_dropped=true");
+            let stale = stale_client_secret_hashes(&store, cfg.crypto.master_key_version).await?;
+            if stale == 0 {
+                println!("retired_keys_may_be_dropped=true");
+            } else {
+                println!("client_secret_hashes_on_retired_keys={stale}");
+                println!("retired_keys_may_be_dropped=false");
+            }
         }
     }
 
     Ok(())
+}
+
+/// Client-secret hashes cannot be re-hashed without the plaintext, so a retired
+/// pepper has to stay until each confidential client rotates its secret.
+async fn stale_client_secret_hashes(store: &SqliteStore, current: u32) -> anyhow::Result<u64> {
+    let mut before = None;
+    let mut count = 0;
+    loop {
+        let page = store.clients().list(before.as_ref(), 128).await?;
+        if page.is_empty() {
+            break;
+        }
+        for client in &page {
+            if client
+                .secret_hash
+                .as_ref()
+                .is_some_and(|hash| hash.key_version() != current)
+            {
+                count += 1;
+            }
+        }
+        before = page.last().map(|client| client.id);
+    }
+    Ok(count)
 }
 
 /// The admin use cases, wired the same way the HTTP layer wires them.

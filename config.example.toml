@@ -12,11 +12,14 @@ url = "sqlite://data/re0auth.db"
 
 [crypto]
 master_key_file = "data/master.key"
+# 当前主密钥版本。轮换时改成 2，把新密钥写入 master_key_file，
+# 并把旧密钥放进下面的 retired_master_key_files。
+master_key_version = 1
 signing_key_file = "data/signing-key.pem"
 # 密钥轮换期间仍需能解开的旧主密钥（ADR-0042）。稳态下留空。
-# 每条写明版本号与文件；两者都必须给，因为「版本」是密文里记录的，
-# 「文件」是解开它所需的。轮换报告 failed=0 之前不要删掉这些文件。
-# retired_master_key_files = [{ version = 2, file = "data/master.old.key" }]
+# 每条写明版本号与文件；版本必须小于 master_key_version，
+# 轮换报告 failed=0 且 retired_keys_may_be_dropped=true 之前不要删。
+# 示例（当前版本为 2 时）：retired_master_key_files = [{ version = 1, file = "data/master.old.key" }]
 # 可选：Connector 根凭证保险柜（ADR-0039）。留空表示不启用。
 # 必须是独立文件：不能与数据库同路径，也不能是上面那把主密钥文件本身。
 # 文件里只有密文（AES-256-GCM，密钥由主密钥经 HKDF 独立 info 串派生）。

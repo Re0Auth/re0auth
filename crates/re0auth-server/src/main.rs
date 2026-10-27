@@ -273,18 +273,11 @@ async fn build_data_plane(
         .with_inflight_budget(inflight),
     );
     // The master key is required once the gateway runs: sub-credentials are
-    // sealed at rest and there is no plaintext fallback. An empty path means
-    // "env only", which `from_env_or_file` already enforces.
-    let key_file = cfg.crypto.master_key_file.trim();
-    let key_file = if key_file.is_empty() {
-        None
-    } else {
-        Some(std::path::Path::new(key_file))
-    };
-    let sealer = Arc::new(AesGcmSealer::from_env_or_file(
-        key_file,
-        Arc::clone(&random) as Arc<dyn re0auth_api::Random>,
-    )?);
+    // sealed at rest and there is no plaintext fallback. `master_keys` enforces
+    // the "env only" empty-path form through the shared resolver.
+    // The gateway seals with the same current/retired key set as the CLI; using
+    // the legacy single-key constructor here would ignore `master_key_version`.
+    let sealer = Arc::new(open_sealer(cfg)?);
 
     // Binding is opt-in per connector: a connector without endpoints can still
     // serve data for bindings issued elsewhere, but the routes stay 404 rather
@@ -427,13 +420,9 @@ fn connector_vault(
     if path.is_empty() {
         return Ok(None);
     }
-    let key_file = cfg.crypto.master_key_file.trim();
-    let key_file = if key_file.is_empty() {
-        None
-    } else {
-        Some(std::path::Path::new(key_file))
-    };
-    let vault = EncryptedFileSecretStore::from_env_or_file(path, key_file, random)?;
+    let (current_version, keys) = master_keys(cfg)?;
+    let pairs: Vec<(u32, &str)> = keys.iter().map(|(v, k)| (*v, k.as_str())).collect();
+    let vault = EncryptedFileSecretStore::with_keys(path, current_version, pairs, random)?;
     // Defence in depth: `validate` already rejects the same string, this catches
     // two spellings that resolve to one file.
     vault.reject_core_database_path(
@@ -446,7 +435,48 @@ fn connector_vault(
 
 /// The pepper and the AEAD key come from one configured source.
 pub(crate) fn client_secret_hasher(cfg: &config::Config) -> anyhow::Result<HmacClientSecretHasher> {
-    HmacClientSecretHasher::new(&AesGcmSealer::master_key_hex(master_key_path(cfg))?)
+    let (current_version, keys) = master_keys(cfg)?;
+    let pairs: Vec<(u32, &str)> = keys.iter().map(|(v, k)| (*v, k.as_str())).collect();
+    HmacClientSecretHasher::with_keys(current_version, pairs)
+}
+
+/// Resolves the configured current and retired master keys.
+///
+/// The sealer, client-secret pepper, and connector vault share this set: a
+/// rotation that teaches one but not the others leaves credentials unreadable.
+/// The checks here are deliberately repeated from `config::validate`; the CLI
+/// and embedded callers can construct a `Config` without going through the file
+/// loader, and this is the last boundary before keys are used.
+fn master_keys(cfg: &config::Config) -> anyhow::Result<(u32, Vec<(u32, String)>)> {
+    let current_version = cfg.crypto.master_key_version;
+    if current_version == 0 {
+        anyhow::bail!("crypto.master_key_version must be greater than zero");
+    }
+    let current = AesGcmSealer::master_key_hex(master_key_path(cfg))?;
+    let mut keys = vec![(current_version, current)];
+    let mut seen = std::collections::HashSet::from([current_version]);
+    for retired in &cfg.crypto.retired_master_key_files {
+        if retired.version == 0 || retired.version >= current_version {
+            anyhow::bail!(
+                "retired key version {} must be greater than zero and lower than the current version {}",
+                retired.version,
+                current_version
+            );
+        }
+        if !seen.insert(retired.version) {
+            anyhow::bail!(
+                "retired key version {} was configured twice",
+                retired.version
+            );
+        }
+        let path = std::path::Path::new(&retired.file);
+        // A retired key always comes from its file: letting `RE0AUTH_ENCRYPTION_KEY`
+        // stand in for it would make the rotation read the current key twice and
+        // report success while leaving every old record unreadable.
+        let hex = re0auth_runtime::master_key::resolve_master_key(None, Some(path))?;
+        keys.push((retired.version, hex));
+    }
+    Ok((current_version, keys))
 }
 
 fn master_key_path(cfg: &config::Config) -> Option<&std::path::Path> {
@@ -465,25 +495,10 @@ fn master_key_path(cfg: &config::Config) -> Option<&std::path::Path> {
 /// the map then holds only the current key, and any record claiming another
 /// version fails loudly instead of being skipped.
 pub(crate) fn open_sealer(cfg: &config::Config) -> anyhow::Result<AesGcmSealer> {
-    let current = AesGcmSealer::master_key_hex(master_key_path(cfg))?;
-    let mut keys: Vec<(u32, String)> =
-        vec![(re0auth_adapters::sealer::CURRENT_KEY_VERSION, current)];
-    for retired in &cfg.crypto.retired_master_key_files {
-        let path = std::path::Path::new(&retired.file);
-        // A retired key always comes from its file: letting `RE0AUTH_ENCRYPTION_KEY`
-        // stand in for it would make the rotation read the current key twice and
-        // report success while leaving every old record unreadable.
-        let hex = re0auth_runtime::master_key::resolve_master_key(None, Some(path))?;
-        if retired.version == re0auth_adapters::sealer::CURRENT_KEY_VERSION {
-            anyhow::bail!(
-                "retired key declares version {}, which is the current version",
-                retired.version
-            );
-        }
-        keys.push((retired.version, hex));
-    }
+    let (current_version, keys) = master_keys(cfg)?;
     let pairs: Vec<(u32, &str)> = keys.iter().map(|(v, k)| (*v, k.as_str())).collect();
     AesGcmSealer::with_keys(
+        current_version,
         pairs,
         std::sync::Arc::new(re0auth_adapters::random::OsRandom),
     )
@@ -663,6 +678,7 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         tracing::info!(provider = %idp.effective_name(), kind = ?idp.kind, "identity provider ready");
         idps.push(NamedIdp {
             name: idp.effective_name().to_string(),
+            display_name: idp.effective_display_name().to_string(),
             client,
         });
     }
