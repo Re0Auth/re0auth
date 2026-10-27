@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-re0auth-api = { version = "0.5.0", path = "../re0auth-api" }
+re0auth-api = { version = "0.6.0", path = "../re0auth-api" }
 re0auth-app = { version = "0.1.0", path = "../re0auth-app" }
 axum.workspace = true
 base64.workspace = true

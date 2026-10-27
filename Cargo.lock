@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-api"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "secrecy",
