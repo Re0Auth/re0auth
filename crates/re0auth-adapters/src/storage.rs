@@ -51,6 +51,7 @@ impl SqliteStore {
         let mut options = SqliteConnectOptions::from_str(url)
             .with_context(|| format!("invalid SQLite URL: {url}"))?
             .foreign_keys(true)
+            // 写事务很短，超过 5 秒的等待交给 503 重试
             .busy_timeout(Duration::from_secs(5));
 
         if memory {

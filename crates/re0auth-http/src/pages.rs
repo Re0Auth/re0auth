@@ -7,6 +7,7 @@
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use maud::{Markup, PreEscaped, html};
+use re0auth_api::ports::RepoError;
 use re0auth_app::auth::AuthError;
 
 use crate::copy;
@@ -84,6 +85,7 @@ pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
         AuthError::LoginRequired => StatusCode::UNAUTHORIZED,
         AuthError::NotFound => StatusCode::NOT_FOUND,
         AuthError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        AuthError::Repo(RepoError::Busy) => StatusCode::SERVICE_UNAVAILABLE,
         AuthError::Repo(_) | AuthError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };

@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use re0auth_api::connector::UpstreamError;
 use re0auth_api::idp::IdpError;
+use re0auth_api::ports::RepoError;
 use re0auth_app::admin_service::AdminError;
 use re0auth_app::auth::AuthError;
 use re0auth_app::gateway::GatewayError;
@@ -143,6 +144,9 @@ pub(crate) fn auth_error(error: AuthError) -> ApiError {
             "rate_limited",
             "too many attempts; retry later",
         ),
+        AuthError::Repo(RepoError::Busy) => {
+            oauth_error(OAuthError::TemporarilyUnavailable, Shape::Problem)
+        }
         AuthError::Repo(_) | AuthError::Internal => problem_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
@@ -165,6 +169,9 @@ pub(crate) fn admin_error(error: AdminError) -> ApiError {
         }
         AdminError::Conflict(description) => {
             problem_response(StatusCode::CONFLICT, "conflict", description)
+        }
+        AdminError::Repo(RepoError::Busy) => {
+            oauth_error(OAuthError::TemporarilyUnavailable, Shape::Problem)
         }
         AdminError::Repo(_) => problem_response(
             StatusCode::INTERNAL_SERVER_ERROR,

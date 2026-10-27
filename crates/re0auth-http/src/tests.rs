@@ -322,6 +322,11 @@ fn auth_errors_map_to_api_codes() {
             "rate_limited",
         ),
         (
+            AuthError::Repo(RepoError::Busy),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+        ),
+        (
             AuthError::Repo(RepoError::NotFound),
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
@@ -356,6 +361,11 @@ fn admin_errors_map_to_problem_codes() {
             "conflict",
         ),
         (
+            AdminError::Repo(RepoError::Busy),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+        ),
+        (
             AdminError::Repo(RepoError::NotFound),
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
@@ -371,6 +381,26 @@ fn admin_errors_map_to_problem_codes() {
     let denied = admin_required();
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
     assert_eq!(code_of(&denied.body.0), "forbidden");
+}
+
+#[test]
+fn busy_session_and_admin_errors_carry_retry_after() {
+    use re0auth_app::admin_service::AdminError;
+
+    for error in [
+        auth_error(AuthError::Repo(RepoError::Busy)),
+        admin_error(AdminError::Repo(RepoError::Busy)),
+    ] {
+        let (status, headers, code) = api_with_headers(error);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(code, "temporarily_unavailable");
+        assert_eq!(
+            headers
+                .get(header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
+    }
 }
 
 #[test]
@@ -401,6 +431,10 @@ fn auth_errors_map_to_html_statuses() {
     assert_eq!(
         html(auth_error_html(AuthError::Idp(IdpError::NonceMismatch))),
         StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        html(auth_error_html(AuthError::Repo(RepoError::Busy))),
+        StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(
         html(auth_error_html(AuthError::Repo(RepoError::NotFound))),
