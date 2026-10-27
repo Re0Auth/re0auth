@@ -105,14 +105,20 @@ fn parse_uuid(value: &str) -> RepoResult<Uuid> {
 fn db_error(error: sqlx::Error) -> RepoError {
     if let sqlx::Error::Database(database) = &error
         && let Some(code) = database.code()
+        && let Some(mapped) = sqlite_code_error(code.as_ref())
     {
-        match code.as_ref() {
-            "1555" | "2067" => return RepoError::Conflict("unique constraint"),
-            "787" => return RepoError::NotFound,
-            _ => {}
-        }
+        return mapped;
     }
     RepoError::Backend(error.to_string())
+}
+
+fn sqlite_code_error(code: &str) -> Option<RepoError> {
+    match code {
+        "1555" | "2067" => Some(RepoError::Conflict("unique constraint")),
+        "787" => Some(RepoError::NotFound),
+        "5" | "6" | "517" => Some(RepoError::Busy),
+        _ => None,
+    }
 }
 
 fn scopes_json(scopes: &[String]) -> RepoResult<String> {
@@ -779,7 +785,11 @@ impl RefreshTokenRepo for SqliteStore {
         now: Unix,
     ) -> RepoResult<RotateOutcome> {
         let RotateRefreshToken { old_hash, new } = req;
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(db_error)?;
 
         let row = sqlx::query(
             "SELECT id, token_hash, family_id, client_id, user_id, scopes, created_at, \
@@ -1386,5 +1396,18 @@ mod tests {
             BindingStatus::NeedsReauth
         );
         assert!(status_from_str("unknown").is_err());
+    }
+
+    #[test]
+    fn sqlite_busy_codes_map_to_retryable_error() {
+        for code in ["5", "6", "517"] {
+            assert_eq!(sqlite_code_error(code), Some(RepoError::Busy));
+        }
+        assert_eq!(
+            sqlite_code_error("1555"),
+            Some(RepoError::Conflict("unique constraint"))
+        );
+        assert_eq!(sqlite_code_error("787"), Some(RepoError::NotFound));
+        assert_eq!(sqlite_code_error("999"), None);
     }
 }

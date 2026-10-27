@@ -44,6 +44,9 @@ pub enum RepoError {
     AlreadyConsumed,
     #[error("revoked")]
     Revoked,
+    /// SQLite reported BUSY/LOCKED; the operation may succeed on retry.
+    #[error("busy")]
+    Busy,
     #[error("backend error: {0}")]
     Backend(String),
 }

@@ -62,6 +62,8 @@ pub enum OAuthError {
     ConsentExpired,
     #[error("consent request already used")]
     ConsentUsed,
+    #[error("temporarily_unavailable")]
+    TemporarilyUnavailable,
     #[error("internal")]
     Internal,
 }
@@ -1245,6 +1247,20 @@ fn map_repo(error: RepoError) -> OAuthError {
         // caller that did not retry is looking at our failure to draw a code, not
         // at anything the client did.
         RepoError::UserCodeConflict => OAuthError::Internal,
+        RepoError::Busy => OAuthError::TemporarilyUnavailable,
         RepoError::Backend(_) => OAuthError::Internal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn busy_maps_to_temporarily_unavailable() {
+        assert!(matches!(
+            map_repo(RepoError::Busy),
+            OAuthError::TemporarilyUnavailable
+        ));
     }
 }

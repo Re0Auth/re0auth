@@ -122,6 +122,11 @@ fn oauth_errors_map_to_distinct_statuses_and_codes() {
             "consent_used",
         ),
         (
+            OAuthError::TemporarilyUnavailable,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+        ),
+        (
             OAuthError::Internal,
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
@@ -131,6 +136,22 @@ fn oauth_errors_map_to_distinct_statuses_and_codes() {
         let actual = api(oauth_error(error, Shape::Rfc6749));
         assert_eq!(actual, (status, code.to_string()));
     }
+}
+
+#[test]
+fn temporarily_unavailable_carries_retry_after() {
+    let (status, headers, code) = api_with_headers(oauth_error(
+        OAuthError::TemporarilyUnavailable,
+        Shape::Rfc6749,
+    ));
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(code, "temporarily_unavailable");
+    assert_eq!(
+        headers
+            .get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
 }
 
 #[test]
