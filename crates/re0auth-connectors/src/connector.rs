@@ -17,13 +17,15 @@ use secrecy::ExposeSecret;
 use url::Url;
 
 use re0auth_api::connector::{
-    BodyValue, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, InflightBudget,
+    BodyValue, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, EgressPolicy, InflightBudget,
     ResourceMethod, ResourceRequest, ResourceSpec, UnlimitedInflight, UpstreamError,
     UpstreamPayload,
 };
 use re0auth_api::{ConnectorId, Re0Error, Re0Result, SecretString};
 
 use re0auth_runtime::http_client::GuardedClient;
+use re0auth_runtime::outbound::OutboundPolicy;
+use re0auth_runtime::tls::TlsConfig;
 
 /// Static registry loaded from config at startup.
 ///
@@ -60,9 +62,50 @@ impl ConnectorRegistry for StaticRegistry {
     }
 }
 
-/// Fetches a registered resource over the guarded client.
+/// One guarded client per connector, built from that connector's egress policy.
+///
+/// A shared client cannot express "A may reach the private network, B may not":
+/// its policy and its host→client pool are fixed. The map is the boundary that
+/// keeps a BYOC exception from widening every other connector.
+#[derive(Clone)]
+pub struct ConnectorClients {
+    clients: HashMap<ConnectorId, Arc<GuardedClient>>,
+}
+
+impl ConnectorClients {
+    pub fn new(endpoints: &[ConnectorEndpoint], tls: TlsConfig) -> anyhow::Result<Self> {
+        let mut clients = HashMap::with_capacity(endpoints.len());
+        for endpoint in endpoints {
+            let (policy, allow_http) = runtime_policy(endpoint.egress);
+            let client = GuardedClient::with_tls(policy, allow_http, tls.clone())?;
+            clients.insert(endpoint.id, Arc::new(client));
+        }
+        Ok(Self { clients })
+    }
+
+    pub(crate) fn get(
+        &self,
+        endpoint: &ConnectorEndpoint,
+    ) -> Result<Arc<GuardedClient>, UpstreamError> {
+        self.clients
+            .get(&endpoint.id)
+            .cloned()
+            .ok_or(UpstreamError::Unavailable)
+    }
+}
+
+fn runtime_policy(egress: EgressPolicy) -> (OutboundPolicy, bool) {
+    match egress {
+        EgressPolicy::Public => (OutboundPolicy::PublicOnly, false),
+        EgressPolicy::PrivateNet => (OutboundPolicy::AllowPrivateNet, false),
+        EgressPolicy::LinkLocalMetadata => (OutboundPolicy::AllowLinkLocalMetadata, false),
+        EgressPolicy::Loopback => (OutboundPolicy::AllowLoopback, true),
+    }
+}
+
+/// Fetches a registered resource over the connector's guarded client.
 pub struct HttpBroker {
-    http: Arc<GuardedClient>,
+    clients: ConnectorClients,
     max_body: usize,
     /// INV-RES-01: aggregate bytes in flight across this connector's fetches.
     /// `Unlimited` when no budget is configured, which is a deliberate choice
@@ -73,9 +116,9 @@ pub struct HttpBroker {
 impl HttpBroker {
     /// `max_body` mirrors `limits.upstream_response_bytes` (HR-02).
     #[must_use]
-    pub fn new(http: Arc<GuardedClient>, max_body: usize) -> Self {
+    pub fn new(clients: ConnectorClients, max_body: usize) -> Self {
         Self {
-            http,
+            clients,
             max_body,
             inflight: Arc::new(UnlimitedInflight),
         }
@@ -112,10 +155,10 @@ impl ConnectorBroker for HttpBroker {
             .reserve(&endpoint.id, self.max_body as u64)
             .ok_or(UpstreamError::Overloaded)?;
 
+        let http = self.clients.get(endpoint)?;
         let response = match spec.method {
             ResourceMethod::Get => {
-                self.http
-                    .get_with_bearer(&url, sub_token.expose_secret(), self.max_body)
+                http.get_with_bearer(&url, sub_token.expose_secret(), self.max_body)
                     .await
             }
             ResourceMethod::Post => {
@@ -129,9 +172,7 @@ impl ConnectorBroker for HttpBroker {
                 } else {
                     Some(sub_token.expose_secret())
                 };
-                self.http
-                    .post_json_raw(&url, bearer, &body, self.max_body)
-                    .await
+                http.post_json_raw(&url, bearer, &body, self.max_body).await
             }
         }
         .map_err(|error| map_transport_error(&error))?;
@@ -265,15 +306,13 @@ mod tests {
     use re0auth_api::connector::BodyField;
     use re0auth_api::connector::FaultClass;
     use re0auth_api::connector::ResourceSpec;
-    use re0auth_runtime::outbound::OutboundPolicy;
 
     fn endpoint() -> ConnectorEndpoint {
         ConnectorEndpoint {
             id: ConnectorId::new(),
             name: "test-connector".to_string(),
             base_url: "https://api.example.com".to_string(),
-            allow_private_net: false,
-            allow_link_local_metadata: false,
+            egress: EgressPolicy::Public,
             resources: vec![
                 ResourceSpec::new("scores", "/v1/scores/{subject}").expect("spec"),
                 ResourceSpec::new("me", "/v1/me").expect("spec"),
@@ -366,6 +405,90 @@ mod tests {
         assert_eq!(registry.resolve(&id).await.expect("resolve"), configured);
     }
 
+    #[test]
+    fn egress_policy_maps_to_one_client_policy() {
+        assert_eq!(
+            runtime_policy(EgressPolicy::Public),
+            (OutboundPolicy::PublicOnly, false)
+        );
+        assert_eq!(
+            runtime_policy(EgressPolicy::PrivateNet),
+            (OutboundPolicy::AllowPrivateNet, false)
+        );
+        assert_eq!(
+            runtime_policy(EgressPolicy::LinkLocalMetadata),
+            (OutboundPolicy::AllowLinkLocalMetadata, false)
+        );
+        assert_eq!(
+            runtime_policy(EgressPolicy::Loopback),
+            (OutboundPolicy::AllowLoopback, true)
+        );
+    }
+
+    /// The same address must be allowed or denied according to the connector
+    /// that owns the request, not a process-wide switch.
+    #[tokio::test]
+    async fn connector_policies_are_isolated() {
+        let mut public = endpoint();
+        public.egress = EgressPolicy::Public;
+        let mut private = endpoint();
+        private.id = ConnectorId::new();
+        private.egress = EgressPolicy::PrivateNet;
+        let mut metadata = endpoint();
+        metadata.id = ConnectorId::new();
+        metadata.egress = EgressPolicy::LinkLocalMetadata;
+        let mut loopback = endpoint();
+        loopback.id = ConnectorId::new();
+        loopback.egress = EgressPolicy::Loopback;
+
+        let clients = ConnectorClients::new(
+            &[
+                public.clone(),
+                private.clone(),
+                metadata.clone(),
+                loopback.clone(),
+            ],
+            TlsConfig::default(),
+        )
+        .expect("clients");
+
+        let public_client = clients.get(&public).expect("public client");
+        let private_client = clients.get(&private).expect("private client");
+        let metadata_client = clients.get(&metadata).expect("metadata client");
+        let loopback_client = clients.get(&loopback).expect("loopback client");
+
+        assert!(
+            public_client.vet("https://10.1.2.3/").await.is_err(),
+            "a public connector must not reach RFC1918"
+        );
+        assert!(
+            private_client.vet("https://10.1.2.3/").await.is_ok(),
+            "the private connector must reach RFC1918"
+        );
+        assert!(
+            private_client
+                .vet("https://169.254.169.254/")
+                .await
+                .is_err(),
+            "private-net must not imply metadata"
+        );
+        assert!(
+            metadata_client
+                .vet("https://169.254.169.254/")
+                .await
+                .is_ok(),
+            "the metadata connector must reach its explicit range"
+        );
+        assert!(
+            public_client.vet("https://127.0.0.1/").await.is_err(),
+            "loopback must not be inherited"
+        );
+        assert!(
+            loopback_client.vet("https://127.0.0.1/").await.is_ok(),
+            "the explicit loopback connector must reach loopback"
+        );
+    }
+
     /// INV-RES-01: an exhausted budget refuses the fetch *before* any request is
     /// built. The broker targets `api.example.com`, which no test environment can
     /// reach — so reaching it would surface as a transport error, not
@@ -376,13 +499,9 @@ mod tests {
         // A budget smaller than the response cap, so one reservation fills it.
         let budget = Arc::new(crate::ByteBudget::new(1024));
         let held = budget.reserve(&endpoint.id, 1024).expect("fill the budget");
-        let broker = HttpBroker::new(
-            Arc::new(
-                GuardedClient::with_policy(OutboundPolicy::PublicOnly, false).expect("client"),
-            ),
-            4 * 1024 * 1024,
-        )
-        .with_inflight_budget(budget);
+        let clients = ConnectorClients::new(std::slice::from_ref(&endpoint), TlsConfig::default())
+            .expect("clients");
+        let broker = HttpBroker::new(clients, 4 * 1024 * 1024).with_inflight_budget(budget);
 
         let result = broker
             .fetch_raw_data(

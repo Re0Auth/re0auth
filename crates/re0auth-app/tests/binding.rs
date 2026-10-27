@@ -9,7 +9,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use re0auth_api::cache::{Cache, CachedResponse, NoCache, key};
 use re0auth_api::connector::{
-    ConnectorAuth, ConnectorEndpoint, ConnectorRegistry, ExchangedCredential, UpstreamError,
+    ConnectorAuth, ConnectorEndpoint, ConnectorRegistry, EgressPolicy, ExchangedCredential,
+    UpstreamError,
 };
 use re0auth_api::ports::{BindingStatus, Storage, User, UserRole};
 use re0auth_api::secret::{SealedSecret, SecretSealer};
@@ -68,8 +69,8 @@ fn endpoint() -> ConnectorEndpoint {
         id: re0auth_app::gateway::connector_id_for_name("phigros"),
         name: "phigros".to_string(),
         base_url: "https://api.example.test".to_string(),
-        allow_private_net: false,
-        allow_link_local_metadata: false,
+        egress: EgressPolicy::Public,
+
         resources: Vec::new(),
     }
 }

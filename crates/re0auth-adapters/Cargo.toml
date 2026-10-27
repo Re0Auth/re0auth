@@ -17,7 +17,7 @@ jsonwebtoken.workspace = true
 moka.workspace = true
 pem.workspace = true
 getrandom.workspace = true
-re0auth-api = { version = "0.7.0", path = "../re0auth-api" }
+re0auth-api = { version = "0.8.0", path = "../re0auth-api" }
 re0auth-runtime = { version = "0.1.0", path = "../re0auth-runtime" }
 aws-lc-rs.workspace = true
 serde.workspace = true

@@ -67,7 +67,7 @@ inbound_body_bytes = 1048576
 # [tls]
 # extra_ca_file = "/etc/ssl/private-ca.pem"
 # allow_private_net = false   # 自建内网 Connector（BYOC）时才开
-# allow_loopback = false      # 仅本机 IdP/Connector；生产保持关闭
+# allow_loopback = false      # 全局天花板/IdP；Connector 仍需自己声明
 
 # 可选：配置后启用外部 IdP 登录。未配置时 /auth/login 返回 503。
 #
@@ -165,6 +165,7 @@ inbound_body_bytes = 1048576
 # base_url = "https://api.example.com"
 # allow_private_net = false
 # allow_link_local_metadata = false
+# allow_loopback = false
 #
 # [[connectors.resources]]
 # name = "scores"

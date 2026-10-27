@@ -3,7 +3,7 @@ use std::sync::Arc;
 use re0auth_api::audit::{AccessSource, AccessTelemetry};
 use re0auth_api::cache::Cache;
 use re0auth_api::connector::{
-    ConnectorEndpoint, FaultClass, ResourceSpec, UpstreamError, UpstreamPayload,
+    ConnectorEndpoint, EgressPolicy, FaultClass, ResourceSpec, UpstreamError, UpstreamPayload,
 };
 use re0auth_api::ports::{Binding, BindingStatus, Storage, TelemetrySink, User, UserRole};
 use re0auth_api::secret::SecretSealer;
@@ -59,8 +59,8 @@ async fn harness_with_cache(cache: Arc<dyn re0auth_api::cache::Cache>) -> Harnes
         id: connector_id,
         name: "phigros".to_string(),
         base_url: "https://connector.example".to_string(),
-        allow_private_net: false,
-        allow_link_local_metadata: false,
+        egress: EgressPolicy::Public,
+
         resources: vec![
             ResourceSpec::new("scores", "/v1/scores/{subject}")
                 .expect("spec")

@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use secrecy::ExposeSecret;
 
 use re0auth_api::connector::{
-    ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, ConnectorSecretStore, FaultClass,
-    ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
+    ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, ConnectorSecretStore, EgressPolicy,
+    FaultClass, ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
 };
 use re0auth_api::secret::{SealedSecret, SecretSealer};
 use re0auth_api::{BindingId, ConnectorId, Re0Error, Re0Result, SecretString};
@@ -278,8 +278,8 @@ pub async fn connector_contract_suite<C: ConnectorFixture + ?Sized>(connector: &
         id,
         name: "contract-connector".to_string(),
         base_url: "https://connector.example".to_string(),
-        allow_private_net: false,
-        allow_link_local_metadata: false,
+        egress: EgressPolicy::Public,
+
         resources: vec![ResourceSpec::new("scores", "/v1/scores/{subject}").expect("valid spec")],
     };
 
