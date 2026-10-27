@@ -12,7 +12,7 @@ async-trait.workspace = true
 base64.workspace = true
 hkdf.workspace = true
 percent-encoding.workspace = true
-re0auth-api = { version = "0.6.0", path = "../re0auth-api" }
+re0auth-api = { version = "0.7.0", path = "../re0auth-api" }
 re0auth-runtime = { version = "0.1.0", path = "../re0auth-runtime" }
 secrecy.workspace = true
 serde.workspace = true
