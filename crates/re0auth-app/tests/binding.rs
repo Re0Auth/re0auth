@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use re0auth_api::cache::{Cache, CachedResponse, NoCache, key};
 use re0auth_api::connector::{
     ConnectorAuth, ConnectorEndpoint, ConnectorRegistry, ExchangedCredential, UpstreamError,
 };
@@ -15,7 +16,7 @@ use re0auth_api::secret::{SealedSecret, SecretSealer};
 use re0auth_api::{
     BindingId, Clock, ConnectorId, Random, Re0Error, Re0Result, SecretString, Unix, UserId,
 };
-use re0auth_contract::memory::MemoryStore;
+use re0auth_contract::{ClockedCache, MemoryCache, MemoryStore};
 
 use re0auth_app::binding::{BindingError, BindingService};
 use re0auth_app::return_to::{self, FALLBACK};
@@ -156,6 +157,13 @@ impl SecretSealer for PlainSealer {
 }
 
 async fn setup(auth: RecordingAuth) -> (Arc<MemoryStore>, BindingService, UserId) {
+    setup_with_cache(auth, Arc::new(NoCache)).await
+}
+
+async fn setup_with_cache(
+    auth: RecordingAuth,
+    cache: Arc<dyn Cache>,
+) -> (Arc<MemoryStore>, BindingService, UserId) {
     let store = Arc::new(MemoryStore::new());
     let user = UserId::new();
     store
@@ -179,7 +187,8 @@ async fn setup(auth: RecordingAuth) -> (Arc<MemoryStore>, BindingService, UserId
         Arc::new(FixedClock(NOW)),
         Arc::new(CountingRandom(std::sync::atomic::AtomicU8::new(1))),
         "https://auth.example.test/bind/callback",
-    );
+    )
+    .with_cache(cache);
     (store, service, user)
 }
 
@@ -402,6 +411,78 @@ async fn rebinding_keeps_the_id_and_says_so() {
             .expect("list")
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn rebinding_invalidates_cached_responses() {
+    let cache: Arc<dyn Cache> = Arc::new(ClockedCache::new(
+        MemoryCache::new(),
+        Arc::new(FixedClock(NOW)),
+    ));
+    let (store, service, user) = setup_with_cache(RecordingAuth::ok(), cache.clone()).await;
+
+    let first = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    let created = service
+        .complete(user, &first.state, "code-1")
+        .await
+        .expect("first");
+    let cached_key = key(&created.binding.id, "phigros", "scores");
+    cache
+        .put(
+            &cached_key,
+            &CachedResponse {
+                content_type: "application/json".to_string(),
+                body: br#"{"account":"A"}"#.to_vec(),
+                stale: false,
+            },
+            std::time::Duration::from_secs(300),
+        )
+        .await;
+    let other_key = key(&BindingId::new(), "phigros", "scores");
+    cache
+        .put(
+            &other_key,
+            &CachedResponse {
+                content_type: "application/json".to_string(),
+                body: br#"{"account":"other"}"#.to_vec(),
+                stale: false,
+            },
+            std::time::Duration::from_secs(300),
+        )
+        .await;
+
+    let second = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    let replaced = service
+        .complete(user, &second.state, "code-2")
+        .await
+        .expect("second");
+
+    assert!(replaced.rebound);
+    assert_eq!(replaced.binding.id, created.binding.id);
+    assert!(
+        cache.get_any(&cached_key).await.is_none(),
+        "the old account's cached responses must be swept on rebind"
+    );
+    assert!(
+        cache.get_any(&other_key).await.is_some(),
+        "a different binding's cache must survive the sweep"
+    );
+
+    // The binding and its credential are both present after the atomic write.
+    assert!(
+        store
+            .bindings()
+            .load_sub_credential(&replaced.binding.id)
+            .await
+            .expect("load credential")
+            .is_some()
     );
 }
 

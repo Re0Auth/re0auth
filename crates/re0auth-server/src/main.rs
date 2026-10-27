@@ -292,6 +292,7 @@ async fn build_data_plane(
         &clock,
         &random,
         &http,
+        Arc::clone(&cache),
     )?;
 
     let gateway = GatewayService::new(
@@ -311,6 +312,7 @@ async fn build_data_plane(
 }
 
 /// Builds the binding service when at least one connector declares endpoints.
+#[allow(clippy::too_many_arguments)]
 fn build_binding(
     cfg: &config::Config,
     store: Arc<SqliteStore>,
@@ -319,6 +321,7 @@ fn build_binding(
     clock: &Arc<SystemClock>,
     random: &Arc<OsRandom>,
     http: &Arc<GuardedClient>,
+    cache: Arc<dyn re0auth_api::cache::Cache>,
 ) -> anyhow::Result<Option<BindingService>> {
     let mut configs = std::collections::HashMap::new();
     for connector in &cfg.connectors {
@@ -354,7 +357,8 @@ fn build_binding(
                 cfg.server.issuer.trim_end_matches('/')
             ),
         )
-        .with_bindable_upstreams(bindable),
+        .with_bindable_upstreams(bindable)
+        .with_cache(cache),
     ))
 }
 

@@ -10,7 +10,7 @@ use re0auth_api::secret::SealedSecret;
 use re0auth_api::{BindingId, Unix, UserId};
 
 use super::audit::record_fact;
-use super::{SqliteStore, db_error, row_to_binding, status_to_str};
+use super::{SqliteStore, db_error, parse_uuid, row_to_binding, status_to_str};
 #[async_trait]
 impl BindingRepo for SqliteStore {
     async fn upsert(&self, binding: &Binding, fact: &SecurityFact) -> RepoResult<()> {
@@ -47,6 +47,81 @@ impl BindingRepo for SqliteStore {
         record_fact(&mut tx, fact).await?;
         tx.commit().await.map_err(db_error)?;
         Ok(())
+    }
+
+    async fn upsert_with_credential(
+        &self,
+        binding: &Binding,
+        sealed: &SealedSecret,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<Binding> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(db_error)?;
+
+        let existing = sqlx::query(
+            "SELECT id, created_at FROM bindings WHERE user_id = ? AND upstream_id = ?",
+        )
+        .bind(binding.user_id.0.to_string())
+        .bind(&binding.upstream_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let stored = match existing {
+            Some(row) => {
+                let stored_id = BindingId(parse_uuid(
+                    &row.try_get::<String, _>("id").map_err(db_error)?,
+                )?);
+                if stored_id != binding.id {
+                    return Err(RepoError::Conflict("binding id"));
+                }
+                Binding {
+                    created_at: row.try_get("created_at").map_err(db_error)?,
+                    ..binding.clone()
+                }
+            }
+            None => binding.clone(),
+        };
+
+        sqlx::query(
+            "INSERT INTO bindings              (id, user_id, upstream_id, upstream_user_id, status, created_at, updated_at,               last_refreshed_at, last_error_code)              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(user_id, upstream_id) DO UPDATE SET              upstream_user_id = excluded.upstream_user_id,              status = excluded.status,              updated_at = excluded.updated_at,              last_refreshed_at = excluded.last_refreshed_at,              last_error_code = excluded.last_error_code,              revoked_at = NULL",
+        )
+        .bind(stored.id.0.to_string())
+        .bind(stored.user_id.0.to_string())
+        .bind(&stored.upstream_id)
+        .bind(&stored.upstream_user_id)
+        .bind(status_to_str(stored.status))
+        .bind(stored.created_at)
+        .bind(stored.updated_at)
+        .bind(stored.last_refreshed_at)
+        .bind(stored.last_error_code.as_deref())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        sqlx::query(
+            "INSERT INTO sub_credentials              (binding_id, key_version, dek_nonce, wrapped_dek, nonce, ciphertext, created_at, updated_at)              VALUES (?, ?, ?, ?, ?, ?, ?, ?)              ON CONFLICT(binding_id) DO UPDATE SET              key_version = excluded.key_version, dek_nonce = excluded.dek_nonce,              wrapped_dek = excluded.wrapped_dek, nonce = excluded.nonce,              ciphertext = excluded.ciphertext, updated_at = excluded.updated_at",
+        )
+        .bind(stored.id.0.to_string())
+        .bind(i64::from(sealed.key_version()))
+        .bind(sealed.dek_nonce())
+        .bind(sealed.wrapped_dek())
+        .bind(sealed.nonce())
+        .bind(sealed.ciphertext())
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+
+        let mut fact = fact.clone();
+        fact.target = format!("binding:{}", stored.id.0);
+        record_fact(&mut tx, &fact).await?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(stored)
     }
 
     async fn find(&self, user: &UserId, upstream: &str) -> RepoResult<Option<Binding>> {

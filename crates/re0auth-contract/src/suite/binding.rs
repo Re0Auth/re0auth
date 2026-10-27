@@ -3,7 +3,8 @@
 use super::{binding, fact, user};
 use re0auth_api::audit::AuditAction;
 use re0auth_api::ports::{
-    ANONYMIZED_UPSTREAM_USER_ID, Binding, BindingStatus, RepoError, Storage, User, UserRole,
+    ANONYMIZED_UPSTREAM_USER_ID, AuditFilter, Binding, BindingStatus, RepoError, Storage, User,
+    UserRole,
 };
 use re0auth_api::secret::SealedSecret;
 use re0auth_api::{BindingId, UserId};
@@ -169,6 +170,106 @@ pub async fn binding_contract<S: Storage>(store: &S) {
             .expect("load after missed rewrap"),
         Some(rewrapped.clone()),
         "a missed swap leaves the record exactly as it was"
+    );
+
+    let combined = SealedSecret::new(
+        1,
+        vec![0x14; 12],
+        vec![0x35; 44],
+        vec![0x15; 12],
+        vec![0x25; 32],
+    )
+    .expect("combined sealed secret");
+    let with_credential = Binding {
+        id: first.id,
+        upstream_user_id: "upstream-user-3".to_string(),
+        status: BindingStatus::Active,
+        updated_at: 1_280,
+        ..first.clone()
+    };
+    let stored = store
+        .bindings()
+        .upsert_with_credential(
+            &with_credential,
+            &combined,
+            &fact(AuditAction::BindingRebound, 1_280, "binding"),
+            1_280,
+        )
+        .await
+        .expect("upsert with credential");
+    assert_eq!(stored.id, first.id, "the stored id is returned");
+    assert_eq!(stored.created_at, first.created_at);
+    assert_eq!(stored.upstream_user_id, "upstream-user-3");
+    assert_eq!(
+        store
+            .bindings()
+            .load_sub_credential(&first.id)
+            .await
+            .expect("load combined credential"),
+        Some(combined.clone())
+    );
+    let rebound_facts = store
+        .audits()
+        .query(
+            &AuditFilter {
+                action: Some(AuditAction::BindingRebound),
+                ..Default::default()
+            },
+            None,
+            100,
+        )
+        .await
+        .expect("binding rebound audit");
+    assert!(
+        rebound_facts
+            .iter()
+            .any(|record| record.target == format!("binding:{}", first.id.0)),
+        "the audit target must name the stored binding id"
+    );
+
+    let wrong = Binding {
+        id: BindingId::new(),
+        upstream_user_id: "wrong-user".to_string(),
+        ..with_credential.clone()
+    };
+    let wrong_sealed = SealedSecret::new(
+        1,
+        vec![0x16; 12],
+        vec![0x36; 44],
+        vec![0x17; 12],
+        vec![0x26; 32],
+    )
+    .expect("wrong sealed secret");
+    assert!(matches!(
+        store
+            .bindings()
+            .upsert_with_credential(
+                &wrong,
+                &wrong_sealed,
+                &fact(AuditAction::BindingRebound, 1_290, "binding"),
+                1_290,
+            )
+            .await,
+        Err(RepoError::Conflict("binding id"))
+    ));
+    assert_eq!(
+        store
+            .bindings()
+            .find(&user.id, "phigros")
+            .await
+            .expect("find after conflict")
+            .expect("binding kept"),
+        stored,
+        "a mismatched id must not change the binding"
+    );
+    assert_eq!(
+        store
+            .bindings()
+            .load_sub_credential(&first.id)
+            .await
+            .expect("load after conflict"),
+        Some(combined),
+        "a mismatched id must not change the credential"
     );
 
     store
