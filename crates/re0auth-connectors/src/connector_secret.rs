@@ -29,9 +29,9 @@ const KEY_LEN: usize = 32;
 /// Distinct from `re0auth/sub-credential` and `re0auth/client-secret-pepper`:
 /// a key leaked from one derivation must not open another's ciphertext.
 const HKDF_INFO: &[u8] = b"re0auth/connector-root";
-/// Written by `put`; `get` accepts any version it can derive a key for, so a
-/// rotation only needs the old key kept alongside the new one.
-pub const CURRENT_KEY_VERSION: u32 = 1;
+/// Used when no explicit current version is supplied. Runtime callers pass
+/// `crypto.master_key_version` through [`EncryptedFileSecretStore::with_keys`].
+pub const DEFAULT_KEY_VERSION: u32 = 1;
 const FILE_VERSION: u32 = 1;
 
 type Nonce12 = Nonce<<Aes256Gcm as AeadCore>::NonceSize>;
@@ -52,7 +52,9 @@ struct Entry {
 
 pub struct EncryptedFileSecretStore {
     path: PathBuf,
-    master: Zeroizing<[u8; KEY_LEN]>,
+    current_version: u32,
+    /// One master key per version; `get` uses the version recorded on the entry.
+    keys: BTreeMap<u32, Zeroizing<[u8; KEY_LEN]>>,
     random: Arc<dyn Random>,
     /// Serializes read-modify-write cycles: two concurrent `put` calls would
     /// otherwise both read the old map and one entry would be lost.
@@ -68,19 +70,60 @@ impl EncryptedFileSecretStore {
         master_hex: &str,
         random: Arc<dyn Random>,
     ) -> anyhow::Result<Self> {
-        let bytes = re0auth_runtime::master_key::decode_hex(master_hex.trim())?;
-        if bytes.len() != KEY_LEN {
+        Self::with_keys(
+            path,
+            DEFAULT_KEY_VERSION,
+            [(DEFAULT_KEY_VERSION, master_hex)],
+            random,
+        )
+    }
+
+    /// A vault holding the current master key plus any retired keys.
+    ///
+    /// This mirrors the sub-credential sealer: a `put` uses the current version,
+    /// while a `get` uses the version recorded on the entry.
+    pub fn with_keys<'a>(
+        path: impl Into<PathBuf>,
+        current_version: u32,
+        keys: impl IntoIterator<Item = (u32, &'a str)>,
+        random: Arc<dyn Random>,
+    ) -> anyhow::Result<Self> {
+        if current_version == 0 {
+            anyhow::bail!("the current connector-secret key version must be greater than zero");
+        }
+        let mut parsed = BTreeMap::new();
+        for (version, master_hex) in keys {
+            if version == 0 {
+                anyhow::bail!("connector-secret key version 0 is not allowed");
+            }
+            if version > current_version {
+                anyhow::bail!(
+                    "connector-secret key version {version} is newer than the current version {current_version}"
+                );
+            }
+            let bytes = re0auth_runtime::master_key::decode_hex(master_hex.trim())?;
+            if bytes.len() != KEY_LEN {
+                anyhow::bail!(
+                    "connector secret encryption key version {version} must be {KEY_LEN} bytes ({} hex chars), got {}",
+                    KEY_LEN * 2,
+                    bytes.len()
+                );
+            }
+            let mut master = Zeroizing::new([0u8; KEY_LEN]);
+            master.copy_from_slice(&bytes);
+            if parsed.insert(version, master).is_some() {
+                anyhow::bail!("connector-secret key version {version} was configured twice");
+            }
+        }
+        if !parsed.contains_key(&current_version) {
             anyhow::bail!(
-                "connector secret encryption key must be {KEY_LEN} bytes ({} hex chars), got {}",
-                KEY_LEN * 2,
-                bytes.len()
+                "the current connector-secret key (version {current_version}) must be configured"
             );
         }
-        let mut master = Zeroizing::new([0u8; KEY_LEN]);
-        master.copy_from_slice(&bytes);
         Ok(Self {
             path: path.into(),
-            master,
+            current_version,
+            keys: parsed,
             random,
             gate: tokio::sync::Mutex::new(()),
         })
@@ -127,7 +170,12 @@ impl EncryptedFileSecretStore {
     }
 
     fn derive(&self, key_version: u32) -> Re0Result<Zeroizing<[u8; KEY_LEN]>> {
-        let hkdf = Hkdf::<Sha256>::new(None, self.master.as_ref());
+        let master = self.keys.get(&key_version).ok_or_else(|| {
+            internal(&format!(
+                "no connector-secret key is configured for version {key_version}"
+            ))
+        })?;
+        let hkdf = Hkdf::<Sha256>::new(None, master.as_ref());
         let mut info = Vec::with_capacity(HKDF_INFO.len() + 4);
         info.extend_from_slice(HKDF_INFO);
         info.extend_from_slice(&key_version.to_be_bytes());
@@ -180,6 +228,86 @@ impl EncryptedFileSecretStore {
             )));
         }
         Ok(envelope)
+    }
+
+    /// Encrypts one entry under the current key version.
+    fn encrypt_entry(&self, key: &str, secret: &SecretString) -> Re0Result<Entry> {
+        let cipher = self.cipher(self.current_version)?;
+        let nonce_bytes = self.random.bytes(NONCE_LEN);
+        if nonce_bytes.len() != NONCE_LEN {
+            return Err(internal("random source returned a short nonce"));
+        }
+        let nonce: [u8; NONCE_LEN] = nonce_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| internal("nonce must be 12 bytes"))?;
+        let ciphertext = cipher
+            .encrypt(
+                &Nonce12::from(nonce),
+                Payload {
+                    msg: secret.expose_secret().as_bytes(),
+                    aad: aad(key),
+                },
+            )
+            .map_err(|_| internal("seal connector secret failed"))?;
+        Ok(Entry {
+            key_version: self.current_version,
+            nonce: BASE64.encode(nonce),
+            ciphertext: BASE64.encode(ciphertext),
+        })
+    }
+
+    /// Decrypts one entry under the version it records.
+    fn decrypt_entry(&self, key: &str, entry: &Entry) -> Re0Result<SecretString> {
+        let cipher = self.cipher(entry.key_version)?;
+        let nonce_bytes = BASE64
+            .decode(&entry.nonce)
+            .map_err(|_| internal("connector secret nonce is not base64"))?;
+        let nonce: [u8; NONCE_LEN] = nonce_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| internal("connector secret nonce must be 12 bytes"))?;
+        let ciphertext = BASE64
+            .decode(&entry.ciphertext)
+            .map_err(|_| internal("connector secret ciphertext is not base64"))?;
+        let plaintext = cipher
+            .decrypt(
+                &Nonce12::from(nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: aad(key),
+                },
+            )
+            .map_err(|_| internal("connector secret failed authentication"))?;
+        let text =
+            String::from_utf8(plaintext).map_err(|_| internal("connector secret is not UTF-8"))?;
+        Ok(SecretString::from(text))
+    }
+
+    /// Re-wraps every entry onto the current key version.
+    ///
+    /// Returns how many entries moved. Re-running after a partial migration is
+    /// safe: entries already on the current version are left alone. An entry
+    /// whose version is not configured fails the whole call before the file is
+    /// replaced, so a missing retired key cannot silently drop data.
+    pub async fn rewrap_all(&self) -> Re0Result<usize> {
+        let _guard = self.gate.lock().await;
+        let mut envelope = self.load()?;
+        let mut moved = 0;
+        for (key, entry) in &mut envelope.entries {
+            // Verify current entries too: a version tag that lies about the key
+            // material must fail the rotation, not pass as "already done".
+            let secret = self.decrypt_entry(key, entry)?;
+            if entry.key_version == self.current_version {
+                continue;
+            }
+            *entry = self.encrypt_entry(key, &secret)?;
+            moved += 1;
+        }
+        if moved > 0 {
+            self.store(&envelope)?;
+        }
+        Ok(moved)
     }
 
     /// Writes to a sibling temp file and renames, so a crash mid-write cannot
@@ -250,34 +378,9 @@ fn internal(message: &str) -> Re0Error {
 impl ConnectorSecretStore for EncryptedFileSecretStore {
     async fn put(&self, key: &str, secret: &SecretString) -> Re0Result<()> {
         let _guard = self.gate.lock().await;
-        let cipher = self.cipher(CURRENT_KEY_VERSION)?;
-        let nonce_bytes = self.random.bytes(NONCE_LEN);
-        if nonce_bytes.len() != NONCE_LEN {
-            return Err(internal("random source returned a short nonce"));
-        }
-        let nonce: [u8; NONCE_LEN] = nonce_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| internal("nonce must be 12 bytes"))?;
-        let ciphertext = cipher
-            .encrypt(
-                &Nonce12::from(nonce),
-                Payload {
-                    msg: secret.expose_secret().as_bytes(),
-                    aad: aad(key),
-                },
-            )
-            .map_err(|_| internal("seal connector secret failed"))?;
-
+        let entry = self.encrypt_entry(key, secret)?;
         let mut envelope = self.load()?;
-        envelope.entries.insert(
-            key.to_string(),
-            Entry {
-                key_version: CURRENT_KEY_VERSION,
-                nonce: BASE64.encode(nonce),
-                ciphertext: BASE64.encode(ciphertext),
-            },
-        );
+        envelope.entries.insert(key.to_string(), entry);
         self.store(&envelope)
     }
 
@@ -287,29 +390,7 @@ impl ConnectorSecretStore for EncryptedFileSecretStore {
         let Some(entry) = envelope.entries.get(key) else {
             return Ok(None);
         };
-        let cipher = self.cipher(entry.key_version)?;
-        let nonce_bytes = BASE64
-            .decode(&entry.nonce)
-            .map_err(|_| internal("connector secret nonce is not base64"))?;
-        let nonce: [u8; NONCE_LEN] = nonce_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| internal("connector secret nonce must be 12 bytes"))?;
-        let ciphertext = BASE64
-            .decode(&entry.ciphertext)
-            .map_err(|_| internal("connector secret ciphertext is not base64"))?;
-        let plaintext = cipher
-            .decrypt(
-                &Nonce12::from(nonce),
-                Payload {
-                    msg: &ciphertext,
-                    aad: aad(key),
-                },
-            )
-            .map_err(|_| internal("connector secret failed authentication"))?;
-        let text =
-            String::from_utf8(plaintext).map_err(|_| internal("connector secret is not UTF-8"))?;
-        Ok(Some(SecretString::from(text)))
+        self.decrypt_entry(key, entry).map(Some)
     }
 
     async fn delete(&self, key: &str) -> Re0Result<()> {

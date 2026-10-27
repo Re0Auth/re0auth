@@ -36,7 +36,7 @@ use routes::oauth::{
     userinfo,
 };
 use routes::session::{
-    auth_callback, authorizations, login, logout, logout_all, me, revoke_authorization,
+    auth_callback, authorizations, login, logout, logout_all, me, providers, revoke_authorization,
 };
 
 pub use routes::session::{MeUserView, MeView};
@@ -147,6 +147,7 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/jwks.json", get(jwks))
+        .route("/api/auth/providers", get(providers))
         .route("/auth/login", get(login))
         .route("/auth/callback", get(auth_callback))
         .route("/oauth/authorize", get(authorize))

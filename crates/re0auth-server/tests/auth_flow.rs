@@ -434,6 +434,10 @@ async fn an_explicitly_configured_endpoint_is_taken_as_is() {
 }
 
 async fn setup() -> TestApp {
+    setup_with_providers(&[("test-idp", "test-idp")]).await
+}
+
+async fn setup_with_providers(providers: &[(&str, &str)]) -> TestApp {
     let mock = start_mock().await;
     let store = SqliteStore::connect("sqlite::memory:")
         .await
@@ -475,17 +479,15 @@ async fn setup() -> TestApp {
         ),
         ISSUER,
     );
-    let auth = AuthService::new(
-        Arc::new(store.clone()),
-        vec![re0auth_app::auth::NamedIdp {
-            name: "test-idp".to_string(),
-            client: provider,
-        }],
-        signer,
-        clock,
-        random,
-        ISSUER,
-    );
+    let idps = providers
+        .iter()
+        .map(|(name, display_name)| re0auth_app::auth::NamedIdp {
+            name: (*name).to_string(),
+            display_name: (*display_name).to_string(),
+            client: Arc::clone(&provider) as Arc<dyn IdpClient>,
+        })
+        .collect();
+    let auth = AuthService::new(Arc::new(store.clone()), idps, signer, clock, random, ISSUER);
     let client_id = ClientId::new();
     store
         .clients()
@@ -1234,4 +1236,108 @@ async fn duplicate_kids_in_the_jwks_are_rejected() {
     let result = provider.exchange_code("code", "verifier", "").await;
     let error = result.expect_err("an ambiguous kid must be refused");
     assert!(error.to_string().contains("ambiguous"), "{error}");
+}
+
+/// The login page must be able to discover providers before it has a session;
+/// this endpoint is the contract the SPA uses to render the selector.
+#[tokio::test]
+async fn providers_endpoint_lists_configured_idps_without_a_session() {
+    let app = setup_with_providers(&[("qq", "QQ"), ("discord", "Discord")]).await;
+    let response = get_request(&app, "/api/auth/providers", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json")),
+        "the selector consumes JSON"
+    );
+    let body: Value = serde_json::from_str(&response_text(response).await).expect("json");
+    assert_eq!(
+        body,
+        json!({
+            "providers": [
+                {"name": "qq", "display_name": "QQ"},
+                {"name": "discord", "display_name": "Discord"}
+            ]
+        })
+    );
+}
+
+#[tokio::test]
+async fn login_without_idp_redirects_to_the_selector_when_several_exist() {
+    let app = setup_with_providers(&[("first", "First"), ("second", "Second")]).await;
+    let response = get_request(&app, "/auth/login?return_to=%2Faccount", None).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/login?return_to=%2Faccount")
+    );
+}
+
+#[tokio::test]
+async fn device_start_without_idp_redirects_to_the_selector_when_several_exist() {
+    let app = setup_with_providers(&[("first", "First"), ("second", "Second")]).await;
+    let body = form(&[
+        ("client_id", app.client_id.0.to_string().as_str()),
+        ("scope", "openid"),
+    ]);
+    let authorization = post_form(&app, "/oauth/device_authorization", body, &[]).await;
+    assert_eq!(authorization.status(), StatusCode::OK);
+    let device: Value = serde_json::from_str(&response_text(authorization).await).expect("json");
+    let user_code = device["user_code"].as_str().expect("user_code");
+    let response = get_request(
+        &app,
+        &format!("/device/start?{}", form(&[("user_code", user_code)])),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some(format!("/device?user_code={user_code}").as_str())
+    );
+
+    let with_idp = get_request(
+        &app,
+        &format!(
+            "/device/start?{}",
+            form(&[("user_code", user_code), ("idp", "second")])
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(with_idp.status(), StatusCode::SEE_OTHER);
+    let location = with_idp
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("authorization redirect");
+    assert!(
+        location.contains("state="),
+        "the selected provider must receive an authorization redirect: {location}"
+    );
+}
+
+#[tokio::test]
+async fn login_with_idp_redirects_to_the_selected_provider_when_several_exist() {
+    let app = setup_with_providers(&[("first", "First"), ("second", "Second")]).await;
+    let response = get_request(&app, "/auth/login?return_to=%2F&idp=second", None).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("authorization redirect");
+    assert!(
+        location.contains("state="),
+        "the selected provider must receive an authorization redirect: {location}"
+    );
 }

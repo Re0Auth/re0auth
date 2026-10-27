@@ -23,25 +23,33 @@ use secrecy::ExposeSecret;
 
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
-/// The version `seal` writes and `rewrap` moves a record onto. Retired versions
-/// stay readable because [`AesGcmSealer::with_keys`] holds them.
-pub const CURRENT_KEY_VERSION: u32 = 1;
+/// The version used when no explicit current version is supplied.
+///
+/// Runtime callers must pass `crypto.master_key_version` through
+/// [`AesGcmSealer::with_keys`]; this constant only keeps embedded/test callers
+/// on the historical version. It is not "the current version".
+pub const DEFAULT_KEY_VERSION: u32 = 1;
 
 type Nonce12 = Nonce<<Aes256Gcm as AeadCore>::NonceSize>;
 
 pub struct AesGcmSealer {
-    /// Keyed by version. `CURRENT_KEY_VERSION` is always present; retired keys
-    /// are kept so records written before a rotation can still be opened and
+    current_version: u32,
+    /// Keyed by version. `current_version` is always present; retired keys are
+    /// kept so records written before a rotation can still be opened and
     /// re-wrapped. Dropping a retired key is what makes its records unreadable,
-    /// so it must happen only after a rotation reports `skipped == 0`.
+    /// so it must happen only after a rotation reports `failed == 0`.
     keys: std::collections::BTreeMap<u32, Zeroizing<[u8; KEY_LEN]>>,
     random: std::sync::Arc<dyn Random>,
 }
 
 impl AesGcmSealer {
-    /// A sealer holding one key, at the current version.
+    /// A sealer holding one key, at the historical default version.
     pub fn new(master_hex: &str, random: std::sync::Arc<dyn Random>) -> anyhow::Result<Self> {
-        Self::with_keys(std::iter::once((CURRENT_KEY_VERSION, master_hex)), random)
+        Self::with_keys(
+            DEFAULT_KEY_VERSION,
+            std::iter::once((DEFAULT_KEY_VERSION, master_hex)),
+            random,
+        )
     }
 
     /// A sealer holding a current key plus any retired keys.
@@ -50,12 +58,28 @@ impl AesGcmSealer {
     /// under an older key cannot be re-wrapped without the key that wrapped it.
     /// Configuration therefore has to name them explicitly during a rotation, and
     /// an unknown version in the data is an error rather than a silent skip.
+    ///
+    /// `current_version` must be non-zero and every supplied version must be
+    /// less than or equal to it. A future version cannot be retired yet: that
+    /// would mean the configuration already knows a key the data cannot use.
     pub fn with_keys<'a>(
+        current_version: u32,
         keys: impl IntoIterator<Item = (u32, &'a str)>,
         random: std::sync::Arc<dyn Random>,
     ) -> anyhow::Result<Self> {
+        if current_version == 0 {
+            anyhow::bail!("the current encryption key version must be greater than zero");
+        }
         let mut parsed = std::collections::BTreeMap::new();
         for (version, master_hex) in keys {
+            if version == 0 {
+                anyhow::bail!("encryption key version 0 is not allowed");
+            }
+            if version > current_version {
+                anyhow::bail!(
+                    "encryption key version {version} is newer than the current version {current_version}"
+                );
+            }
             let bytes = decode_hex(master_hex.trim())?;
             if bytes.len() != KEY_LEN {
                 anyhow::bail!(
@@ -70,23 +94,52 @@ impl AesGcmSealer {
                 anyhow::bail!("encryption key version {version} was configured twice");
             }
         }
-        if !parsed.contains_key(&CURRENT_KEY_VERSION) {
+        if !parsed.contains_key(&current_version) {
             anyhow::bail!(
-                "the current encryption key (version {CURRENT_KEY_VERSION}) must be configured"
+                "the current encryption key (version {current_version}) must be configured"
             );
         }
         Ok(Self {
+            current_version,
             keys: parsed,
             random,
         })
     }
 
+    /// The version `seal` writes and `rewrap` moves a record onto.
+    #[must_use]
+    pub fn current_version(&self) -> u32 {
+        self.current_version
+    }
+
     /// Reads `RE0AUTH_ENCRYPTION_KEY` or a `0600` file. Exactly one source.
+    ///
+    /// Uses [`DEFAULT_KEY_VERSION`]; a deployment that configures a current key
+    /// version should build through [`Self::with_keys`] (the server does).
     pub fn from_env_or_file(
         file: Option<&Path>,
         random: std::sync::Arc<dyn Random>,
     ) -> anyhow::Result<Self> {
-        Self::from_env_or_file_with(std::env::var("RE0AUTH_ENCRYPTION_KEY").ok(), file, random)
+        Self::from_env_or_file_with(
+            DEFAULT_KEY_VERSION,
+            std::env::var("RE0AUTH_ENCRYPTION_KEY").ok(),
+            file,
+            random,
+        )
+    }
+
+    /// Like [`Self::from_env_or_file`], but stamps records with `current_version`.
+    pub fn from_env_or_file_with_version(
+        current_version: u32,
+        file: Option<&Path>,
+        random: std::sync::Arc<dyn Random>,
+    ) -> anyhow::Result<Self> {
+        Self::from_env_or_file_with(
+            current_version,
+            std::env::var("RE0AUTH_ENCRYPTION_KEY").ok(),
+            file,
+            random,
+        )
     }
 
     /// The raw master key, resolved the same way `from_env_or_file` resolves it.
@@ -98,11 +151,17 @@ impl AesGcmSealer {
     }
 
     fn from_env_or_file_with(
+        current_version: u32,
         env_value: Option<String>,
         file: Option<&Path>,
         random: std::sync::Arc<dyn Random>,
     ) -> anyhow::Result<Self> {
-        Self::new(&resolve_master_key(env_value, file)?, random)
+        let master = resolve_master_key(env_value, file)?;
+        Self::with_keys(
+            current_version,
+            std::iter::once((current_version, master.as_str())),
+            random,
+        )
     }
 
     /// The cipher for a given key version, or an error naming the version.
@@ -127,7 +186,7 @@ fn internal(message: &str) -> Re0Error {
 
 impl SecretSealer for AesGcmSealer {
     fn seal(&self, binding: &BindingId, plaintext: &SecretString) -> Re0Result<SealedSecret> {
-        let key_version = CURRENT_KEY_VERSION;
+        let key_version = self.current_version;
 
         // A fresh DEK per record: rotating the KEK then never has to touch a
         // payload, and revoking one credential cannot affect another's key.
@@ -188,7 +247,7 @@ impl SecretSealer for AesGcmSealer {
     }
 
     fn rewrap(&self, binding: &BindingId, sealed: &SealedSecret) -> Re0Result<SealedSecret> {
-        if sealed.key_version() == CURRENT_KEY_VERSION {
+        if sealed.key_version() == self.current_version {
             // Already current. Still unwrap, so a deployment that changed the key
             // material without changing the version is caught here rather than
             // when a user cannot reach their own data.
@@ -212,7 +271,7 @@ impl SecretSealer for AesGcmSealer {
         let (dek_nonce, wrapped_dek) = self.wrap(&dek, &binding_aad)?;
 
         SealedSecret::new(
-            CURRENT_KEY_VERSION,
+            self.current_version,
             dek_nonce,
             wrapped_dek,
             sealed.nonce().to_vec(),
@@ -226,7 +285,7 @@ impl AesGcmSealer {
     /// it again: a wrap that produced bytes the same key cannot read would only
     /// surface when a user tries to use the credential.
     fn wrap(&self, dek: &Zeroizing<[u8; KEY_LEN]>, aad: &[u8]) -> Re0Result<(Vec<u8>, Vec<u8>)> {
-        let kek = self.cipher(CURRENT_KEY_VERSION)?;
+        let kek = self.cipher(self.current_version)?;
         let nonce_bytes = self.random.bytes(NONCE_LEN);
         if nonce_bytes.len() != NONCE_LEN {
             return Err(internal("random source returned a short nonce"));
@@ -323,7 +382,7 @@ mod tests {
         let sealed = sealer.seal(&binding, &token()).expect("seal");
         assert_ne!(sealed.ciphertext(), b"sub-token-value");
         assert_eq!(sealed.nonce().len(), NONCE_LEN);
-        assert_eq!(sealed.key_version(), CURRENT_KEY_VERSION);
+        assert_eq!(sealed.key_version(), DEFAULT_KEY_VERSION);
     }
 
     #[test]
@@ -453,6 +512,7 @@ mod tests {
 
         assert!(
             AesGcmSealer::from_env_or_file_with(
+                DEFAULT_KEY_VERSION,
                 Some(MASTER.to_string()),
                 Some(&file),
                 random.clone()
@@ -461,12 +521,25 @@ mod tests {
             "setting both sources must fail"
         );
         assert!(
-            AesGcmSealer::from_env_or_file_with(Some(MASTER.to_string()), None, random.clone())
-                .is_ok()
+            AesGcmSealer::from_env_or_file_with(
+                DEFAULT_KEY_VERSION,
+                Some(MASTER.to_string()),
+                None,
+                random.clone()
+            )
+            .is_ok()
         );
-        assert!(AesGcmSealer::from_env_or_file_with(None, Some(&file), random.clone()).is_ok());
         assert!(
-            AesGcmSealer::from_env_or_file_with(None, None, random).is_err(),
+            AesGcmSealer::from_env_or_file_with(
+                DEFAULT_KEY_VERSION,
+                None,
+                Some(&file),
+                random.clone()
+            )
+            .is_ok()
+        );
+        assert!(
+            AesGcmSealer::from_env_or_file_with(DEFAULT_KEY_VERSION, None, None, random).is_err(),
             "no source must fail"
         );
 
@@ -542,10 +615,10 @@ mod tests {
         let binding = BindingId::new();
         let old = AesGcmSealer::new(MASTER, Arc::new(FixedRandom(0x11))).expect("old");
         let sealed = old.seal(&binding, &token()).expect("seal");
-        assert_eq!(sealed.key_version(), CURRENT_KEY_VERSION);
+        assert_eq!(sealed.key_version(), DEFAULT_KEY_VERSION);
 
         let same = old.rewrap(&binding, &sealed).expect("rewrap");
-        assert_eq!(same.key_version(), CURRENT_KEY_VERSION);
+        assert_eq!(same.key_version(), DEFAULT_KEY_VERSION);
 
         // Same version tag, different key material: the record must be refused
         // rather than assumed fine.
@@ -588,7 +661,8 @@ mod tests {
     #[test]
     fn a_sealer_must_hold_the_current_key() {
         let other = "1111111111111111111111111111111111111111111111111111111111111111";
-        let Err(error) = AesGcmSealer::with_keys([(7u32, other)], Arc::new(FixedRandom(0))) else {
+        let Err(error) = AesGcmSealer::with_keys(7, [(1u32, other)], Arc::new(FixedRandom(0)))
+        else {
             panic!("a sealer without the current key must refuse to build");
         };
         assert!(
@@ -600,11 +674,80 @@ mod tests {
     #[test]
     fn a_version_configured_twice_is_rejected() {
         let Err(error) = AesGcmSealer::with_keys(
-            [(CURRENT_KEY_VERSION, MASTER), (CURRENT_KEY_VERSION, MASTER)],
+            DEFAULT_KEY_VERSION,
+            [(DEFAULT_KEY_VERSION, MASTER), (DEFAULT_KEY_VERSION, MASTER)],
             Arc::new(FixedRandom(0)),
         ) else {
             panic!("a duplicate version is ambiguous");
         };
         assert!(error.to_string().contains("configured twice"), "{error}");
+    }
+
+    const ROTATED_MASTER: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+    /// The rotation path in one test: a record sealed under v1 must open with
+    /// the v2 sealer that still holds v1, move onto v2, and new records must
+    /// already be stamped v2.
+    #[test]
+    fn a_retired_key_opens_a_record_and_rewrap_moves_it_to_the_current_version() {
+        let binding = BindingId::new();
+        let old = AesGcmSealer::new(MASTER, Arc::new(FixedRandom(0x11))).expect("old");
+        let sealed = old.seal(&binding, &token()).expect("seal v1");
+
+        let rotated = AesGcmSealer::with_keys(
+            2,
+            [(1, MASTER), (2, ROTATED_MASTER)],
+            Arc::new(FixedRandom(0x22)),
+        )
+        .expect("v2 with retired v1");
+        assert_eq!(rotated.current_version(), 2);
+        assert_eq!(
+            rotated
+                .open(&binding, &sealed)
+                .expect("open v1")
+                .expose_secret(),
+            "sub-token-value"
+        );
+
+        let moved = rotated.rewrap(&binding, &sealed).expect("rewrap to v2");
+        assert_eq!(moved.key_version(), 2);
+        assert_eq!(
+            rotated
+                .open(&binding, &moved)
+                .expect("open v2")
+                .expose_secret(),
+            "sub-token-value"
+        );
+        assert!(
+            old.open(&binding, &moved).is_err(),
+            "the old sealer does not hold v2"
+        );
+
+        let fresh = rotated.seal(&binding, &token()).expect("seal v2");
+        assert_eq!(fresh.key_version(), 2);
+    }
+
+    #[test]
+    fn version_zero_is_rejected() {
+        let Err(error) = AesGcmSealer::with_keys(0, [(0u32, MASTER)], Arc::new(FixedRandom(0)))
+        else {
+            panic!("version zero must be refused");
+        };
+        assert!(error.to_string().contains("greater than zero"), "{error}");
+    }
+
+    #[test]
+    fn a_retired_version_newer_than_current_is_rejected() {
+        let Err(error) = AesGcmSealer::with_keys(
+            1,
+            [(1u32, MASTER), (2u32, ROTATED_MASTER)],
+            Arc::new(FixedRandom(0)),
+        ) else {
+            panic!("a future version cannot already be retired");
+        };
+        assert!(
+            error.to_string().contains("newer than the current"),
+            "{error}"
+        );
     }
 }

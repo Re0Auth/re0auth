@@ -187,6 +187,8 @@ pub struct AuthService {
 #[derive(Clone)]
 pub struct NamedIdp {
     pub name: String,
+    /// Human-readable label for the login selector. Defaults to `name`.
+    pub display_name: String,
     pub client: Arc<dyn IdpClient>,
 }
 
@@ -194,8 +196,16 @@ impl std::fmt::Debug for NamedIdp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NamedIdp")
             .field("name", &self.name)
+            .field("display_name", &self.display_name)
             .finish()
     }
+}
+
+/// A provider as exposed to the login UI.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProviderView {
+    pub name: String,
+    pub display_name: String,
 }
 
 impl AuthService {
@@ -264,8 +274,14 @@ impl AuthService {
 
     /// Providers in configuration order, for rendering a login selector.
     #[must_use]
-    pub fn provider_names(&self) -> Vec<&str> {
-        self.idps.iter().map(|idp| idp.name.as_str()).collect()
+    pub fn providers(&self) -> Vec<ProviderView> {
+        self.idps
+            .iter()
+            .map(|idp| ProviderView {
+                name: idp.name.clone(),
+                display_name: idp.display_name.clone(),
+            })
+            .collect()
     }
 
     #[must_use]

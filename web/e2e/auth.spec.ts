@@ -205,7 +205,8 @@ async function startRe0auth(): Promise<void> {
 		config,
 		`[server]\nbind = "127.0.0.1:${APP_PORT}"\nissuer = "${APP}"\ntrusted_proxies = []\n\n` +
 			`[database]\nurl = "sqlite://data/e2e.db"\n\n` +
-			`[crypto]\nmaster_key_file = "data/master.key"\nsigning_key_file = "data/signing-key.pem"\n\n` +
+			`[crypto]\nmaster_key_file = "data/master.key"
+master_key_version = 1\nsigning_key_file = "data/signing-key.pem"\n\n` +
 			// The mock IdP is plain HTTP on loopback. The guard refuses that by
 			// default, so without this the server dies at startup and the suite
 			// reports "did not become healthy" instead of what actually broke.

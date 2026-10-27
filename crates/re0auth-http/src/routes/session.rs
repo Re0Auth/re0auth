@@ -9,7 +9,7 @@ use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Json, Redirect, Response};
 use re0auth_api::ClientId;
-use re0auth_app::auth::{AuthError, LoginOutcome, SessionContext};
+use re0auth_app::auth::{AuthError, LoginOutcome, ProviderView, SessionContext};
 use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
 use uuid::Uuid;
@@ -23,6 +23,19 @@ use crate::parsers::{csrf_cookie, csrf_header, session_cookie};
 use crate::rate::charge_unauthenticated;
 use crate::request_id;
 use crate::{ApiError, AppState, Shape, auth_error, no_store};
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProvidersResponse {
+    providers: Vec<ProviderView>,
+}
+
+/// Public: the login page needs this before a session exists. It exposes only
+/// selector ids and display labels, never client ids or secrets.
+pub(crate) async fn providers(State(state): State<AppState>) -> Json<ProvidersResponse> {
+    Json(ProvidersResponse {
+        providers: state.auth.providers(),
+    })
+}
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct LoginQuery {
@@ -53,11 +66,22 @@ pub(crate) async fn login(
         return Err(HtmlFailure(Box::new(response)));
     }
     let return_to = query.return_to.as_deref().unwrap_or("/");
-    let start = state
+    let start = match state
         .auth
         .start_login(return_to, query.idp.as_deref())
         .await
-        .map_err(auth_error_html)?;
+    {
+        Ok(start) => start,
+        // Several providers: send the browser to the SPA selector instead of a
+        // dead-end error page. The selector calls this route again with `idp`.
+        Err(AuthError::IdentityProviderRequired) => {
+            let mut serializer = form_urlencoded::Serializer::new(String::new());
+            serializer.append_pair("return_to", return_to);
+            let location = format!("/login?{}", serializer.finish());
+            return Ok(Redirect::to(&location).into_response());
+        }
+        Err(error) => return Err(auth_error_html(error)),
+    };
     let mut response = Redirect::to(&start.url).into_response();
     append_set_cookie(
         &mut response,

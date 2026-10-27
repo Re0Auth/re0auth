@@ -12,6 +12,17 @@ export class ApiError extends Error {
 	}
 }
 
+export const providerSchema = z.object({
+	name: z.string(),
+	display_name: z.string()
+});
+
+export const providersSchema = z.object({
+	providers: z.array(providerSchema)
+});
+
+export type Provider = z.infer<typeof providerSchema>;
+
 export const missingBindingSchema = z.object({
 	upstream_id: z.string(),
 	scopes: z.array(z.string())
@@ -200,9 +211,23 @@ export async function apiDeleteJson<T>(path: string, schema: z.ZodType<T>): Prom
 	return schema.parse(await response.json());
 }
 
-export function startLogin(returnTo: string): void {
+export async function fetchProviders(): Promise<Provider[]> {
+	const body = await apiGet('/api/auth/providers', providersSchema);
+	return body.providers;
+}
+
+/// Starts the IdP redirect directly. `idp` is required when several providers
+/// are configured; the login page supplies it from the selector.
+export function startLogin(returnTo: string, idp?: string): void {
 	const query = new URLSearchParams({ return_to: returnTo });
+	if (idp) query.set('idp', idp);
 	window.location.assign(`/auth/login?${query.toString()}`);
+}
+
+/// Sends the browser to the login selector rather than guessing a provider.
+export function openLogin(returnTo: string): void {
+	const query = new URLSearchParams({ return_to: returnTo });
+	window.location.assign(`/login?${query.toString()}`);
 }
 
 export function currentLocation(): string {

@@ -9,6 +9,7 @@ url = "sqlite:///app/data/re0auth.db"
 
 [crypto]
 master_key_file = "/app/data/keys/master.key"
+master_key_version = 1
 signing_key_file = "/app/data/keys/signing-key.pem"
 
 [limits]

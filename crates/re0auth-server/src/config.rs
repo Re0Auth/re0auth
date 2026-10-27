@@ -199,9 +199,19 @@ pub struct DatabaseConfig {
     pub url: String,
 }
 
+fn default_master_key_version() -> u32 {
+    1
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CryptoConfig {
     pub master_key_file: String,
+    /// Version stamped on newly sealed records and client-secret hashes.
+    ///
+    /// Rotation is expressed by raising this, pointing `master_key_file` at the
+    /// new key, and listing the old key under `retired_master_key_files`.
+    #[serde(default = "default_master_key_version")]
+    pub master_key_version: u32,
     pub signing_key_file: String,
     /// Keys a rotation must still be able to open, as `(version, file)`.
     ///
@@ -444,6 +454,9 @@ pub struct IdentityProviderConfig {
     /// when omitted, so a single-provider setup needs no new field.
     #[serde(default)]
     pub name: String,
+    /// Human-readable label shown in the login selector. Defaults to `name`.
+    #[serde(default)]
+    pub display_name: String,
     /// Stable namespace recorded in `identities.issuer`.
     ///
     /// For `oidc` this is the protocol issuer and is checked against discovery.
@@ -487,6 +500,15 @@ impl IdentityProviderConfig {
     /// selector readable in a query string, where `https://` would be escaped.
     /// Two providers on the same host must be told apart by an explicit `name`,
     /// which `validate` enforces.
+    /// The label the login selector shows, falling back to the selector name.
+    #[must_use]
+    pub fn effective_display_name(&self) -> Cow<'_, str> {
+        if !self.display_name.trim().is_empty() {
+            return Cow::Borrowed(self.display_name.trim());
+        }
+        self.effective_name()
+    }
+
     #[must_use]
     pub fn effective_name(&self) -> Cow<'_, str> {
         if !self.name.trim().is_empty() {
@@ -515,6 +537,7 @@ impl std::fmt::Debug for IdentityProviderConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdentityProviderConfig")
             .field("name", &self.name)
+            .field("display_name", &self.display_name)
             .field("issuer", &self.issuer)
             .field("client_id", &self.client_id)
             .field("client_secret", &"<redacted>")
@@ -693,6 +716,31 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
     }
     if cfg.crypto.master_key_file.trim().is_empty() {
         anyhow::bail!("crypto.master_key_file is required");
+    }
+    if cfg.crypto.master_key_version == 0 {
+        anyhow::bail!("crypto.master_key_version must be greater than zero");
+    }
+    let mut retired_versions = std::collections::HashSet::new();
+    for retired in &cfg.crypto.retired_master_key_files {
+        if retired.version == 0 {
+            anyhow::bail!("crypto.retired_master_key_files[].version must be greater than zero");
+        }
+        if retired.version >= cfg.crypto.master_key_version {
+            anyhow::bail!(
+                "crypto.retired_master_key_files[].version {} must be lower than master_key_version {}",
+                retired.version,
+                cfg.crypto.master_key_version
+            );
+        }
+        if retired.file.trim().is_empty() {
+            anyhow::bail!("crypto.retired_master_key_files[].file is required");
+        }
+        if !retired_versions.insert(retired.version) {
+            anyhow::bail!(
+                "crypto.retired_master_key_files contains version {} twice",
+                retired.version
+            );
+        }
     }
     if cfg.crypto.signing_key_file.trim().is_empty() {
         anyhow::bail!("crypto.signing_key_file is required");
