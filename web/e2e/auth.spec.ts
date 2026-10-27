@@ -216,7 +216,7 @@ async function startRe0auth(): Promise<void> {
 			`discovery_url = "${IDP}/.well-known/openid-configuration"\n\n` +
 			// A bindable upstream: `oauth` present is what makes the binding routes
 			// answer instead of 404. `base_url` is loopback HTTP, allowed above.
-			`[[connectors]]\nid = "phigros"\nbase_url = "${UPSTREAM}"\n\n` +
+			`[[connectors]]\nid = "phigros"\nbase_url = "${UPSTREAM}"\nallow_loopback = true\n\n` +
 			`[connectors.oauth]\nauthorization_endpoint = "${UPSTREAM}/authorize"\n` +
 			`token_endpoint = "${UPSTREAM}/token"\nclient_id = "re0auth-upstream"\n` +
 			`client_secret = "upstream-secret"\nscopes = ["read"]\n` +

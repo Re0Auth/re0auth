@@ -113,6 +113,8 @@ fn is_lower_hex(c: char) -> bool {
 const COMPOSITION_ROOT_MODULES: &[&str] = &[
     "crates/re0auth-server/src/cli.rs",
     "crates/re0auth-server/src/config.rs",
+    // Unit tests for private config parsing; no routing or policy lives here.
+    "crates/re0auth-server/src/config/tests.rs",
     "crates/re0auth-server/src/config_env.rs",
     "crates/re0auth-server/src/main.rs",
 ];

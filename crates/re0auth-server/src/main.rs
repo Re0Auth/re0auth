@@ -217,8 +217,7 @@ fn connector_endpoints(
             id: re0auth_app::gateway::connector_id_for_name(&connector.id),
             name: connector.id.clone(),
             base_url: connector.base_url.clone(),
-            allow_private_net: connector.allow_private_net,
-            allow_link_local_metadata: connector.allow_link_local_metadata,
+            egress: connector.egress_policy(),
             resources,
         });
     }
@@ -251,18 +250,24 @@ async fn build_data_plane(
     endpoints: Vec<re0auth_api::connector::ConnectorEndpoint>,
     telemetry: Arc<dyn re0auth_api::ports::TelemetrySink>,
 ) -> anyhow::Result<(GatewayService, Option<BindingService>)> {
-    let http = Arc::new(GuardedClient::with_tls(
-        cfg.tls.policy(),
-        cfg.tls.allow_loopback,
-        cfg.tls.trust_config()?,
-    )?);
+    // One client per connector; the global [tls] flags were already checked as
+    // a ceiling in `config::validate`, so they cannot widen a connector here.
+    let clients =
+        re0auth_connectors::connector::ConnectorClients::new(&endpoints, cfg.tls.trust_config()?)?;
+    for endpoint in &endpoints {
+        tracing::info!(
+            connector = %endpoint.name,
+            egress = ?endpoint.egress,
+            "connector egress policy"
+        );
+    }
     let registry = Arc::new(StaticRegistry::new(endpoints));
     // INV-RES-01: the aggregate cap. `max_body` bounds one response; this bounds
     // the sum across concurrent fetches to the same connector.
     let inflight = Arc::new(ByteBudget::new(cfg.limits.upstream_inflight_bytes));
     let broker = Arc::new(
         HttpBroker::new(
-            Arc::clone(&http),
+            clients.clone(),
             usize::try_from(cfg.limits.upstream_response_bytes).unwrap_or(usize::MAX),
         )
         .with_inflight_budget(inflight),
@@ -291,7 +296,7 @@ async fn build_data_plane(
         sealer.clone(),
         &clock,
         &random,
-        &http,
+        clients,
         Arc::clone(&cache),
     )?;
 
@@ -320,7 +325,7 @@ fn build_binding(
     sealer: Arc<AesGcmSealer>,
     clock: &Arc<SystemClock>,
     random: &Arc<OsRandom>,
-    http: &Arc<GuardedClient>,
+    clients: re0auth_connectors::connector::ConnectorClients,
     cache: Arc<dyn re0auth_api::cache::Cache>,
 ) -> anyhow::Result<Option<BindingService>> {
     let mut configs = std::collections::HashMap::new();
@@ -341,8 +346,7 @@ fn build_binding(
     bindable.sort();
 
     let auth = Arc::new(re0auth_connectors::oauth::ConfiguredConnectorAuth::new(
-        Arc::clone(http),
-        configs,
+        clients, configs,
     ));
     Ok(Some(
         BindingService::new(

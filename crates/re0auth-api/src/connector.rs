@@ -276,6 +276,19 @@ pub fn validate_path_template(template: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// How far one connector may reach on the network.
+///
+/// This is per-connector, not global: opening private networking for a BYOC
+/// connector must not widen every other connector. The global `[tls]` flags act
+/// only as a ceiling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EgressPolicy {
+    Public,
+    PrivateNet,
+    LinkLocalMetadata,
+    Loopback,
+}
+
 /// A registered upstream endpoint. URLs never come from request parameters.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectorEndpoint {
@@ -286,8 +299,7 @@ pub struct ConnectorEndpoint {
     /// namespace ever changed.
     pub name: String,
     pub base_url: String,
-    pub allow_private_net: bool,
-    pub allow_link_local_metadata: bool,
+    pub egress: EgressPolicy,
     /// Resources this connector exposes. An empty list means "nothing reachable".
     pub resources: Vec<ResourceSpec>,
 }

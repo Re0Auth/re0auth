@@ -10,19 +10,17 @@
 //! not fetch targets: they are navigated to by a browser and called once during a
 //! bind.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use secrecy::ExposeSecret;
 use serde::Deserialize;
+use std::collections::HashMap;
 use url::Url;
 
+use crate::connector::ConnectorClients;
 use re0auth_api::SecretString;
 use re0auth_api::connector::{
     ConnectorAuth, ConnectorEndpoint, ExchangedCredential, UpstreamError,
 };
-use re0auth_runtime::http_client::GuardedClient;
 
 /// One connector's authorization-code endpoints and client identity.
 #[derive(Clone, Debug)]
@@ -50,14 +48,14 @@ pub struct ConnectorOAuthConfig {
 
 /// Exchanges codes for credentials for every connector that declares endpoints.
 pub struct ConfiguredConnectorAuth {
-    http: Arc<GuardedClient>,
+    clients: ConnectorClients,
     configs: HashMap<String, ConnectorOAuthConfig>,
 }
 
 impl ConfiguredConnectorAuth {
     #[must_use]
-    pub fn new(http: Arc<GuardedClient>, configs: HashMap<String, ConnectorOAuthConfig>) -> Self {
-        Self { http, configs }
+    pub fn new(clients: ConnectorClients, configs: HashMap<String, ConnectorOAuthConfig>) -> Self {
+        Self { clients, configs }
     }
 
     #[must_use]
@@ -159,8 +157,8 @@ impl ConnectorAuth for ConfiguredConnectorAuth {
         // Goes through the outbound guard: a connector's token endpoint is as
         // capable of pointing at the metadata service as any other URL, and being
         // configured does not make it trusted.
-        let response: TokenResponse = self
-            .http
+        let client = self.clients.get(endpoint)?;
+        let response: TokenResponse = client
             .post_form(&config.token_endpoint, &form)
             .await
             .map_err(|_| UpstreamError::Unavailable)?;
@@ -168,6 +166,7 @@ impl ConnectorAuth for ConfiguredConnectorAuth {
 
         let subject = self
             .subject(
+                client.as_ref(),
                 &config.userinfo_endpoint,
                 config.subject_field.as_str(),
                 &credential,
@@ -232,12 +231,12 @@ impl ConfiguredConnectorAuth {
     /// treated as incomplete rather than partially successful.
     async fn subject(
         &self,
+        client: &re0auth_runtime::http_client::GuardedClient,
         userinfo_endpoint: &str,
         field: &str,
         credential: &SecretString,
     ) -> Result<String, UpstreamError> {
-        let document: UserInfo = self
-            .http
+        let document: UserInfo = client
             .get_json_with_bearer(userinfo_endpoint, credential.expose_secret())
             .await
             .map_err(|_| UpstreamError::Unavailable)?;

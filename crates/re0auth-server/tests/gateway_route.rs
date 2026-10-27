@@ -14,7 +14,7 @@ use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::sealer::AesGcmSealer;
 use re0auth_adapters::storage::SqliteStore;
 use re0auth_api::audit::{AuditAction, SecurityFact};
-use re0auth_api::connector::{ConnectorEndpoint, ResourceSpec, UpstreamPayload};
+use re0auth_api::connector::{ConnectorEndpoint, EgressPolicy, ResourceSpec, UpstreamPayload};
 use re0auth_api::oauth::{AccessTokenClaims, ConsentVersion, TokenSigner};
 use re0auth_api::ports::{
     Binding, BindingStatus, Client, ClientStatus, Consent, Storage, User, UserRole,
@@ -117,8 +117,8 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
         id: connector_id,
         name: "probe".to_string(),
         base_url: "https://upstream.test".to_string(),
-        allow_private_net: false,
-        allow_link_local_metadata: false,
+        egress: EgressPolicy::Public,
+
         resources: vec![
             ResourceSpec::new("scores", "/v1/scores/{subject}")
                 .expect("spec")
