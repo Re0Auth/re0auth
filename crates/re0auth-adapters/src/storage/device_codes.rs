@@ -182,7 +182,11 @@ impl DeviceCodeRepo for SqliteStore {
     }
 
     async fn poll(&self, device_code_hash: &[u8], now: Unix) -> RepoResult<DevicePoll> {
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(db_error)?;
         let row = sqlx::query(
             "SELECT id, device_code_hash, user_code_hash, client_id, scopes, status, user_id, \
              interval_secs, last_polled_at, poll_count, user_code_misses, created_at, expires_at, \
