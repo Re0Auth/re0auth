@@ -296,6 +296,17 @@ pub(crate) fn oauth_error(error: OAuthError, shape: Shape) -> ApiError {
             "consent_used",
             "consent request has already been used",
         ),
+        OAuthError::TemporarilyUnavailable => {
+            let mut error = shape.response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                "storage is busy; retry shortly",
+            );
+            error
+                .headers
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+            error
+        }
         OAuthError::Internal => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",
