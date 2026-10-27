@@ -1130,6 +1130,20 @@ pub trait BindingRepo: Send + Sync {
     /// Upserts on `(user_id, upstream_id)`; the pair is unique (INV-BIND-01).
     /// The audit fact lands in the same transaction (INV-AUDIT-01).
     async fn upsert(&self, binding: &Binding, fact: &SecurityFact) -> RepoResult<()>;
+    /// Atomically upserts the binding and its sealed credential.
+    ///
+    /// `sealed` must have been sealed for `binding.id`. If the pair already
+    /// exists under another id, returns `Conflict("binding id")` instead of
+    /// attaching the credential to the wrong row. The returned binding carries
+    /// the stored id/created_at, and the fact target is rewritten to
+    /// `binding:{id}`.
+    async fn upsert_with_credential(
+        &self,
+        binding: &Binding,
+        sealed: &SealedSecret,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<Binding>;
     async fn find(&self, user: &UserId, upstream: &str) -> RepoResult<Option<Binding>>;
     async fn list_by_user(&self, user: &UserId) -> RepoResult<Vec<Binding>>;
     async fn mark_needs_reauth(

@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use re0auth_api::audit::{AuditAction, SecurityFact};
+use re0auth_api::cache::{Cache, NoCache, binding_prefix};
 use re0auth_api::connector::{
     ConnectorAuth, ConnectorEndpoint, ConnectorRegistry, ExchangedCredential, UpstreamError,
 };
@@ -95,6 +96,7 @@ pub struct BindingService {
     sealer: Arc<dyn SecretSealer>,
     clock: Arc<dyn Clock>,
     random: Arc<dyn Random>,
+    cache: Arc<dyn Cache>,
     redirect_uri: String,
     /// Upstreams whose connector declares OAuth, so a flow can be redeemed.
     ///
@@ -121,9 +123,17 @@ impl BindingService {
             sealer,
             clock,
             random,
+            cache: Arc::new(NoCache),
             redirect_uri: redirect_uri.into(),
             bindable: Vec::new(),
         }
+    }
+
+    /// Shares the response cache so a rebind can sweep its old entries.
+    #[must_use]
+    pub fn with_cache(mut self, cache: Arc<dyn Cache>) -> Self {
+        self.cache = cache;
+        self
     }
 
     /// Declares which upstreams the portal may offer to connect.
@@ -245,6 +255,7 @@ impl BindingService {
         exchanged: ExchangedCredential,
         now: Unix,
     ) -> Result<CompletedBinding, BindingError> {
+        // sealer 的 AAD 是 binding id，先读 id 再封；存储层会校验并发 winner
         let existing = self
             .storage
             .bindings()
@@ -292,19 +303,18 @@ impl BindingService {
             .sealer
             .seal(&id, &exchanged.credential)
             .map_err(|error| BindingError::Internal(error.to_string()))?;
-        self.storage
+        let stored = self
+            .storage
             .bindings()
-            .upsert(&binding, &fact)
+            .upsert_with_credential(&binding, &sealed, &fact, now)
             .await
             .map_err(|error| BindingError::Internal(error.to_string()))?;
-        self.storage
-            .bindings()
-            .store_sub_credential(&id, &sealed, now)
-            .await
-            .map_err(|error| BindingError::Internal(error.to_string()))?;
+        // Commit first, then sweep: a concurrent read must never repopulate the
+        // old key before the new binding is durable.
+        self.cache.invalidate(&binding_prefix(&stored.id)).await;
 
         Ok(CompletedBinding {
-            binding,
+            binding: stored,
             rebound,
             return_to: pending.return_to,
         })

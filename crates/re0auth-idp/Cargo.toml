@@ -9,7 +9,7 @@ license.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 jsonwebtoken.workspace = true
-re0auth-api = { version = "0.6.0", path = "../re0auth-api" }
+re0auth-api = { version = "0.7.0", path = "../re0auth-api" }
 re0auth-runtime = { version = "0.1.0", path = "../re0auth-runtime" }
 serde.workspace = true
 serde_json.workspace = true
