@@ -141,36 +141,37 @@ impl OAuth2Provider {
     }
 
     async fn qq_access_token(&self, code: &str) -> IdpResult<String> {
-        // QQ answers the token endpoint with `application/x-www-form-urlencoded`
-        // (`access_token=...&expires_in=...`), never JSON.
+        // QQ's server-side flow is GET with query parameters, and `fmt=json`
+        // makes the body JSON. Sending a form POST (or parsing form encoding
+        // after asking for JSON) is the bug this path exists to avoid.
+        let mut url = Url::parse(&self.config.token_endpoint)
+            .map_err(|error| IdpError::Protocol(error.to_string()))?;
+        url.query_pairs_mut()
+            .append_pair("grant_type", "authorization_code")
+            .append_pair("client_id", &self.config.client_id)
+            .append_pair("client_secret", &self.config.client_secret)
+            .append_pair("code", code)
+            .append_pair("redirect_uri", &self.config.redirect_uri)
+            .append_pair("fmt", "json");
         let body = self
             .http
-            .post_form_text(
-                &self.config.token_endpoint,
-                &[
-                    ("grant_type", "authorization_code"),
-                    ("client_id", self.config.client_id.as_str()),
-                    ("client_secret", self.config.client_secret.as_str()),
-                    ("code", code),
-                    ("redirect_uri", self.config.redirect_uri.as_str()),
-                    ("fmt", "json"),
-                ],
-                "application/x-www-form-urlencoded",
-            )
+            .get_text(url.as_str(), "application/json")
             .await
-            .map_err(transport_error)?;
-        let pairs: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
-            .into_owned()
-            .collect();
-        if let Some((_, error)) = pairs.iter().find(|(key, _)| key == "error") {
+            .map_err(|error| qq_transport_error(error, "qq token request failed"))?;
+        let response: QqTokenResponse = serde_json::from_str(&body)
+            .map_err(|error| IdpError::Protocol(format!("qq token response: {error}")))?;
+        if let Some(error) = response.error {
             return Err(IdpError::Protocol(format!(
-                "qq token endpoint rejected the exchange: {error}"
+                "qq token endpoint rejected the exchange: {error}{}",
+                response
+                    .error_description
+                    .filter(|description| !description.trim().is_empty())
+                    .map(|description| format!(" ({description})"))
+                    .unwrap_or_default()
             )));
         }
-        pairs
-            .into_iter()
-            .find(|(key, _)| key == "access_token")
-            .map(|(_, value)| value)
+        response
+            .access_token
             .filter(|token| !token.trim().is_empty())
             .ok_or_else(|| IdpError::Protocol("qq token response has no access_token".to_string()))
     }
@@ -208,7 +209,7 @@ impl OAuth2Provider {
             .http
             .get_text(url.as_str(), "application/json")
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| qq_transport_error(error, "qq userinfo request failed"))?;
         let user: QqUser = serde_json::from_str(&body)
             .map_err(|error| IdpError::Protocol(format!("qq userinfo response: {error}")))?;
         if user.ret != 0 {
@@ -240,7 +241,7 @@ impl OAuth2Provider {
             .http
             .get_text(url.as_str(), "text/plain")
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| qq_transport_error(error, "qq openid request failed"))?;
         let document: QqOpenId = serde_json::from_str(strip_jsonp(&body)?)
             .map_err(|error| IdpError::Protocol(format!("qq openid response: {error}")))?;
         if let Some(error) = document.error {
@@ -269,7 +270,12 @@ impl IdpClient for OAuth2Provider {
                 .append_pair("redirect_uri", &self.config.redirect_uri)
                 .append_pair("state", state);
             if !self.config.scopes.is_empty() {
-                pairs.append_pair("scope", &self.config.scopes.join(" "));
+                // QQ documents comma-separated scopes; GitHub uses spaces.
+                let separator = match self.config.kind {
+                    OAuth2Kind::Qq => ",",
+                    OAuth2Kind::GitHub => " ",
+                };
+                pairs.append_pair("scope", &self.config.scopes.join(separator));
             }
         }
         url.to_string()
@@ -302,6 +308,27 @@ struct GitHubUser {
     id: u64,
     login: String,
     name: Option<String>,
+}
+
+/// Token requests put `client_secret` in the URL (QQ requires GET). A raw
+/// transport error can echo that URL, so only the typed status error is passed
+/// through; other failures get a detail-free message.
+fn qq_transport_error(error: anyhow::Error, context: &'static str) -> IdpError {
+    if error
+        .downcast_ref::<re0auth_runtime::http_client::UpstreamStatus>()
+        .is_some()
+    {
+        transport_error(error)
+    } else {
+        IdpError::Unavailable(context.to_string())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct QqTokenResponse {
+    access_token: Option<String>,
+    error: Option<i64>,
+    error_description: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

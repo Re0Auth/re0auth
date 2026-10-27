@@ -1,9 +1,9 @@
 //! End-to-end tests for the non-OIDC providers.
 //!
 //! GitHub and QQ differ from OIDC in every wire detail that matters: no
-//! `id_token`, no JWKS, a token endpoint that answers form-encoded or JSONP. Each
-//! quirk gets a local mock so the adapter is exercised over real HTTP rather than
-//! by calling its internals.
+//! `id_token`, no JWKS, and provider-specific token/openid bodies. Each quirk
+//! gets a local mock so the adapter is exercised over real HTTP rather than by
+//! calling its internals.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -32,6 +32,8 @@ struct MockOAuth2 {
     token_body: Arc<Mutex<(String, &'static str)>>,
     /// Raw body of `GET /oauth2.0/me`, the JSONP endpoint QQ uses.
     openid_body: Arc<Mutex<String>>,
+    /// Query parameters QQ's GET token endpoint received.
+    token_query: Arc<Mutex<Option<HashMap<String, String>>>>,
     userinfo: Arc<Mutex<Value>>,
 }
 
@@ -86,8 +88,13 @@ async fn github_mock() -> (MockOAuth2, String) {
 async fn qq_mock() -> (MockOAuth2, String) {
     let mock = MockOAuth2 {
         token_body: Arc::new(Mutex::new((
-            "access_token=qq-token&expires_in=7776000&refresh_token=r".to_string(),
-            "application/x-www-form-urlencoded",
+            json!({
+                "access_token": "qq-token",
+                "expires_in": 7776000,
+                "refresh_token": "r"
+            })
+            .to_string(),
+            "application/json",
         ))),
         openid_body: Arc::new(Mutex::new(
             "callback( {\"client_id\":\"123\",\"openid\":\"qq-openid\"} );".to_string(),
@@ -103,10 +110,13 @@ async fn qq_mock() -> (MockOAuth2, String) {
     let app = Router::new()
         .route(
             "/token",
-            post(|State(mock): State<MockOAuth2>, Form(_): Form<HashMap<String, String>>| async move {
-                let (body, content_type) = mock.token_body.lock().expect("token body").clone();
-                ([(axum::http::header::CONTENT_TYPE, content_type)], body)
-            }),
+            get(
+                |State(mock): State<MockOAuth2>, Query(query): Query<HashMap<String, String>>| async move {
+                    *mock.token_query.lock().expect("token query") = Some(query);
+                    let (body, content_type) = mock.token_body.lock().expect("token body").clone();
+                    ([(axum::http::header::CONTENT_TYPE, content_type)], body)
+                },
+            ),
         )
         .route(
             "/oauth2.0/me",
@@ -144,13 +154,17 @@ fn github_provider(base: &str) -> OAuth2Provider {
 }
 
 fn qq_provider(base: &str) -> OAuth2Provider {
+    qq_provider_with_scopes(base, vec!["get_user_info".to_string()])
+}
+
+fn qq_provider_with_scopes(base: &str, scopes: Vec<String>) -> OAuth2Provider {
     OAuth2Provider::new(
         OAuth2Config {
             kind: OAuth2Kind::Qq,
             client_id: "qq-client".to_string(),
             client_secret: "qq-secret".to_string(),
             redirect_uri: "https://auth.example.com/auth/callback".to_string(),
-            scopes: vec!["get_user_info".to_string()],
+            scopes,
             authorization_endpoint: format!("{base}/authorize"),
             token_endpoint: format!("{base}/token"),
             userinfo_endpoint: format!("{base}/user/get_user_info"),
@@ -247,12 +261,52 @@ async fn qq_reports_an_unwrappable_openid_response() {
     assert!(error.to_string().contains("JSONP"), "{error}");
 }
 
+/// QQ's server-side flow is GET with query parameters and JSON when `fmt=json`
+/// is requested. Pin both halves: a POST or a form body would pass a mock that
+/// copied the old implementation but fail against the documented protocol.
 #[tokio::test]
-async fn qq_reports_a_form_encoded_token_failure() {
+async fn qq_token_request_is_get_json_with_the_documented_parameters() {
+    let (mock, base) = qq_mock().await;
+    let provider = qq_provider(&base);
+
+    let identity = provider
+        .exchange_code("code", "", "")
+        .await
+        .expect("qq login");
+    assert_eq!(identity.subject, "qq-openid");
+
+    let query = mock
+        .token_query
+        .lock()
+        .expect("token query")
+        .clone()
+        .expect("the token endpoint was called");
+    assert_eq!(
+        query.get("grant_type").map(String::as_str),
+        Some("authorization_code")
+    );
+    assert_eq!(
+        query.get("client_id").map(String::as_str),
+        Some("qq-client")
+    );
+    assert_eq!(
+        query.get("client_secret").map(String::as_str),
+        Some("qq-secret")
+    );
+    assert_eq!(query.get("code").map(String::as_str), Some("code"));
+    assert_eq!(query.get("fmt").map(String::as_str), Some("json"));
+    assert_eq!(
+        query.get("redirect_uri").map(String::as_str),
+        Some("https://auth.example.com/auth/callback")
+    );
+}
+
+#[tokio::test]
+async fn qq_reports_a_json_token_failure() {
     let (mock, base) = qq_mock().await;
     *mock.token_body.lock().expect("token body") = (
-        "error=100019&error_description=code+invalid".to_string(),
-        "application/x-www-form-urlencoded",
+        json!({"error": 100019, "error_description": "code invalid"}).to_string(),
+        "application/json",
     );
     let provider = qq_provider(&base);
 
@@ -261,6 +315,25 @@ async fn qq_reports_a_form_encoded_token_failure() {
         .await
         .expect_err("a failed token exchange must not produce an identity");
     assert!(error.to_string().contains("100019"), "{error}");
+    assert!(error.to_string().contains("code invalid"), "{error}");
+}
+
+/// Regression: the old implementation read this body as form encoding even
+/// though it asked QQ for JSON. Accepting it here would let that bug return.
+#[tokio::test]
+async fn qq_rejects_a_form_encoded_token_body() {
+    let (mock, base) = qq_mock().await;
+    *mock.token_body.lock().expect("token body") = (
+        "access_token=qq-token&expires_in=7776000".to_string(),
+        "application/x-www-form-urlencoded",
+    );
+    let provider = qq_provider(&base);
+
+    let error = provider
+        .exchange_code("code", "", "")
+        .await
+        .expect_err("a form body is not the JSON asked for");
+    assert!(error.to_string().contains("token response"), "{error}");
 }
 
 /// The authorization URL must not carry OIDC-only parameters. Sending `nonce` or
@@ -358,4 +431,23 @@ async fn subjects_from_different_providers_do_not_collide() {
         .expect("lookup")
         .expect("qq identity");
     assert_eq!(found.id, qq.user_id);
+}
+
+#[tokio::test]
+async fn qq_authorization_scopes_are_comma_separated() {
+    let (_mock, base) = qq_mock().await;
+    let provider = qq_provider_with_scopes(
+        &base,
+        vec!["get_user_info".to_string(), "list_album".to_string()],
+    );
+    let url = provider.authorization_url("state-1", "nonce-1", "challenge-1");
+    let query: HashMap<String, String> = Url::parse(&url)
+        .expect("authorization url")
+        .query_pairs()
+        .into_owned()
+        .collect();
+    assert_eq!(
+        query.get("scope").map(String::as_str),
+        Some("get_user_info,list_album")
+    );
 }
