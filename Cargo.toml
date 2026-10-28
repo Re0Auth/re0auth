@@ -73,3 +73,9 @@ zeroize = "1.8"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
