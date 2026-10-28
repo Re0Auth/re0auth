@@ -506,6 +506,7 @@ mod tests {
             iat: 1_000,
             jti: "jti".to_string(),
             token_use: ACCESS_TOKEN_USE.to_string(),
+            family_id: "family".to_string(),
             consent_version: ConsentVersion(1),
         }
     }

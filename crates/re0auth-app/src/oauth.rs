@@ -758,6 +758,7 @@ impl OAuthService {
                     Some(refresh_raw),
                     None,
                     consent.version,
+                    &refresh.family_id,
                 )
             }
             DevicePoll::Denied => Err(OAuthError::AccessDenied),
@@ -829,6 +830,7 @@ impl OAuthService {
             Some(refresh_raw),
             grant.nonce,
             consent.version,
+            &refresh.family_id,
         )
     }
 
@@ -907,6 +909,7 @@ impl OAuthService {
                 Some(new_raw),
                 None,
                 consent.version,
+                &token.family_id,
             ),
             RotateOutcome::ReuseDetected { .. } => {
                 Err(OAuthError::InvalidGrant("refresh token reuse"))
@@ -936,7 +939,7 @@ impl OAuthService {
         if claims.token_use != ACCESS_TOKEN_USE {
             return Err(OAuthError::InvalidToken);
         }
-        self.reject_if_revoked(&claims.jti).await?;
+        self.reject_if_revoked(&claims).await?;
         let user_id = Uuid::parse_str(&claims.sub)
             .map(UserId)
             .map_err(|_| OAuthError::InvalidToken)?;
@@ -972,7 +975,7 @@ impl OAuthService {
         {
             return Err(OAuthError::InvalidToken);
         }
-        self.reject_if_revoked(&claims.jti).await?;
+        self.reject_if_revoked(&claims).await?;
         let user_id = Uuid::parse_str(&claims.sub)
             .map(UserId)
             .map_err(|_| OAuthError::InvalidToken)?;
@@ -997,15 +1000,20 @@ impl OAuthService {
 
     /// A revoked token must fail identically to a forged one: telling the caller
     /// *why* it was rejected would confirm the token was once valid.
-    async fn reject_if_revoked(&self, jti: &str) -> Result<(), OAuthError> {
+    async fn reject_if_revoked(&self, claims: &AccessTokenClaims) -> Result<(), OAuthError> {
         let now = self.clock.now();
-        if self
-            .storage
-            .access_tokens()
-            .is_revoked(jti, now)
+        let tokens = self.storage.access_tokens();
+        if tokens
+            .is_revoked(&claims.jti, now)
             .await
             .map_err(map_repo)?
         {
+            return Err(OAuthError::InvalidToken);
+        }
+        let family = Uuid::parse_str(&claims.family_id)
+            .map(FamilyId)
+            .map_err(|_| OAuthError::InvalidToken)?;
+        if tokens.is_family_revoked(&family).await.map_err(map_repo)? {
             return Err(OAuthError::InvalidToken);
         }
         Ok(())
@@ -1168,6 +1176,7 @@ impl OAuthService {
         refresh_token: Option<String>,
         nonce: Option<String>,
         consent_version: ConsentVersion,
+        family: &FamilyId,
     ) -> Result<TokenResponse, OAuthError> {
         let scope_value = scopes.join(" ");
         let access_claims = AccessTokenClaims {
@@ -1180,6 +1189,7 @@ impl OAuthService {
             iat: now,
             jti: URL_SAFE_NO_PAD.encode(self.random.bytes(16)),
             token_use: ACCESS_TOKEN_USE.to_string(),
+            family_id: family.0.to_string(),
             consent_version,
         };
         let access_token = self

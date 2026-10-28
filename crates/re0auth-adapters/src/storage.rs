@@ -910,6 +910,16 @@ impl RefreshTokenRepo for SqliteStore {
         .await
         .map_err(db_error)?;
         let revoked = result.rows_affected();
+        // 同事务标记家族，令其访问令牌失效
+        sqlx::query(
+            "INSERT INTO revoked_families (family_id, revoked_at) VALUES (?, ?) \
+             ON CONFLICT(family_id) DO NOTHING",
+        )
+        .bind(family.0.to_string())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
         if revoked > 0 {
             record_fact(&mut tx, fact).await?;
         }

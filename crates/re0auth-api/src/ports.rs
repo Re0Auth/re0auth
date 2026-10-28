@@ -1313,6 +1313,8 @@ pub trait AccessTokenRepo: Send + Sync {
     ) -> RepoResult<()>;
     /// True when `jti` has been revoked and has not yet expired.
     async fn is_revoked(&self, jti: &str, now: Unix) -> RepoResult<bool>;
+    /// 家族是否已撤销
+    async fn is_family_revoked(&self, family: &FamilyId) -> RepoResult<bool>;
     /// Deletes rows whose tokens have expired anyway; they can no longer be
     /// presented, so keeping them only grows the table.
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64>;

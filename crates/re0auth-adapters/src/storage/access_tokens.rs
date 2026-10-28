@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use re0auth_api::audit::SecurityFact;
 use re0auth_api::ports::{AccessTokenRepo, RepoResult};
-use re0auth_api::{ClientId, Unix, UserId};
+use re0auth_api::{ClientId, FamilyId, Unix, UserId};
 
 use super::audit::record_fact;
 use super::{SqliteStore, db_error};
@@ -52,6 +52,15 @@ impl AccessTokenRepo for SqliteStore {
         let row = sqlx::query("SELECT 1 FROM access_revocations WHERE jti = ? AND expires_at > ?")
             .bind(jti)
             .bind(now)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_error)?;
+        Ok(row.is_some())
+    }
+
+    async fn is_family_revoked(&self, family: &FamilyId) -> RepoResult<bool> {
+        let row = sqlx::query("SELECT 1 FROM revoked_families WHERE family_id = ?")
+            .bind(family.0.to_string())
             .fetch_optional(&self.pool)
             .await
             .map_err(db_error)?;

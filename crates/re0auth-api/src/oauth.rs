@@ -36,6 +36,7 @@ pub struct AccessTokenClaims {
     pub iat: Unix,
     pub jti: String,
     pub token_use: String,
+    pub family_id: String,
     #[serde(default)]
     pub consent_version: ConsentVersion,
 }

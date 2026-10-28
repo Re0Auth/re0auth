@@ -6,7 +6,7 @@
 //! SQLite (see `re0auth-adapters/tests/audit_invariants.rs`); do not read this
 //! file as evidence that the invariant holds for this store.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
@@ -54,6 +54,7 @@ struct Inner {
     clients: HashMap<ClientId, Client>,
     audits: Vec<AuditRecord>,
     access_revocations: HashMap<String, Unix>,
+    revoked_families: HashSet<String>,
     connectors: HashMap<ConnectorId, (ConnectorRecord, Vec<ResourceSpec>)>,
     connector_secrets: HashMap<(ConnectorId, String), SealedSecret>,
     signing_keys: HashMap<String, SigningKeyRecord>,
@@ -422,6 +423,7 @@ impl RefreshTokenRepo for MemoryStore {
                 revoked += 1;
             }
         }
+        inner.revoked_families.insert(family.0.to_string());
         if revoked > 0 {
             Self::push_fact(&mut inner, fact);
         }
@@ -1094,6 +1096,10 @@ impl AccessTokenRepo for MemoryStore {
             .access_revocations
             .get(jti)
             .is_some_and(|expires_at| *expires_at > now))
+    }
+
+    async fn is_family_revoked(&self, family: &FamilyId) -> RepoResult<bool> {
+        Ok(self.lock().revoked_families.contains(&family.0.to_string()))
     }
 
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {

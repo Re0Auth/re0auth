@@ -225,6 +225,7 @@ fn access_token_with_version(fixture: &Fixture, scope: &str, version: ConsentVer
             iat: now,
             jti: "test-jti".to_string(),
             token_use: "access".to_string(),
+            family_id: "00000000-0000-0000-0000-000000000000".to_string(),
             consent_version: version,
         })
         .expect("sign access token")
