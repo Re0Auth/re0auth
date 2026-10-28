@@ -117,3 +117,65 @@ pub async fn revoke_all_for_client_contract<S: Storage>(store: &S) {
         .expect("audit query after no-op");
     assert_eq!(records.len(), 1, "a no-op must not record a fact");
 }
+
+pub async fn revoked_family_contract<S: Storage>(store: &S) {
+    let now = 1_000;
+    let user = super::user(now);
+    store.users().create(&user).await.expect("user");
+    let client = super::client(now);
+    store
+        .clients()
+        .insert(&client, &fact(AuditAction::ClientCreated, now, "client"))
+        .await
+        .expect("client");
+
+    let family = FamilyId::new();
+    let other = FamilyId::new();
+    let target = refresh(user.id, client.id, family, 50, 10_000);
+    let untouched = refresh(user.id, client.id, other, 51, 10_000);
+    for token in [&target, &untouched] {
+        store
+            .refresh_tokens()
+            .insert(token)
+            .await
+            .expect("insert refresh token");
+    }
+
+    assert!(
+        !store
+            .access_tokens()
+            .is_family_revoked(&family)
+            .await
+            .expect("check before"),
+        "an untouched family must not be reported as revoked"
+    );
+
+    let audit_fact = fact(AuditAction::RefreshTokenRevoked, 1_400, "family")
+        .actor(user.id)
+        .client(client.id);
+    assert_eq!(
+        store
+            .refresh_tokens()
+            .revoke_family(&family, &audit_fact, 1_400)
+            .await
+            .expect("revoke family"),
+        1
+    );
+
+    assert!(
+        store
+            .access_tokens()
+            .is_family_revoked(&family)
+            .await
+            .expect("check revoked"),
+        "revoking the family must invalidate its access tokens"
+    );
+    assert!(
+        !store
+            .access_tokens()
+            .is_family_revoked(&other)
+            .await
+            .expect("check untouched"),
+        "another family must stay live"
+    );
+}

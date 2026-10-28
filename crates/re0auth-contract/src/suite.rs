@@ -15,7 +15,7 @@ pub use binding::binding_contract;
 pub use connector::connector_contract;
 pub use device_attempt::device_attempt_contract;
 pub use device_code::device_code_contract;
-pub use refresh_revoke::revoke_all_for_client_contract;
+pub use refresh_revoke::{revoke_all_for_client_contract, revoked_family_contract};
 
 use re0auth_api::audit::{
     AuditAction, AuditOutcome, AuditRecord, AuditTier, SecurityFact, Severity,
@@ -1441,6 +1441,7 @@ pub async fn storage_contract_suite<S: Storage>(store: &S) {
     auth_code_contract(store).await;
     refresh_token_contract(store).await;
     revoke_all_for_client_contract(store).await;
+    revoked_family_contract(store).await;
     login_transaction_contract(store).await;
     pending_binding_contract(store).await;
     approval_ticket_contract(store).await;
