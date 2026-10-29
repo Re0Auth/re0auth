@@ -1118,3 +1118,59 @@ async fn binding_routes_keep_their_guards() {
     assert_eq!(killswitch.status(), StatusCode::OK);
     assert_eq!(body_json(killswitch).await["revoked"], 0);
 }
+
+#[tokio::test]
+async fn a_replayed_authorization_code_revokes_what_it_issued() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-replay").await;
+
+    let first = exchange_code(&app, &code).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let issued = body_json(first).await;
+    let access = issued["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+    let refresh = issued["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    let replayed = exchange_code(&app, &code).await;
+    assert_eq!(replayed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(replayed).await["error"], "invalid_grant");
+
+    let refreshed = post_form(
+        &app,
+        token_form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", &app.client_id.0.to_string()),
+            ("refresh_token", &refresh),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        refreshed.status(),
+        StatusCode::BAD_REQUEST,
+        "the family issued by the replayed code must be revoked"
+    );
+    assert_eq!(body_json(refreshed).await["error"], "invalid_grant");
+
+    let info = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/userinfo")
+                .header(header::AUTHORIZATION, format!("Bearer {access}"))
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("userinfo");
+    assert_eq!(
+        info.status(),
+        StatusCode::UNAUTHORIZED,
+        "the access token must die with its family"
+    );
+}

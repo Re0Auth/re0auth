@@ -2099,6 +2099,7 @@ async fn revoking_a_token_requires_it_to_belong_to_the_caller() {
                 created_at: now,
                 expires_at: now + 600,
                 consumed_at: None,
+                family_id: None,
             },
             &re0auth_api::audit::SecurityFact::new(
                 re0auth_api::audit::AuditAction::AuthCodeIssued,
@@ -2265,6 +2266,7 @@ async fn a_wrong_secret_does_not_burn_the_authorization_code() {
                 created_at: now,
                 expires_at: now + 600,
                 consumed_at: None,
+                family_id: None,
             },
             &re0auth_api::audit::SecurityFact::new(
                 re0auth_api::audit::AuditAction::AuthCodeIssued,

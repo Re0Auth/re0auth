@@ -145,6 +145,8 @@ pub struct AuthCode {
     pub created_at: Unix,
     pub expires_at: Unix,
     pub consumed_at: Option<Unix>,
+    /// 兑换时写入，重放撤销靠它回溯
+    pub family_id: Option<FamilyId>,
 }
 
 impl std::fmt::Debug for AuthCode {
@@ -247,6 +249,7 @@ mod redaction_tests {
             created_at: 1,
             expires_at: 2,
             consumed_at: None,
+            family_id: None,
         };
         let rendered = format!("{code:?}");
         assert_redacted(&rendered, &canary_string());
@@ -379,6 +382,7 @@ mod redaction_tests {
             redirect_uri: "https://client.example/cb",
             code_challenge: Some("challenge"),
             code_challenge_method: Some("S256"),
+            family_id: FamilyId::new(),
         };
         assert_redacted(&format!("{request:?}"), &canary_string());
     }
@@ -392,6 +396,8 @@ pub struct ConsumeAuthCode<'a> {
     pub redirect_uri: &'a str,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
+    /// 本次兑换将创建的家族，与消费同语句写入
+    pub family_id: FamilyId,
 }
 
 impl std::fmt::Debug for ConsumeAuthCode<'_> {
@@ -402,6 +408,7 @@ impl std::fmt::Debug for ConsumeAuthCode<'_> {
             .field("redirect_uri", &self.redirect_uri)
             .field("code_challenge", &self.code_challenge)
             .field("code_challenge_method", &self.code_challenge_method)
+            .field("family_id", &self.family_id)
             .finish()
     }
 }
@@ -791,6 +798,8 @@ pub trait AuthCodeRepo: Send + Sync {
     async fn insert(&self, code: &AuthCode, fact: &SecurityFact) -> RepoResult<()>;
     /// Atomically validates the code and marks it consumed (INV-AUTH-01).
     async fn consume(&self, req: ConsumeAuthCode<'_>, now: Unix) -> RepoResult<AuthGrant>;
+    /// The family a consumed code produced, if it was ever redeemed.
+    async fn family_of(&self, code_hash: &[u8]) -> RepoResult<Option<FamilyId>>;
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64>;
 }
 

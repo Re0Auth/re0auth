@@ -323,6 +323,7 @@ impl AuthCodeRepo for MemoryStore {
             return Err(RepoError::NotFound);
         }
         code.consumed_at = Some(now);
+        code.family_id = Some(req.family_id);
         Ok(AuthGrant {
             user_id: code.user_id,
             client_id: code.client_id,
@@ -330,6 +331,14 @@ impl AuthCodeRepo for MemoryStore {
             scopes: code.scopes.clone(),
             nonce: code.nonce.clone(),
         })
+    }
+
+    async fn family_of(&self, code_hash: &[u8]) -> RepoResult<Option<FamilyId>> {
+        let inner = self.lock();
+        Ok(inner
+            .auth_codes
+            .get(code_hash)
+            .and_then(|code| code.family_id))
     }
 
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {

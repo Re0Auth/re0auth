@@ -30,6 +30,8 @@ pub enum AuditAction {
     RefreshTokenRotated,
     /// A refresh token was replayed; the whole family was revoked.
     RefreshTokenReuseDetected,
+    /// An authorization code was redeemed twice; its family was revoked.
+    AuthCodeReuseDetected,
     /// A refresh token family was revoked.
     RefreshTokenRevoked,
     /// A user granted a client access to a set of scopes.
@@ -87,6 +89,7 @@ impl AuditAction {
             Self::AuthCodeIssued => "auth_code_issued",
             Self::RefreshTokenRotated => "refresh_token_rotated",
             Self::RefreshTokenReuseDetected => "refresh_token_reuse_detected",
+            Self::AuthCodeReuseDetected => "auth_code_reuse_detected",
             Self::RefreshTokenRevoked => "refresh_token_revoked",
             Self::ConsentGranted => "consent_granted",
             Self::ConsentRevoked => "consent_revoked",
@@ -115,6 +118,7 @@ impl AuditAction {
             "auth_code_issued" => Self::AuthCodeIssued,
             "refresh_token_rotated" => Self::RefreshTokenRotated,
             "refresh_token_reuse_detected" => Self::RefreshTokenReuseDetected,
+            "auth_code_reuse_detected" => Self::AuthCodeReuseDetected,
             "refresh_token_revoked" => Self::RefreshTokenRevoked,
             "consent_granted" => Self::ConsentGranted,
             "consent_revoked" => Self::ConsentRevoked,

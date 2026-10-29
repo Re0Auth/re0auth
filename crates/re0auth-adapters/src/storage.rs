@@ -645,8 +645,8 @@ impl AuthCodeRepo for SqliteStore {
         sqlx::query(
             "INSERT INTO auth_codes \
              (id, code_hash, client_id, user_id, redirect_uri, scopes, code_challenge, \
-              code_challenge_method, nonce, created_at, expires_at, consumed_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              code_challenge_method, nonce, created_at, expires_at, consumed_at, family_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(code.id.0.to_string())
         .bind(code.code_hash.as_slice())
@@ -660,6 +660,7 @@ impl AuthCodeRepo for SqliteStore {
         .bind(code.created_at)
         .bind(code.expires_at)
         .bind(code.consumed_at)
+        .bind(code.family_id.map(|family| family.0.to_string()))
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
@@ -675,13 +676,14 @@ impl AuthCodeRepo for SqliteStore {
         // row only disappears under RETURNING if every binding still holds,
         // which is what makes concurrent redemption have exactly one winner.
         let row = sqlx::query(
-            "UPDATE auth_codes SET consumed_at = ? \
+            "UPDATE auth_codes SET consumed_at = ?, family_id = ? \
              WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ? \
              AND client_id = ? AND redirect_uri = ? \
              AND code_challenge IS ? AND code_challenge_method IS ? \
              RETURNING user_id, client_id, redirect_uri, scopes, nonce",
         )
         .bind(now)
+        .bind(req.family_id.0.to_string())
         .bind(req.code_hash)
         .bind(now)
         .bind(req.client_id.0.to_string())
@@ -724,6 +726,20 @@ impl AuthCodeRepo for SqliteStore {
         } else {
             Err(RepoError::NotFound)
         }
+    }
+
+    async fn family_of(&self, code_hash: &[u8]) -> RepoResult<Option<FamilyId>> {
+        let row = sqlx::query("SELECT family_id FROM auth_codes WHERE code_hash = ?")
+            .bind(code_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let raw: Option<String> = row.try_get("family_id").map_err(db_error)?;
+        raw.map(|value| parse_uuid(&value).map(FamilyId))
+            .transpose()
     }
 
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {

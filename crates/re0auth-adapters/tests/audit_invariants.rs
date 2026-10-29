@@ -59,6 +59,7 @@ fn audit_code(hash: u8, user: UserId, client: ClientId) -> AuthCode {
         created_at: 1_000,
         expires_at: 2_000,
         consumed_at: None,
+        family_id: None,
     }
 }
 
@@ -199,6 +200,7 @@ async fn a_failed_audit_write_rolls_back_the_business_row() {
                 redirect_uri: "https://client.example/callback",
                 code_challenge: Some("challenge"),
                 code_challenge_method: Some("S256"),
+                family_id: re0auth_api::FamilyId::new(),
             },
             1_500,
         )

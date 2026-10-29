@@ -82,6 +82,7 @@ fn auth_code(user: UserId, client: ClientId, hash: u8, expires: Unix) -> AuthCod
         created_at: 1_000,
         expires_at: expires,
         consumed_at: None,
+        family_id: None,
     }
 }
 
@@ -235,6 +236,7 @@ pub async fn user_contract<S: Storage>(store: &S) {
                     redirect_uri: &code.redirect_uri,
                     code_challenge: code.code_challenge.as_deref(),
                     code_challenge_method: code.code_challenge_method.as_deref(),
+                    family_id: FamilyId::new(),
                 },
                 now,
             )
@@ -409,6 +411,7 @@ pub async fn auth_code_contract<S: Storage>(store: &S) {
                 redirect_uri: &code.redirect_uri,
                 code_challenge: code.code_challenge.as_deref(),
                 code_challenge_method: code.code_challenge_method.as_deref(),
+                family_id: FamilyId::new(),
             },
             now,
         )
@@ -428,6 +431,7 @@ pub async fn auth_code_contract<S: Storage>(store: &S) {
                     redirect_uri: &code.redirect_uri,
                     code_challenge: code.code_challenge.as_deref(),
                     code_challenge_method: code.code_challenge_method.as_deref(),
+                    family_id: FamilyId::new(),
                 },
                 now,
             )
@@ -451,6 +455,7 @@ pub async fn auth_code_contract<S: Storage>(store: &S) {
                     redirect_uri: &expired.redirect_uri,
                     code_challenge: expired.code_challenge.as_deref(),
                     code_challenge_method: expired.code_challenge_method.as_deref(),
+                    family_id: FamilyId::new(),
                 },
                 1_000,
             )
@@ -474,6 +479,7 @@ pub async fn auth_code_contract<S: Storage>(store: &S) {
                     redirect_uri: &mismatch.redirect_uri,
                     code_challenge: mismatch.code_challenge.as_deref(),
                     code_challenge_method: mismatch.code_challenge_method.as_deref(),
+                    family_id: FamilyId::new(),
                 },
                 now,
             )
@@ -490,6 +496,7 @@ pub async fn auth_code_contract<S: Storage>(store: &S) {
                     redirect_uri: "https://client.example/other",
                     code_challenge: mismatch.code_challenge.as_deref(),
                     code_challenge_method: mismatch.code_challenge_method.as_deref(),
+                    family_id: FamilyId::new(),
                 },
                 now,
             )
@@ -506,6 +513,7 @@ pub async fn auth_code_contract<S: Storage>(store: &S) {
                     redirect_uri: &mismatch.redirect_uri,
                     code_challenge: Some("wrong-challenge"),
                     code_challenge_method: Some("S256"),
+                    family_id: FamilyId::new(),
                 },
                 now,
             )
@@ -521,6 +529,7 @@ pub async fn auth_code_contract<S: Storage>(store: &S) {
                 redirect_uri: &mismatch.redirect_uri,
                 code_challenge: mismatch.code_challenge.as_deref(),
                 code_challenge_method: mismatch.code_challenge_method.as_deref(),
+                family_id: FamilyId::new(),
             },
             now,
         )

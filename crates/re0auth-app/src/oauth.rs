@@ -509,6 +509,7 @@ impl OAuthService {
             created_at: now,
             expires_at: now + re0auth_domain::auth_code_ttl(now),
             consumed_at: None,
+            family_id: None,
         };
         let fact = SecurityFact::new(
             AuditAction::AuthCodeIssued,
@@ -786,7 +787,8 @@ impl OAuthService {
         let challenge = pkce::challenge_s256(code_verifier);
         let code_hash = hash_secret(code);
         let now = self.clock.now();
-        let grant = self
+        let family_id = FamilyId::new();
+        let attempt = self
             .storage
             .auth_codes()
             .consume(
@@ -796,11 +798,21 @@ impl OAuthService {
                     redirect_uri,
                     code_challenge: Some(&challenge),
                     code_challenge_method: Some("S256"),
+                    family_id,
                 },
                 now,
             )
-            .await
-            .map_err(map_repo)?;
+            .await;
+        let grant = match attempt {
+            Ok(grant) => grant,
+            // RFC 6749 §4.1.2：重放，回收该码已签发的令牌
+            Err(RepoError::AlreadyConsumed) => {
+                self.revoke_replayed_code(&code_hash, client_id, now)
+                    .await?;
+                return Err(OAuthError::InvalidGrant("already consumed"));
+            }
+            Err(error) => return Err(map_repo(error)),
+        };
 
         self.require_approved_client(client_id).await?;
         let consent = self
@@ -811,7 +823,7 @@ impl OAuthService {
         let refresh = RefreshToken {
             id: RefreshTokenId::new(),
             token_hash: refresh_hash,
-            family_id: FamilyId::new(),
+            family_id,
             client_id,
             user_id: grant.user_id,
             scopes: grant.scopes.clone(),
@@ -837,6 +849,36 @@ impl OAuthService {
             consent.version,
             &refresh.family_id,
         )
+    }
+
+    /// 重放已兑换的码时，撤销它签发过的家族
+    async fn revoke_replayed_code(
+        &self,
+        code_hash: &[u8],
+        client_id: ClientId,
+        now: Unix,
+    ) -> Result<(), OAuthError> {
+        let Some(family_id) = self
+            .storage
+            .auth_codes()
+            .family_of(code_hash)
+            .await
+            .map_err(map_repo)?
+        else {
+            return Ok(());
+        };
+        let fact = SecurityFact::new(
+            AuditAction::AuthCodeReuseDetected,
+            now,
+            format!("family:{}", family_id.0),
+        )
+        .client(client_id);
+        self.storage
+            .refresh_tokens()
+            .revoke_family(&family_id, &fact, now)
+            .await
+            .map_err(map_repo)?;
+        Ok(())
     }
 
     pub async fn refresh(
