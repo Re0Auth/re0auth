@@ -1094,7 +1094,7 @@ impl OAuthService {
         .actor(stored.user_id)
         .client(stored.client_id)
         .with_request_id(correlation_id);
-        // TODO(accepted-risk): RFC 7009 的 access 连带失效暂不做，接受 15 分钟 TTL
+        // 同事务写入 revoked_families，连带失效该家族访问令牌
         self.storage
             .refresh_tokens()
             .revoke_family(&stored.family_id, &fact, now)
