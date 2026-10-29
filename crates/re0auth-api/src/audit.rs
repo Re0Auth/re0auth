@@ -30,8 +30,6 @@ pub enum AuditAction {
     RefreshTokenRotated,
     /// A refresh token was replayed; the whole family was revoked.
     RefreshTokenReuseDetected,
-    /// An authorization code was redeemed twice; its family was revoked.
-    AuthCodeReuseDetected,
     /// A refresh token family was revoked.
     RefreshTokenRevoked,
     /// A user granted a client access to a set of scopes.
@@ -75,6 +73,8 @@ pub enum AuditAction {
     ClientSecretRotated,
     /// An admin changed a user's role.
     UserRoleChanged,
+    /// 授权码被重放，其家族已撤销
+    AuthCodeReuseDetected,
 }
 
 impl AuditAction {
