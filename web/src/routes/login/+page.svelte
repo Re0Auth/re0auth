@@ -2,15 +2,21 @@
 	import { onMount } from 'svelte';
 	import { ArrowRight, ExternalLink } from 'lucide-svelte';
 	import AuthShell from '#lib/components/AuthShell.svelte';
-	import { fetchProviders, readQuery, startLogin, type Provider } from '#lib/api.ts';
+	import {
+		fetchProviders,
+		readQuery,
+		startLogin,
+		withLoginFlag,
+		type Provider
+	} from '#lib/api.ts';
 
-	let returnTo = $state('/');
+	let returnTo = $state('/account');
 	let providers = $state<Provider[]>([]);
 	let loading = $state(true);
 	let error = $state('');
 
 	onMount(async () => {
-		returnTo = readQuery('return_to') || '/';
+		returnTo = readQuery('return_to') || '/account';
 		await loadProviders();
 	});
 
@@ -27,7 +33,8 @@
 	}
 
 	function login(idp: string): void {
-		startLogin(returnTo, idp);
+		// The flag rides inside return_to so it survives the IdP round trip.
+		startLogin(withLoginFlag(returnTo), idp);
 	}
 </script>
 
@@ -59,5 +66,8 @@
 	<p class="meta">
 		<ExternalLink size={13} aria-hidden="true" />
 		登录过程会离开 Re0Auth，由外部 IdP 完成身份校验。
+	</p>
+	<p class="meta">
+		首次登录会创建一个新账号。已经用过其他登录方式的，请继续用同一种，否则会得到两个互不相通的账号。
 	</p>
 </AuthShell>

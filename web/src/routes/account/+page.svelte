@@ -14,8 +14,10 @@
 		bindingRevocationSchema,
 		bindingStartSchema,
 		bindingsSchema,
+		currentLocation,
 		meSchema,
 		openLogin,
+		readQuery,
 		type Authorization,
 		type Binding,
 		type Me
@@ -33,6 +35,8 @@
 	let unbindingAll = $state(false);
 	let connecting = $state('');
 	let loggingOut = $state(false);
+	// Consumed once: a reload must not keep claiming a login just happened.
+	let justLoggedIn = $state(false);
 
 	const connectableUpstreams = $derived(
 		bindableUpstreams.filter(
@@ -42,6 +46,11 @@
 	);
 
 	onMount(async () => {
+		if (readQuery('login') === 'ok') {
+			justLoggedIn = true;
+			// Drop the flag from the address bar so a refresh does not repeat it.
+			history.replaceState(null, '', '/account');
+		}
 		try {
 			me = await apiGet('/api/me', meSchema);
 			authorizations = await apiGet('/api/me/authorizations', authorizationsSchema);
@@ -55,7 +64,7 @@
 			}
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				openLogin('/account');
+				openLogin(currentLocation());
 				return;
 			}
 			error = describeError(cause);
@@ -73,7 +82,7 @@
 			bindings = bindings.filter((item) => item.id !== id);
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				openLogin('/account');
+				openLogin(currentLocation());
 				return;
 			}
 			error = describeError(cause);
@@ -91,7 +100,7 @@
 			authorizations = authorizations.filter((item) => item.client_id !== clientId);
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				openLogin('/account');
+				openLogin(currentLocation());
 				return;
 			}
 			error = describeError(cause);
@@ -109,7 +118,7 @@
 			bindings = [];
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				openLogin('/account');
+				openLogin(currentLocation());
 				return;
 			}
 			error = describeError(cause);
@@ -131,7 +140,7 @@
 			window.location.assign(started.authorization_url);
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401) {
-				openLogin('/account');
+				openLogin(currentLocation());
 				return;
 			}
 			error = describeError(cause);
@@ -209,6 +218,13 @@
 			</button>
 		{/if}
 	</header>
+
+	{#if justLoggedIn && me}
+		<div class="notice" role="status">
+			<ShieldCheck size={16} aria-hidden="true" />
+			<span>登录成功，这是你当前的授权状态。</span>
+		</div>
+	{/if}
 
 	{#if loading}
 		<p class="meta">正在加载已授权应用…</p>

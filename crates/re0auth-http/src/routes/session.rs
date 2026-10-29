@@ -65,7 +65,12 @@ pub(crate) async fn login(
         }
         return Err(HtmlFailure(Box::new(response)));
     }
-    let return_to = query.return_to.as_deref().unwrap_or("/");
+    // The default lands on the account page, not the home page: a finished
+    // login that returns to a static landing shows no evidence it worked.
+    let return_to = query
+        .return_to
+        .as_deref()
+        .unwrap_or(re0auth_app::return_to::FALLBACK);
     let start = match state
         .auth
         .start_login(return_to, query.idp.as_deref())

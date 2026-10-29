@@ -230,6 +230,18 @@ export function openLogin(returnTo: string): void {
 	window.location.assign(`/login?${query.toString()}`);
 }
 
+/// Adds the "just signed in" marker to a local path we will land on.
+///
+/// The value travels inside `return_to`, which the server validates as a local
+/// path; a non-local value is passed through untouched so that rejection still
+/// happens on the server rather than being silently rewritten here.
+export function withLoginFlag(path: string): string {
+	if (!path.startsWith('/') || path.startsWith('//')) return path;
+	const url = new URL(path, window.location.origin);
+	url.searchParams.set('login', 'ok');
+	return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function currentLocation(): string {
 	return `${window.location.pathname}${window.location.search}${window.location.hash}`;
 }
