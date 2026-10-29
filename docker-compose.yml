@@ -1,0 +1,50 @@
+# 单机部署示例。本文件不含任何密钥，可安全入库。
+#
+# 使用前准备（密钥都不入库）：
+#   cp config.example.toml config.toml
+#   在 config.toml 里把密钥路径改成容器内路径：
+#     master_key_file  = "/app/data/keys/master.key"
+#     signing_key_file = "/app/data/keys/signing-key.pem"
+#     database.url     = "sqlite:///app/data/re0auth.db"
+#   然后生成主密钥并交权限：
+#     mkdir -p data/keys secrets
+#     printf '%s' "$(openssl rand -hex 32)" > data/keys/master.key
+#     chmod 600 data/keys/master.key
+#     chown -R 65532:65532 data
+#
+# 签名密钥不用准备，首次启动自动生成。
+# 其它密钥写入 secrets/，配置里用 client_secret_file 指向 /run/secrets/...
+
+services:
+  re0auth:
+    image: docker.cnb.cool/r-0semi/re0auth:latest
+    # 也可换成 ghcr.io/re0auth/re0auth:latest
+    container_name: re0auth
+    restart: unless-stopped
+    # 只监听回环，TLS 与 HSTS 交给反向代理（ADR-0048）
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./data:/app/data
+      - ./secrets:/run/secrets:ro
+    environment:
+      # 必须与对外访问地址一致，否则 token 的 iss 是错的。
+      # 首次启动前定好：上线后改动会让已签发的 token 全部失效。
+      RE0AUTH_SERVER__ISSUER: https://re0auth.r0semi.net
+      # 反向代理的地址写这里，否则所有用户被当成同一个 IP 限流。
+      # 例：["172.17.0.1/32"]（Docker 默认桥接网关，代理跑在宿主机时）
+      # 没有反向代理就直接连本机时留空即可。
+      # RE0AUTH_SERVER__TRUSTED_PROXIES: '["172.17.0.1/32"]'
+    healthcheck:
+      # /healthz 只证明进程活着；/readyz 才证明数据库可用
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
