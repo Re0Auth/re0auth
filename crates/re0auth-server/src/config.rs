@@ -112,6 +112,12 @@ pub struct ConnectorOAuthConfig {
     /// One of `id`, `openid`, `login`, `name`. A field rather than a JSON path:
     /// `INV-CONN-01` forbids reaching into an undeclared document.
     pub subject_field: String,
+    /// Where the upstream invalidates a credential when its binding is revoked.
+    ///
+    /// Optional: an upstream that offers no revocation endpoint leaves the
+    /// credential valid until expiry; the local revocation still happens.
+    #[serde(default)]
+    pub revocation_endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -964,6 +970,15 @@ fn validate_connector_oauth(
                  (http only for loopback with tls.allow_loopback): {endpoint}"
             );
         }
+    }
+    // 这个地址我们也会请求，所以受同一条出网策略约束。
+    if let Some(endpoint) = oauth.revocation_endpoint.as_deref()
+        && !is_https_or_local_http(endpoint, cfg.tls.allow_loopback)
+    {
+        anyhow::bail!(
+            "{label}.revocation_endpoint must be an https URL \
+             (http only for loopback with tls.allow_loopback): {endpoint}"
+        );
     }
     Ok(())
 }

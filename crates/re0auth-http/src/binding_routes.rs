@@ -159,11 +159,26 @@ pub(crate) async fn revoke_binding(
     let binding_id = Uuid::parse_str(&id)
         .map(BindingId)
         .map_err(|_| auth_error(AuthError::InvalidRequest("invalid binding id")))?;
+    // Capture first: the local revoke deletes the credential in the same
+    // transaction, so anything read afterwards is already gone.
+    let pending = match state.binding.as_ref() {
+        Some(binding) => {
+            binding
+                .prepare_revocation(context.user.id, Some(binding_id))
+                .await
+        }
+        None => Vec::new(),
+    };
     state
         .auth
         .revoke_binding(context.user.id, binding_id, request_id::of(&headers))
         .await
         .map_err(auth_error)?;
+    // After the commit: the user's request already succeeded, and an upstream
+    // that is down must not turn it into a failure.
+    if let Some(binding) = state.binding.as_ref() {
+        binding.notify_upstreams(pending).await;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -174,11 +189,21 @@ pub(crate) async fn revoke_all_bindings(
 ) -> Result<Response, ApiError> {
     let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
+    let pending = match state.binding.as_ref() {
+        Some(binding) => binding.prepare_revocation(context.user.id, None).await,
+        None => Vec::new(),
+    };
     let summary = state
         .auth
         .revoke_all_bindings(context.user.id, request_id::of(&headers))
         .await
         .map_err(auth_error)?;
+    // One call per upstream, after the single local transaction committed. A
+    // failure here leaves the credential alive until it expires, which is the
+    // documented cost of not holding a second copy just to revoke it later.
+    if let Some(binding) = state.binding.as_ref() {
+        binding.notify_upstreams(pending).await;
+    }
     Ok(no_store(Json(summary).into_response()))
 }
 

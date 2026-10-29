@@ -38,6 +38,11 @@ pub struct ConnectorOAuthConfig {
     /// `validate` rejects it rather than letting a bind store a credential
     /// nobody can address.
     pub userinfo_endpoint: String,
+    /// Where a credential is invalidated when its binding is revoked.
+    ///
+    /// Optional: an upstream that offers no revocation endpoint leaves the
+    /// credential valid until it expires, and the local revocation still happens.
+    pub revocation_endpoint: Option<String>,
     /// The JSON field in the userinfo document that names the account.
     ///
     /// A field name rather than a JSON path: `INV-CONN-01` forbids digging
@@ -176,6 +181,38 @@ impl ConnectorAuth for ConfiguredConnectorAuth {
             credential,
             subject,
         })
+    }
+
+    async fn revoke_token(
+        &self,
+        endpoint: &ConnectorEndpoint,
+        credential: &SecretString,
+    ) -> Result<(), UpstreamError> {
+        let config = self.config(endpoint)?;
+        let Some(url) = config.revocation_endpoint.as_deref() else {
+            // Nothing to call: the credential dies on its own expiry. Not an
+            // error, because the connector never promised revocation.
+            return Ok(());
+        };
+        // 配置的地址不等于可信地址，出网守卫同样生效。
+        let form = [
+            ("token", credential.expose_secret().to_string()),
+            ("client_id", config.client_id.clone()),
+            (
+                "client_secret",
+                config.client_secret.expose_secret().to_string(),
+            ),
+        ];
+        let pairs: Vec<(&str, &str)> = form
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect();
+        let client = self.clients.get(endpoint)?;
+        client
+            .post_form_text(url, &pairs, "application/json")
+            .await
+            .map_err(|_| UpstreamError::Unavailable)?;
+        Ok(())
     }
 }
 

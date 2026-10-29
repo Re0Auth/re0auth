@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use re0auth_api::audit::{AuditAction, SecurityFact};
 use re0auth_api::cache::{Cache, CachedResponse, NoCache, key};
 use re0auth_api::connector::{
     ConnectorAuth, ConnectorEndpoint, ConnectorRegistry, EgressPolicy, ExchangedCredential,
@@ -79,6 +80,8 @@ fn endpoint() -> ConnectorEndpoint {
 struct RecordingAuth {
     last_challenge: std::sync::Mutex<Option<String>>,
     exchange_error: Option<&'static str>,
+    /// Credentials the service asked the upstream to invalidate.
+    revoked: std::sync::Mutex<Vec<String>>,
 }
 
 impl RecordingAuth {
@@ -86,6 +89,7 @@ impl RecordingAuth {
         Self {
             last_challenge: std::sync::Mutex::new(None),
             exchange_error: None,
+            revoked: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -93,7 +97,12 @@ impl RecordingAuth {
         Self {
             last_challenge: std::sync::Mutex::new(None),
             exchange_error: Some("code expired"),
+            revoked: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    fn revoked(&self) -> Vec<String> {
+        self.revoked.lock().expect("lock").clone()
     }
 }
 
@@ -131,6 +140,15 @@ impl ConnectorAuth for RecordingAuth {
             // id would pass on the old defect.
             subject: UPSTREAM_SUBJECT.to_string(),
         })
+    }
+
+    async fn revoke_token(
+        &self,
+        _endpoint: &ConnectorEndpoint,
+        _credential: &SecretString,
+    ) -> Result<(), UpstreamError> {
+        self.revoked.lock().expect("lock").push(String::new());
+        Ok(())
     }
 }
 
@@ -527,4 +545,112 @@ fn return_to_is_confined_to_local_paths() {
             "{bad:?} must not become a redirect target"
         );
     }
+}
+
+#[tokio::test]
+async fn revoking_a_binding_tells_the_upstream() {
+    // The local row is not the only copy: the upstream still holds a live
+    // credential. Revoking only locally would leave it valid until it expires,
+    // which is the opposite of what "disconnect" promises.
+    let store = Arc::new(MemoryStore::new());
+    let user = UserId::new();
+    store
+        .users()
+        .create(&User {
+            id: user,
+            display_name: "binder".to_string(),
+            role: UserRole::User,
+            created_at: NOW,
+            updated_at: NOW,
+        })
+        .await
+        .expect("user");
+    let auth = Arc::new(RecordingAuth::ok());
+    let service = BindingService::new(
+        store.clone(),
+        Arc::new(OneConnector(endpoint())),
+        auth.clone(),
+        Arc::new(PlainSealer),
+        Arc::new(FixedClock(NOW)),
+        Arc::new(CountingRandom(std::sync::atomic::AtomicU8::new(1))),
+        "https://auth.example.test/bind/callback",
+    );
+
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+    assert!(
+        auth.revoked().is_empty(),
+        "a completed bind revokes nothing"
+    );
+
+    let pending = service.prepare_revocation(user, None).await;
+    assert_eq!(pending.len(), 1, "the active binding must be captured");
+    // Captured before the local delete, or the credential is already gone.
+    assert_eq!(
+        service.notify_upstreams(pending).await,
+        1,
+        "the upstream must acknowledge the revocation"
+    );
+    assert_eq!(
+        auth.revoked().len(),
+        1,
+        "one binding means exactly one upstream revocation"
+    );
+}
+
+#[tokio::test]
+async fn a_revoked_binding_is_not_revoked_again() {
+    // The killswitch is retried by clients that got an uncertain response.
+    // Sending the same revocation upstream twice is noise, and capturing a
+    // revoked binding would do exactly that.
+    let store = Arc::new(MemoryStore::new());
+    let user = UserId::new();
+    store
+        .users()
+        .create(&User {
+            id: user,
+            display_name: "binder".to_string(),
+            role: UserRole::User,
+            created_at: NOW,
+            updated_at: NOW,
+        })
+        .await
+        .expect("user");
+    let auth = Arc::new(RecordingAuth::ok());
+    let service = BindingService::new(
+        store.clone(),
+        Arc::new(OneConnector(endpoint())),
+        auth.clone(),
+        Arc::new(PlainSealer),
+        Arc::new(FixedClock(NOW)),
+        Arc::new(CountingRandom(std::sync::atomic::AtomicU8::new(1))),
+        "https://auth.example.test/bind/callback",
+    );
+
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    let done = service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let fact = SecurityFact::new(AuditAction::BindingRevoked, NOW, "binding");
+    store
+        .bindings()
+        .revoke(&done.binding.id, &fact, NOW)
+        .await
+        .expect("revoke");
+
+    assert!(
+        service.prepare_revocation(user, None).await.is_empty(),
+        "an already-revoked binding has no credential left to invalidate"
+    );
 }

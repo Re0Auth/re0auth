@@ -380,6 +380,7 @@ fn binding_config(
             client_secret: secret,
             scopes: oauth.scopes.clone(),
             userinfo_endpoint: oauth.userinfo_endpoint.clone(),
+            revocation_endpoint: oauth.revocation_endpoint.clone(),
             subject_field: oauth.subject_field.clone(),
         },
     ))

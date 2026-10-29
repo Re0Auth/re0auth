@@ -47,6 +47,15 @@ pub struct StartedBinding {
     pub state: String,
 }
 
+/// A credential captured before its binding is revoked.
+///
+/// Held only long enough to tell the upstream; it never reaches a caller that
+/// could log it.
+pub struct PendingUpstreamRevocation {
+    upstream_id: String,
+    credential: re0auth_api::SecretString,
+}
+
 /// A binding flow that completed.
 #[derive(Debug, Clone)]
 pub struct CompletedBinding {
@@ -325,6 +334,86 @@ impl BindingService {
             .resolve(&connector_id_for_name(upstream_id))
             .await
             .map_err(|_| BindingError::UnknownConnector)
+    }
+
+    /// Captures what a revocation is about to destroy.
+    ///
+    /// Must run before the local revoke: the store deletes the credential in the
+    /// same transaction that marks the binding revoked, so anything read after
+    /// is already gone. `only` narrows it to one binding for the single-revoke
+    /// route; `None` covers the killswitch.
+    ///
+    /// A binding whose credential cannot be read is skipped rather than fatal:
+    /// the local revocation is the user's actual request, and a credential we
+    /// cannot open is one we could not have sent upstream anyway.
+    pub async fn prepare_revocation(
+        &self,
+        user: UserId,
+        only: Option<BindingId>,
+    ) -> Vec<PendingUpstreamRevocation> {
+        let Ok(bindings) = self.storage.bindings().list_by_user(&user).await else {
+            return Vec::new();
+        };
+        let mut pending = Vec::new();
+        for binding in bindings {
+            if binding.status == BindingStatus::Revoked {
+                continue;
+            }
+            if only.is_some_and(|id| id != binding.id) {
+                continue;
+            }
+            let Ok(Some(credential)) = self.capture_credential(&binding.id).await else {
+                continue;
+            };
+            pending.push(PendingUpstreamRevocation {
+                upstream_id: binding.upstream_id,
+                credential,
+            });
+        }
+        pending
+    }
+
+    /// Tells each upstream that its credential is no longer ours.
+    ///
+    /// Best effort by contract: the local revocation already committed and is
+    /// what the user asked for, so an unreachable upstream must not turn a
+    /// successful unbind into a failed one. Returns how many upstreams
+    /// acknowledged, for the caller to log — never to report to the user.
+    pub async fn notify_upstreams(&self, pending: Vec<PendingUpstreamRevocation>) -> usize {
+        let mut acknowledged = 0;
+        for item in pending {
+            let Ok(endpoint) = self.lookup(&item.upstream_id).await else {
+                continue;
+            };
+            if self
+                .auth
+                .revoke_token(&endpoint, &item.credential)
+                .await
+                .is_ok()
+            {
+                acknowledged += 1;
+            }
+        }
+        acknowledged
+    }
+
+    async fn capture_credential(
+        &self,
+        binding_id: &BindingId,
+    ) -> Result<Option<re0auth_api::SecretString>, BindingError> {
+        let Some(sealed) = self
+            .storage
+            .bindings()
+            .load_sub_credential(binding_id)
+            .await
+            .map_err(|error| BindingError::Internal(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        self.sealer
+            .open(binding_id, &sealed)
+            .map(Some)
+            .map_err(|error| BindingError::Internal(error.to_string()))
     }
 }
 

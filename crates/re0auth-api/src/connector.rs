@@ -525,6 +525,20 @@ pub trait ConnectorAuth: Send + Sync {
         redirect_uri: &str,
         pkce_verifier: Option<&str>,
     ) -> Result<ExchangedCredential, UpstreamError>;
+
+    /// Tells the upstream to invalidate a credential we are dropping.
+    ///
+    /// Best effort by contract: a connector without a revocation endpoint, or an
+    /// upstream that is down, must not stop the local revocation that already
+    /// succeeded. A default no-op keeps connectors that mint tokens but never
+    /// revoke them (or test doubles) from having to write one.
+    async fn revoke_token(
+        &self,
+        _endpoint: &ConnectorEndpoint,
+        _credential: &SecretString,
+    ) -> Result<(), UpstreamError> {
+        Ok(())
+    }
 }
 
 /// Connector-owned vault for upstream root credentials (INV-CONN-02).

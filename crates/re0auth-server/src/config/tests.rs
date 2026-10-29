@@ -486,6 +486,7 @@ fn connector_oauth() -> ConnectorOAuthConfig {
         scopes: vec!["read".into()],
         userinfo_endpoint: "https://upstream.example.com/user".into(),
         subject_field: "id".into(),
+        revocation_endpoint: None,
     }
 }
 
@@ -545,6 +546,21 @@ fn a_connector_token_endpoint_obeys_the_outbound_policy() {
     oauth.token_endpoint = "https://upstream.example.com/token".into();
     oauth.authorization_endpoint = "http://127.0.0.1:9000/authorize".into();
     validate(&cfg).expect("the authorization endpoint is not fetched by us");
+}
+
+/// The revocation endpoint is fetched by us, so it is held to the same policy
+/// as the token endpoint rather than being treated as a browser-facing URL.
+#[test]
+fn a_connector_revocation_endpoint_obeys_the_outbound_policy() {
+    let mut oauth = connector_oauth();
+    oauth.revocation_endpoint = Some("http://127.0.0.1:9000/revoke".into());
+    let mut cfg = config_with_connector_oauth(oauth);
+    assert!(!cfg.tls.allow_loopback);
+    let error = validate(&cfg).expect_err("loopback revocation endpoint");
+    assert!(error.to_string().contains("revocation_endpoint"), "{error}");
+
+    cfg.tls.allow_loopback = true;
+    validate(&cfg).expect("loopback revocation endpoint with the switch");
 }
 
 #[test]
