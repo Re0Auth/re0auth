@@ -115,6 +115,15 @@ struct PinnedClient {
     client: reqwest::Client,
 }
 
+/// Outbound identity sent with every request.
+///
+/// GitHub's API answers 403 to a request without one, and `reqwest` sends none
+/// by default. Set on the client rather than at each call site: there are enough
+/// request methods that one would eventually be missed.
+fn user_agent() -> String {
+    format!("re0auth/{}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Returns the cached client only when it is still pinned to the address the
 /// caller just vetted. A host that moved must rebuild, or the guard would keep
 /// using a connection to an address it no longer vouches for.
@@ -205,6 +214,8 @@ impl GuardedClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
+            // 缺 User-Agent 会被上游拒绝，如 GitHub API 回 403
+            .user_agent(user_agent())
             .use_preconfigured_tls(self.config.as_ref().clone())
             .resolve(host, pinned)
             .build()
@@ -910,6 +921,70 @@ mod tests {
             cached_hosts(&client),
             2,
             "entries are per host, so the cache cannot grow with request count"
+        );
+    }
+
+    /// Serves one response and reports the request headers it received.
+    fn serve_capture_headers() -> (String, Arc<Mutex<Option<String>>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let captured = Arc::new(Mutex::new(None));
+        let sink = captured.clone();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(socket.try_clone().expect("clone"));
+            let mut head = String::new();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).expect("read") == 0 || line == "\r\n" {
+                    break;
+                }
+                head.push_str(&line);
+            }
+            *sink.lock().expect("lock") = Some(head);
+            let response = b"{}";
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                        response.len()
+                    )
+                    .as_bytes(),
+                )
+                .expect("head");
+            socket.write_all(response).expect("body");
+            socket.flush().expect("flush");
+        });
+        (format!("http://{addr}/user"), captured)
+    }
+
+    /// GitHub's API answers 403 to a request without a User-Agent, and `reqwest`
+    /// sends none by default. The header is set once on the client, so this test
+    /// is what keeps a new request method from silently dropping it.
+    #[tokio::test]
+    async fn every_outbound_request_carries_a_user_agent() {
+        let (url, captured) = serve_capture_headers();
+        let client =
+            GuardedClient::with_policy(OutboundPolicy::AllowLoopback, true).expect("client");
+        client
+            .get_json_with_bearer::<serde_json::Value>(&url, "token")
+            .await
+            .expect("get");
+
+        let head = captured.lock().expect("lock").clone().expect("head");
+        let lower = head.to_ascii_lowercase();
+        let line = lower
+            .lines()
+            .find(|line| line.starts_with("user-agent:"))
+            .unwrap_or_else(|| panic!("no user-agent in {head:?}"));
+        assert!(
+            line.trim() != "user-agent:",
+            "user-agent must be non-empty, got {line:?}"
+        );
+        assert!(
+            line.contains("re0auth/"),
+            "user-agent must name this client, got {line:?}"
         );
     }
 }
