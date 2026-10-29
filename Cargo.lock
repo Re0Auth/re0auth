@@ -1731,6 +1731,7 @@ dependencies = [
  "secrecy",
  "serde",
  "thiserror",
+ "url",
  "uuid",
 ]
 

@@ -160,6 +160,10 @@ pub async fn run(cfg: &Config, command: AdminCommand) -> anyhow::Result<()> {
             } else {
                 allowed_scopes
             };
+            for uri in &redirect_uris {
+                re0auth_api::redirect_uri::validate(uri)
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+            }
             let hasher = crate::client_secret_hasher(cfg)?;
             let created = admin::create_client(
                 &store,

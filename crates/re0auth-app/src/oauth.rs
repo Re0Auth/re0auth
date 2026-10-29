@@ -462,7 +462,8 @@ impl OAuthService {
         if request.scopes.is_empty() || request.code_challenge.is_empty() {
             return Err(OAuthError::InvalidRequest("scope/code_challenge"));
         }
-        Url::parse(&request.redirect_uri)
+        // 登记规则同源，旧脏数据在这里也会被拒
+        re0auth_api::redirect_uri::validate(&request.redirect_uri)
             .map_err(|_| OAuthError::InvalidRequest("redirect_uri"))?;
         let client = self
             .storage
@@ -778,6 +779,10 @@ impl OAuthService {
     ) -> Result<TokenResponse, OAuthError> {
         // Before `consume`: a wrong secret must not burn the code.
         self.authenticate_client(client_id, client_secret).await?;
+        // RFC 7636 §4.1：语法不合规的 verifier 先拒
+        if !pkce::is_valid_verifier(code_verifier) {
+            return Err(OAuthError::InvalidRequest("code_verifier"));
+        }
         let challenge = pkce::challenge_s256(code_verifier);
         let code_hash = hash_secret(code);
         let now = self.clock.now();

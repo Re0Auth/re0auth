@@ -314,6 +314,24 @@ fn reqwest_client_is_only_constructed_in_the_guarded_adapter() {
     }
 }
 
+/// 代理会重新解析域名，钉住随之失效
+#[test]
+fn guarded_client_disables_system_proxies() {
+    let path = root().join("crates/re0auth-runtime/src/http_client.rs");
+    let text = fs::read_to_string(path).expect("read http_client.rs");
+    let guarded = text
+        .split("reqwest::Client::builder()")
+        .nth(1)
+        .expect("the guarded client must be built through Client::builder")
+        .split(".build()")
+        .next()
+        .expect("the builder chain must end with .build()");
+    assert!(
+        guarded.contains(".no_proxy()"),
+        "the guarded client must call .no_proxy(): a system proxy re-resolves the host and bypasses address pinning (INV-OUT-02)"
+    );
+}
+
 #[test]
 fn tokio_spawn_is_only_used_in_the_runtime_scheduler() {
     // ADR-0026 / INV-SPAWN-01: the scheduler is the single legal spawn point.

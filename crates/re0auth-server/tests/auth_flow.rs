@@ -39,7 +39,7 @@ use re0auth_runtime::outbound::OutboundPolicy;
 const ISSUER: &str = "http://127.0.0.1:19090";
 const TEST_MASTER: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const CLIENT_ID: &str = "test-client";
-const REDIRECT_URI: &str = "http://client.example/callback";
+const REDIRECT_URI: &str = "https://client.example/callback";
 
 struct KeyGuard(PathBuf);
 

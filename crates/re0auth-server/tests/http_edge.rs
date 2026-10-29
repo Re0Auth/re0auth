@@ -703,11 +703,28 @@ async fn token_rejects_unknown_credentials_without_leaking_which_part_failed() {
             ("grant_type", "authorization_code"),
             ("code", "not-a-real-code"),
             ("redirect_uri", "https://client.example/callback"),
-            ("code_verifier", "verifier"),
+            (
+                "code_verifier",
+                "verifier-0123456789-0123456789-0123456789-0123456789",
+            ),
         ]),
     )
     .await;
     assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_grant");
+
+    let (status, body, _) = post(
+        &app,
+        "/oauth/token",
+        form(&[
+            ("client_id", &client),
+            ("grant_type", "authorization_code"),
+            ("code", "not-a-real-code"),
+            ("redirect_uri", "https://client.example/callback"),
+            ("code_verifier", "too-short"),
+        ]),
+    )
+    .await;
+    assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_request");
 
     let (status, body, _) = post(
         &app,

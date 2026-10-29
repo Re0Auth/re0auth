@@ -214,6 +214,8 @@ impl GuardedClient {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
+            // 系统代理会让 DNS 钉住失效，必须显式关掉
+            .no_proxy()
             // 缺 User-Agent 会被上游拒绝，如 GitHub API 回 403
             .user_agent(user_agent())
             .use_preconfigured_tls(self.config.as_ref().clone())

@@ -150,6 +150,15 @@ fn json_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
         .map_err(|_| invalid_request("invalid JSON body", Shape::Problem))
 }
 
+/// 登记是 redirect_uri 入库前的唯一关口
+fn check_redirect_uris(values: &[String]) -> Result<(), ApiError> {
+    for value in values {
+        re0auth_api::redirect_uri::validate(value)
+            .map_err(|error| invalid_request(error.description(), Shape::Problem))?;
+    }
+    Ok(())
+}
+
 // ---- Clients -------------------------------------------------------------
 
 pub(crate) async fn list_clients(
@@ -197,6 +206,7 @@ pub(crate) async fn create_client(
         None => ClientStatus::Pending,
         Some(raw) => client_status(raw)?,
     };
+    check_redirect_uris(&body.redirect_uris)?;
     let created = service(&state)?
         .create_client(
             context.user.id,
@@ -266,6 +276,9 @@ pub(crate) async fn update_client(
         None => None,
         Some(raw) => Some(client_status(raw)?),
     };
+    if let Some(uris) = &body.redirect_uris {
+        check_redirect_uris(uris)?;
+    }
     let view = service(&state)?
         .update_client(
             context.user.id,

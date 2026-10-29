@@ -14,6 +14,7 @@ pub mod idp;
 pub mod oauth;
 pub mod ports;
 pub mod rate;
+pub mod redirect_uri;
 pub mod schedule;
 pub mod secret;
 
