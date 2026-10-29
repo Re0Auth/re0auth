@@ -1,0 +1,193 @@
+name: release
+
+# Manual only. A tag push that publishes a broken image is worse than a
+# release that waits for a human, so the trigger stays a button until the
+# pipeline has proven itself.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 版本号，形如 v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  GHCR_IMAGE: ghcr.io/re0auth/re0auth
+  CNB_IMAGE: docker.cnb.cool/r-0semi/re0auth
+
+jobs:
+  # The same gate main runs. A release that skipped a check would ship a
+  # binary whose tests never ran.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: check version format
+        id: check
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          v="$INPUT_VERSION"
+          # The input becomes an image tag; a malformed value must stop here
+          # rather than after a twenty minute build.
+          printf '%s' "$v" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || {
+            echo "版本号必须形如 v0.1.0，实际为: $v" >&2
+            exit 1
+          }
+          # The tag is a promise about what the binary reports at runtime.
+          declared=$(sed -n '/^\[workspace.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p')
+          if [ "v$declared" != "$v" ]; then
+            echo "Cargo.toml 声明 $declared，与输入的 $v 不一致；请先修改 workspace.package.version" >&2
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [ci, validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners, no QEMU: aws-lc-sys and SQLite compile C, and
+          # emulated compilation is an order of magnitude slower.
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          # One digest per platform; the manifest list is assembled later so a
+          # partially pushed release is never visible under a tag.
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.title=re0auth
+            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+      - name: record digest
+        run: |
+          set -eu
+          mkdir -p /tmp/digests
+          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [build, validate]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: log in
+        run: |
+          set -eu
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.CNB_TOKEN }}" | docker login docker.cnb.cool -u cnb --password-stdin
+
+      - name: assemble multi-arch manifest
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -eu
+          cd /tmp/digests
+          # build-push-action already prints sha256:<hex>, so the ref is
+          # image@<file contents> verbatim.
+          refs=$(for f in *; do printf '%s@%s ' "$GHCR_IMAGE" "$(cat "$f")"; done)
+          docker buildx imagetools create \
+            -t "$GHCR_IMAGE:$VERSION" \
+            -t "$GHCR_IMAGE:latest" \
+            $refs
+
+      - name: copy to CNB
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo
+          # --all keeps the multi-arch manifest intact; --authfile reuses the
+          # docker logins above so no token reaches a command line.
+          for tag in "$VERSION" latest; do
+            skopeo copy --all --authfile "$HOME/.docker/config.json" \
+              "docker://$GHCR_IMAGE:$tag" \
+              "docker://$CNB_IMAGE:$tag"
+          done
+
+      - name: verify both registries
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -eu
+          for image in "$GHCR_IMAGE" "$CNB_IMAGE"; do
+            echo "== $image:$VERSION"
+            docker buildx imagetools inspect "$image:$VERSION" \
+              | grep -E 'Platform|Digest'
+          done
+
+      - name: summary
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 发布 $VERSION
+
+          | 来源 | 拉取命令 |
+          | --- | --- |
+          | 国内（CNB） | \`docker pull $CNB_IMAGE:$VERSION\` |
+          | 国际（GHCR） | \`docker pull $GHCR_IMAGE:$VERSION\` |
+
+          支持 \`linux/amd64\` 与 \`linux/arm64\`，两个仓库内容一致。
+          EOF
