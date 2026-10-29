@@ -17,3 +17,4 @@ lcov.info
 .commandcode/
 /config.toml
 docs
+/secrets
