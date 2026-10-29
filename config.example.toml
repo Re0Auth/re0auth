@@ -209,6 +209,8 @@ inbound_body_bytes = 1048576
 # 而这个值只能由上游给出。`subject_field` 只能是 id / openid / login / name。
 # userinfo_endpoint = "https://api.example.com/oauth/userinfo"
 # subject_field = "id"
+# 可选：解绑时通知上游作废凭据（RFC 7009 风格）。不配则凭据留到过期。
+# revocation_endpoint = "https://api.example.com/oauth/revoke"
 #
 # PhiHub + Re0Auth 委托（ADR-0045）：授权页在 PhiHub Web，token 端点走
 # `/delegations/token`，数据面复用 `/get/*` 的 POST。
@@ -239,3 +241,6 @@ inbound_body_bytes = 1048576
 # scopes = ["phihub.save.read"]
 # userinfo_endpoint = "https://phib19.top:8080/delegations/me"
 # subject_field = "id"
+# 可选：解绑时通知上游作废委托令牌。不配置的话，令牌会一直活到过期（上游默认 7 天），
+# 本地解绑仍然生效，只是上游那份凭据还可用。
+# revocation_endpoint = "https://phib19.top:8080/delegations/revoke"
