@@ -20,8 +20,8 @@ use jsonwebtoken::jwk::{Jwk, JwkSet};
 use jsonwebtoken::{Algorithm, decode_header};
 use openidconnect::core::{CoreIdToken, CoreJsonWebKey, CoreProviderMetadata};
 use openidconnect::{
-    ClaimsVerificationError, ClientId, ClientSecret, IdTokenVerifier, IssuerUrl, JsonWebKeySet,
-    Nonce,
+    AccessToken, AccessTokenHash, ClaimsVerificationError, ClientId, ClientSecret, IdTokenVerifier,
+    IssuerUrl, JsonWebKeySet, Nonce,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -98,6 +98,7 @@ impl std::fmt::Debug for OidcConfig {
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     id_token: Option<String>,
+    access_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -278,7 +279,12 @@ impl OidcProvider {
         Ok(())
     }
 
-    async fn verify_id_token(&self, token: &str, expected_nonce: &str) -> IdpResult<IdpIdentity> {
+    async fn verify_id_token(
+        &self,
+        token: &str,
+        expected_nonce: &str,
+        access_token: Option<&str>,
+    ) -> IdpResult<IdpIdentity> {
         let header =
             decode_header(token).map_err(|error| IdpError::InvalidToken(error.to_string()))?;
         // 方案甲：自研头检查保留在库之前
@@ -323,6 +329,35 @@ impl OidcProvider {
         let audiences = serde_json::to_value(claims.audiences()).unwrap_or(Value::Null);
         if !audience_is_only(&audiences, &self.client_id) {
             return Err(IdpError::InvalidToken("audience mismatch".to_string()));
+        }
+        // 库也不自动校验 at_hash
+        if let Some(expected) = claims.access_token_hash() {
+            let Some(raw) = access_token else {
+                return Err(IdpError::InvalidToken(
+                    "id token carries at_hash but the response has no access token".to_string(),
+                ));
+            };
+            let alg = id_token.signing_alg().map_err(|error| {
+                IdpError::InvalidToken(format!("id token alg unavailable: {error}"))
+            })?;
+            let key = id_token.signing_key(&verifier).map_err(|error| {
+                IdpError::InvalidToken(format!("signing key unavailable: {error}"))
+            })?;
+            let actual = AccessTokenHash::from_token(&AccessToken::new(raw.to_string()), alg, key)
+                .map_err(|error| {
+                    IdpError::InvalidToken(format!("cannot hash access token: {error}"))
+                })?;
+            if actual != *expected {
+                return Err(IdpError::InvalidToken("at_hash mismatch".to_string()));
+            }
+        }
+
+        // 库明确不做 azp 校验
+        let azp = claims.authorized_party().map(|value| value.as_str());
+        if !azp_is_acceptable(azp, &self.client_id) {
+            return Err(IdpError::InvalidToken(
+                "azp does not name this client".to_string(),
+            ));
         }
 
         let subject = claims.subject().as_str().to_string();
@@ -399,8 +434,14 @@ impl IdpClient for OidcProvider {
         let id_token = response
             .id_token
             .ok_or_else(|| IdpError::InvalidToken("token response has no id_token".to_string()))?;
-        self.verify_id_token(&id_token, nonce).await
+        self.verify_id_token(&id_token, nonce, response.access_token.as_deref())
+            .await
     }
+}
+
+/// azp 若存在，必须指向本客户端
+fn azp_is_acceptable(azp: Option<&str>, client_id: &str) -> bool {
+    azp.is_none_or(|value| value == client_id)
 }
 
 /// 同一 kid 命中多把钥匙时必须拒绝
@@ -481,6 +522,11 @@ fn reject_unsupported_header(header: &jsonwebtoken::Header) -> IdpResult<()> {
     if header.zip.is_some() {
         return Err(IdpError::InvalidToken(
             "id token is compressed; compressed payloads are not accepted".to_string(),
+        ));
+    }
+    if header.cty.is_some() {
+        return Err(IdpError::InvalidToken(
+            "id token declares a content type; nested payloads are not accepted".to_string(),
         ));
     }
     if let Some(typ) = header.typ.as_deref() {
@@ -579,6 +625,23 @@ mod tests {
     }
 
     #[test]
+    fn an_azp_naming_this_client_is_accepted() {
+        assert!(azp_is_acceptable(Some("re0auth"), "re0auth"));
+    }
+
+    #[test]
+    fn an_azp_naming_another_client_is_rejected() {
+        assert!(!azp_is_acceptable(Some("someone-else"), "re0auth"));
+        assert!(!azp_is_acceptable(Some(""), "re0auth"));
+    }
+
+    /// 单 aud 场景下 azp 可以缺席
+    #[test]
+    fn an_absent_azp_is_accepted() {
+        assert!(azp_is_acceptable(None, "re0auth"));
+    }
+
+    #[test]
     fn malformed_audience_forms_are_rejected() {
         assert!(!audience_is_only(&json!(null), "re0auth"));
         assert!(!audience_is_only(&json!([]), "re0auth"));
@@ -613,6 +676,16 @@ mod tests {
         let error = reject_unsupported_header(&header(json!({"alg": "RS256", "typ": "at+jwt"})))
             .expect_err("a foreign typ must be refused");
         assert!(error.to_string().contains("typ"), "{error}");
+    }
+
+    /// 嵌套 JWT 不属于本依赖方的用例
+    #[test]
+    fn a_nested_content_type_is_rejected() {
+        for cty in ["JWT", "application/jwt"] {
+            let error = reject_unsupported_header(&header(json!({"alg": "RS256", "cty": cty})))
+                .expect_err("cty must be refused");
+            assert!(error.to_string().contains("content type"), "{error}");
+        }
     }
 
     #[test]

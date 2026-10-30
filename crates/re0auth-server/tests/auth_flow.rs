@@ -114,6 +114,8 @@ struct MockIdp {
     header_typ: Arc<Mutex<Option<String>>>,
     /// Publishes the signing key twice under the same `kid` in JWKS.
     duplicate_kid: Arc<Mutex<bool>>,
+    /// Stamps an `at_hash` claim so the binding check can be exercised.
+    at_hash: Arc<Mutex<Option<String>>>,
     /// Replaces one endpoint in the discovery document, so the same-origin guard
     /// can be pushed on one field at a time.
     discovery_override: Arc<Mutex<Option<(&'static str, String)>>>,
@@ -145,6 +147,8 @@ struct IdTokenClaims {
     iat: i64,
     nonce: String,
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at_hash: Option<String>,
 }
 
 impl MockIdp {
@@ -173,6 +177,7 @@ impl MockIdp {
             Some(kid) => kid,
             None => key.kid.clone(),
         };
+        let at_hash = self.at_hash.lock().expect("at_hash").clone();
         sign_token_shaped(
             &key,
             &kid,
@@ -181,11 +186,16 @@ impl MockIdp {
             typ.as_deref(),
             &nonce,
             now,
+            at_hash.as_deref(),
         )
     }
 
     fn force_kid(&self, kid: Option<&str>) {
         *self.forced_kid.lock().expect("forced kid") = kid.map(str::to_string);
+    }
+
+    fn set_at_hash(&self, value: Option<&str>) {
+        *self.at_hash.lock().expect("at_hash") = value.map(str::to_string);
     }
 
     fn force_audience(&self, audience: Option<Value>) {
@@ -211,6 +221,13 @@ impl MockIdp {
 
 /// Builds an id token with the claims and header a test needs to deviate from
 /// the well-formed one, so the verifier can be pushed on one axis at a time.
+/// 取 SHA256 前半，base64url 无填充
+fn at_hash_of(access_token: &str) -> String {
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, access_token.as_bytes());
+    URL_SAFE_NO_PAD.encode(&digest.as_ref()[..16])
+}
+
+#[allow(clippy::too_many_arguments)]
 fn sign_token_shaped(
     key: &TestKey,
     kid: &str,
@@ -219,6 +236,7 @@ fn sign_token_shaped(
     typ: Option<&str>,
     nonce: &str,
     now: i64,
+    at_hash: Option<&str>,
 ) -> String {
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some(kid.to_string());
@@ -235,6 +253,7 @@ fn sign_token_shaped(
             iat: now,
             nonce: nonce.to_string(),
             name: "Alice".to_string(),
+            at_hash: at_hash.map(str::to_string),
         },
         &key.encoding,
     )
@@ -297,6 +316,7 @@ async fn start_mock() -> MockIdp {
         audience: Arc::new(Mutex::new(None)),
         header_typ: Arc::new(Mutex::new(None)),
         duplicate_kid: Arc::new(Mutex::new(false)),
+        at_hash: Arc::new(Mutex::new(None)),
         discovery_override: Arc::new(Mutex::new(None)),
         last_token_auth: Arc::new(Mutex::new(None)),
         client_id: CLIENT_ID.to_string(),
@@ -883,6 +903,30 @@ async fn device_approval_ticket_is_one_time_and_has_no_session_cookie() {
     )
     .await;
     assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// at_hash 必须绑定到同一响应里的 access token
+#[tokio::test]
+async fn a_matching_access_token_hash_is_accepted() {
+    let mock = start_mock().await;
+    mock.set_at_hash(Some(&at_hash_of("mock-access-token")));
+    let provider = provider_for(&mock, Arc::new(SystemClock)).await;
+    mock.nonce.lock().expect("nonce").clear();
+    let result = provider.exchange_code("code", "verifier", "").await;
+    assert!(result.is_ok(), "a matching at_hash must pass: {result:?}");
+}
+
+#[tokio::test]
+async fn a_foreign_access_token_hash_is_rejected() {
+    let mock = start_mock().await;
+    mock.set_at_hash(Some(&at_hash_of("someone-elses-token")));
+    let provider = provider_for(&mock, Arc::new(SystemClock)).await;
+    mock.nonce.lock().expect("nonce").clear();
+    let error = provider
+        .exchange_code("code", "verifier", "")
+        .await
+        .expect_err("at_hash mismatch must be refused");
+    assert!(error.to_string().contains("at_hash"), "{error}");
 }
 
 /// INV-TOKEN-02: an IdP that rotates its signing key must not require a restart.
