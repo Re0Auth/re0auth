@@ -188,7 +188,7 @@ fn derive_kek(master: &Zeroizing<[u8; KEY_LEN]>, key_version: u32) -> Zeroizing<
     info.extend_from_slice(HKDF_INFO);
     info.extend_from_slice(&key_version.to_be_bytes());
     let mut kek = Zeroizing::new([0u8; KEY_LEN]);
-    // KEY_LEN 远小于 HKDF 的输出上限，失败不可能发生
+    // KEY_LEN 不超过 HKDF 上限
     hkdf.expand(&info, kek.as_mut())
         .expect("hkdf expand into 32 bytes");
     kek
@@ -261,7 +261,7 @@ impl SecretSealer for AesGcmSealer {
                 )
                 .map_err(|_| internal("sealed secret failed authentication"))?,
         );
-        // 先校验再拷贝，失败路径的明文留在 Zeroizing 里
+        // 失败路径的明文仍被清零
         let text = std::str::from_utf8(plaintext.as_slice())
             .map_err(|_| internal("sealed secret is not UTF-8"))?;
         Ok(SecretString::from(text.to_owned()))
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn wrapped_dek_is_pinned_to_the_kek_derivation() {
-        // payload 用 DEK 加密，与 KEK 无关；信封才随派生路径变化
+        // payload 与 KEK 无关
         let binding = BindingId(uuid::Uuid::from_bytes([0x22; 16]));
         let sealed = sealer().seal(&binding, &token()).expect("seal");
         assert_eq!(

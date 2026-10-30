@@ -15,7 +15,7 @@ pub fn verify_s256(verifier: &str, challenge: &str) -> bool {
     challenge_s256(verifier) == challenge
 }
 
-/// RFC 7636 §4.1 的 verifier 语法
+/// RFC 7636 verifier 语法
 #[must_use]
 pub fn is_valid_verifier(verifier: &str) -> bool {
     (43..=128).contains(&verifier.len())

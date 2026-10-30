@@ -780,7 +780,7 @@ impl OAuthService {
     ) -> Result<TokenResponse, OAuthError> {
         // Before `consume`: a wrong secret must not burn the code.
         self.authenticate_client(client_id, client_secret).await?;
-        // RFC 7636 §4.1：语法不合规的 verifier 先拒
+        // 先校验 verifier 语法
         if !pkce::is_valid_verifier(code_verifier) {
             return Err(OAuthError::InvalidRequest("code_verifier"));
         }
@@ -805,7 +805,7 @@ impl OAuthService {
             .await;
         let grant = match attempt {
             Ok(grant) => grant,
-            // RFC 6749 §4.1.2：重放，回收该码已签发的令牌
+            // 重放则回收该码签发的令牌
             Err(RepoError::AlreadyConsumed) => {
                 self.revoke_replayed_code(&code_hash, client_id, now)
                     .await?;

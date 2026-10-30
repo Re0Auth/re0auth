@@ -150,7 +150,7 @@ fn json_body<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
         .map_err(|_| invalid_request("invalid JSON body", Shape::Problem))
 }
 
-/// 登记是 redirect_uri 入库前的唯一关口
+/// 入库前的唯一关口
 fn check_redirect_uris(values: &[String]) -> Result<(), ApiError> {
     for value in values {
         re0auth_api::redirect_uri::validate(value)
