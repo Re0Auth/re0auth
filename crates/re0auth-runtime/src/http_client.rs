@@ -392,7 +392,18 @@ impl GuardedClient {
         &self,
         response: reqwest::Response,
     ) -> anyhow::Result<T> {
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .map(|value| value.to_str().unwrap_or_default().to_string());
         let bytes = read_limited(response, self.max_body).await?;
+        if let Some(value) = content_type
+            && !is_json_media_type(&value)
+        {
+            return Err(anyhow::anyhow!(
+                "upstream answered with content type {value:?}, expected JSON"
+            ));
+        }
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -515,6 +526,17 @@ impl GuardedClient {
 /// allocation is whatever the peer chose to send, not the limit. Every response
 /// read therefore goes through here, and the check happens before the bytes are
 /// kept rather than after they are all in memory.
+/// 只认 JSON 媒体类型，缺头时放行
+fn is_json_media_type(value: &str) -> bool {
+    let essence = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    essence == "application/json" || essence.ends_with("+json")
+}
+
 async fn read_limited(mut response: reqwest::Response, limit: usize) -> anyhow::Result<Vec<u8>> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
@@ -575,6 +597,17 @@ pub type SharedGuard = Arc<GuardedClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_json_media_types_are_accepted() {
+        assert!(is_json_media_type("application/json"));
+        assert!(is_json_media_type("application/json; charset=utf-8"));
+        assert!(is_json_media_type("Application/JSON"));
+        assert!(is_json_media_type("application/jwk-set+json"));
+        assert!(!is_json_media_type("text/html"));
+        assert!(!is_json_media_type("application/x-www-form-urlencoded"));
+        assert!(!is_json_media_type(""));
+    }
 
     /// Serves a chunked body that never terminates, over plain TCP.
     ///
