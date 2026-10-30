@@ -15,7 +15,7 @@ pub use oauth2::{OAuth2Config, OAuth2Kind, OAuth2Provider};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use jsonwebtoken::jwk::JwkSet;
+use jsonwebtoken::jwk::{Jwk, JwkSet};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
 use serde_json::Value;
@@ -240,28 +240,13 @@ impl OidcProvider {
             .ok_or_else(|| IdpError::InvalidToken(format!("unknown kid {kid}")))
     }
 
-    /// Looks up `kid`, refusing a JWKS that publishes it more than once.
-    ///
-    /// `JwkSet::find` is `iter().find`, so a set with two keys under one `kid`
-    /// silently picks whichever came first. An IdP that is rotating a key that
-    /// way would have us verify against a semi-arbitrary one; the set is
-    /// malformed enough that guessing is worse than failing.
-    fn cached_key(&self, kid: &str) -> IdpResult<Option<jsonwebtoken::jwk::Jwk>> {
+    /// Reads the cached JWKS under the lock and delegates to [`unique_key`].
+    fn cached_key(&self, kid: &str) -> IdpResult<Option<Jwk>> {
         let jwks = self
             .jwks
             .read()
             .map_err(|_| IdpError::Unavailable("JWKS lock poisoned".to_string()))?;
-        let mut matches = jwks
-            .keys
-            .iter()
-            .filter(|jwk| jwk.common.key_id.as_deref() == Some(kid));
-        let first = matches.next().cloned();
-        if matches.next().is_some() {
-            return Err(IdpError::InvalidToken(format!(
-                "ambiguous kid {kid}: the JWKS publishes more than one key under it"
-            )));
-        }
-        Ok(first)
+        unique_key(&jwks.keys, kid).map(|found| found.cloned())
     }
 
     /// Fetches JWKS unless the cooldown has not elapsed.
@@ -389,6 +374,25 @@ impl IdpClient for OidcProvider {
     }
 }
 
+/// 同一 kid 命中多把钥匙时必须拒绝
+///
+/// `JwkSet::find` is `iter().find`, so a set with two keys under one `kid`
+/// silently picks whichever came first. An IdP rotating a key that way would
+/// have us verify against a semi-arbitrary one; the set is malformed enough
+/// that guessing is worse than failing.
+fn unique_key<'a>(keys: &'a [Jwk], kid: &str) -> IdpResult<Option<&'a Jwk>> {
+    let mut matches = keys
+        .iter()
+        .filter(|jwk| jwk.common.key_id.as_deref() == Some(kid));
+    let first = matches.next();
+    if matches.next().is_some() {
+        return Err(IdpError::InvalidToken(format!(
+            "ambiguous kid {kid}: the JWKS publishes more than one key under it"
+        )));
+    }
+    Ok(first)
+}
+
 /// Accepts an endpoint taken from the discovery document only if it lives on the
 /// configured issuer's origin.
 ///
@@ -473,6 +477,48 @@ mod tests {
 
     fn header(value: Value) -> jsonwebtoken::Header {
         serde_json::from_value(value).expect("header deserializes")
+    }
+
+    fn jwk_of(kid: &str) -> Jwk {
+        serde_json::from_value(json!({
+            "kty": "RSA",
+            "kid": kid,
+            "use": "sig",
+            "alg": "RS256",
+            "n": "AQAB",
+            "e": "AQAB"
+        }))
+        .expect("jwk deserializes")
+    }
+
+    /// A set publishing one `kid` twice must fail, not pick a key at random.
+    #[test]
+    fn a_key_published_twice_under_one_kid_is_refused() {
+        let keys = vec![jwk_of("shared"), jwk_of("shared")];
+        let error = unique_key(&keys, "shared").expect_err("a duplicate kid must be refused");
+        let message = error.to_string();
+        assert!(message.contains("ambiguous"), "{message}");
+        assert!(message.contains("shared"), "{message}");
+    }
+
+    #[test]
+    fn the_only_key_under_that_kid_is_returned() {
+        let keys = vec![jwk_of("rotating"), jwk_of("current")];
+        let found = unique_key(&keys, "current")
+            .expect("lookup succeeds")
+            .expect("key is present");
+        assert_eq!(found.common.key_id.as_deref(), Some("current"));
+    }
+
+    /// An unknown kid means "refresh and retry", not "the set is malformed".
+    #[test]
+    fn an_unknown_kid_is_none_rather_than_an_error() {
+        let keys = vec![jwk_of("current")];
+        assert!(
+            unique_key(&keys, "absent")
+                .expect("lookup succeeds")
+                .is_none()
+        );
     }
 
     #[test]
