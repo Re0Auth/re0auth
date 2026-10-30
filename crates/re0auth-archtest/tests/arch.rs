@@ -2317,3 +2317,57 @@ fn user_facing_copy_lives_in_one_module() {
         offenders.join("\n")
     );
 }
+
+#[test]
+fn request_path_logs_are_absent_and_would_be_redacted() {
+    // 甲 + 丙：请求路径当前无日志，将来加了必须复核且不得记录凭据
+    const REQUEST_PATH: &[&str] = &["crates/re0auth-http/", "crates/re0auth-app/"];
+    const SENSITIVE: &[&str] = &[
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "code_verifier",
+        "authorization_code",
+        "master_key",
+        "password",
+    ];
+    // 宏调用到参数常跨行，向后看固定窗口
+    const WINDOW: usize = 6;
+
+    let mut call_sites = 0_usize;
+    for path in production_rust_files() {
+        let rel_path = rel(&path);
+        if !REQUEST_PATH
+            .iter()
+            .any(|prefix| rel_path.starts_with(prefix))
+        {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("read Rust file");
+        let code = code_without_comments_or_strings(&text);
+        let lines: Vec<&str> = code.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains("tracing::") || !line.contains('!') {
+                continue;
+            }
+            call_sites += 1;
+            let end = (index + WINDOW).min(lines.len());
+            let window = lines[index..end].join(" ").to_ascii_lowercase();
+            for needle in SENSITIVE {
+                assert!(
+                    !window.contains(needle),
+                    "{rel_path}:{}: log call mentions `{needle}`. Tokens and secrets must \
+                     never reach logs; log an opaque id (jti, family) instead of the value.",
+                    index + 1
+                );
+            }
+        }
+    }
+
+    assert_eq!(
+        call_sites, 0,
+        "the request path now has {call_sites} `tracing::*!` call site(s); this guard was \
+         written when there were none. Re-read each site for token or secret \
+         interpolation, then update the expected count here."
+    );
+}
