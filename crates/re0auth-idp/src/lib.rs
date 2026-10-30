@@ -285,6 +285,7 @@ impl OidcProvider {
         expected_nonce: &str,
         access_token: Option<&str>,
     ) -> IdpResult<IdpIdentity> {
+        // INV-TOKEN-01：id_token 与 access token 不可互换
         let header =
             decode_header(token).map_err(|error| IdpError::InvalidToken(error.to_string()))?;
         // 方案甲：自研头检查保留在库之前

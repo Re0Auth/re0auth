@@ -79,7 +79,11 @@ async function startIdp(): Promise<void> {
 		issuer: IDP,
 		authorization_endpoint: `${IDP}/authorize`,
 		token_endpoint: `${IDP}/token`,
-		jwks_uri: `${IDP}/jwks`
+		jwks_uri: `${IDP}/jwks`,
+		// OIDC Discovery 规定以下三项必填
+		response_types_supported: ['code'],
+		subject_types_supported: ['public'],
+		id_token_signing_alg_values_supported: ['RS256']
 	};
 
 	idp = createServer((request, response) => {
@@ -112,7 +116,13 @@ async function startIdp(): Promise<void> {
 			request.resume();
 			request.on('end', () => {
 				response.setHeader('content-type', 'application/json');
-				response.end(JSON.stringify({ id_token: idToken() }));
+				response.end(
+					JSON.stringify({
+						access_token: 'e2e-access-token',
+						token_type: 'Bearer',
+						id_token: idToken()
+					})
+				);
 			});
 			return;
 		}
