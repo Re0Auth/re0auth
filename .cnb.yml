@@ -1,0 +1,16 @@
+$:
+  vscode:
+    - name: re0auth-dev
+      runner:
+        cpus: 8
+      docker:
+        build:
+          dockerfile: .ide/Dockerfile
+      services:
+        - vscode
+        - docker
+      env:
+        CNB_WELCOME_CMD: echo "开发环境就绪"
+      stages:
+        - name: 环境已创建
+          script: echo ok
