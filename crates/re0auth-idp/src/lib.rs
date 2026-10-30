@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use jsonwebtoken::jwk::{Jwk, JwkSet};
 use jsonwebtoken::{Algorithm, decode_header};
-use openidconnect::core::{CoreIdToken, CoreJsonWebKey};
+use openidconnect::core::{CoreIdToken, CoreJsonWebKey, CoreProviderMetadata};
 use openidconnect::{
     ClaimsVerificationError, ClientId, ClientSecret, IdTokenVerifier, IssuerUrl, JsonWebKeySet,
     Nonce,
@@ -96,14 +96,6 @@ impl std::fmt::Debug for OidcConfig {
 }
 
 #[derive(Debug, Deserialize)]
-struct DiscoveryDocument {
-    issuer: String,
-    authorization_endpoint: String,
-    token_endpoint: String,
-    jwks_uri: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct TokenResponse {
     id_token: Option<String>,
 }
@@ -158,11 +150,12 @@ impl OidcProvider {
             ) {
                 (authorization_endpoint, token_endpoint, jwks_uri)
             } else {
-                let document: DiscoveryDocument = http.get_json(&discovery_url).await?;
-                if document.issuer.trim_end_matches('/') != issuer {
+                // 库的严格解析替换自研反序列化
+                let metadata: CoreProviderMetadata = http.get_json(&discovery_url).await?;
+                if metadata.issuer().as_str().trim_end_matches('/') != issuer {
                     anyhow::bail!(
                         "OIDC discovery issuer mismatch: configured {issuer}, got {}",
-                        document.issuer
+                        metadata.issuer().as_str()
                     );
                 }
                 // ADR-0036: an outbound target must come from the registry, not
@@ -175,17 +168,26 @@ impl OidcProvider {
                     Some(value) => value,
                     None => discovered(
                         &issuer_url,
-                        document.authorization_endpoint,
+                        metadata.authorization_endpoint().url().to_string(),
                         "authorization_endpoint",
                     )?,
                 };
                 let token_endpoint = match config.token_endpoint {
                     Some(value) => value,
-                    None => discovered(&issuer_url, document.token_endpoint, "token_endpoint")?,
+                    None => {
+                        let endpoint = metadata.token_endpoint().ok_or_else(|| {
+                            anyhow::anyhow!("discovery document has no token_endpoint")
+                        })?;
+                        discovered(&issuer_url, endpoint.url().to_string(), "token_endpoint")?
+                    }
                 };
                 let jwks_uri = match config.jwks_uri {
                     Some(value) => value,
-                    None => discovered(&issuer_url, document.jwks_uri, "jwks_uri")?,
+                    None => discovered(
+                        &issuer_url,
+                        metadata.jwks_uri().url().to_string(),
+                        "jwks_uri",
+                    )?,
                 };
                 (authorization_endpoint, token_endpoint, jwks_uri)
             };
@@ -306,7 +308,7 @@ impl OidcProvider {
             )
         };
 
-        // 库无容差配置，用时钟回拨复现原 60 秒 leeway
+        // 时钟回拨以复现原有容差
         let verifier = verifier
             .set_time_fn(|| Utc::now() - chrono::Duration::seconds(ID_TOKEN_LEEWAY_SECS as i64));
 
