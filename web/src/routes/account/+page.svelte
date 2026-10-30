@@ -63,7 +63,7 @@
 				bindableUpstreams = [];
 			}
 		} catch (cause) {
-			if (cause instanceof ApiError && cause.status === 401) {
+			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
 				openLogin(currentLocation());
 				return;
 			}
@@ -81,7 +81,7 @@
 			await apiDelete(`/api/me/bindings/${encodeURIComponent(id)}`);
 			bindings = bindings.filter((item) => item.id !== id);
 		} catch (cause) {
-			if (cause instanceof ApiError && cause.status === 401) {
+			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
 				openLogin(currentLocation());
 				return;
 			}
@@ -99,7 +99,7 @@
 			await apiDelete(`/api/me/authorizations/${encodeURIComponent(clientId)}`);
 			authorizations = authorizations.filter((item) => item.client_id !== clientId);
 		} catch (cause) {
-			if (cause instanceof ApiError && cause.status === 401) {
+			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
 				openLogin(currentLocation());
 				return;
 			}
@@ -117,7 +117,7 @@
 			await apiDeleteJson('/api/me/bindings', bindingRevocationSchema);
 			bindings = [];
 		} catch (cause) {
-			if (cause instanceof ApiError && cause.status === 401) {
+			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
 				openLogin(currentLocation());
 				return;
 			}
