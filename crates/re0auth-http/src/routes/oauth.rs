@@ -112,7 +112,7 @@ pub(crate) async fn authorize(
         return Err(oauth_error(OAuthError::InvalidScope, Shape::Rfc6749));
     }
 
-    let Some(raw_session) = session_cookie(&headers) else {
+    let Some(raw_session) = session_cookie(&headers, state.auth.secure_cookies()) else {
         return Ok(login_redirect(&original));
     };
     let session = match state.auth.session_context(&raw_session).await {
@@ -318,8 +318,15 @@ pub(crate) async fn token(
 
 pub(crate) async fn userinfo(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Json<re0auth_app::oauth::UserInfo>, ApiError> {
+    // 验签是最贵的一步，必须先限流
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Rfc6749,
+    )?;
     let token = bearer_token(&headers)
         .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Rfc6749))?;
     state
@@ -346,9 +353,15 @@ pub(crate) struct RevokeForm {
 /// client bug rather than a probe.
 pub(crate) async fn revoke(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Form(form): Form<RevokeForm>,
 ) -> Result<Response, ApiError> {
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Rfc6749,
+    )?;
     let credentials = client_credentials(
         &headers,
         form.client_id.as_deref(),

@@ -141,7 +141,7 @@ async fn session(store: &SqliteStore, clock: &TestClock, user: UserId) -> (Strin
         .expect("session");
     (
         format!(
-            "re0auth_session={}; re0auth_csrf={}",
+            "__Host-re0auth_session={}; __Host-re0auth_csrf={}",
             created.cookie, created.csrf_token
         ),
         created.csrf_token,

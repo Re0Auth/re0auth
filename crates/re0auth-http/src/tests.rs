@@ -472,11 +472,11 @@ fn invalid_request_is_always_a_bad_request() {
 fn cookie_parsing_ignores_malformed_pairs() {
     let mut headers = HeaderMap::new();
     headers.insert(header::COOKIE, "garbage".parse().unwrap());
-    assert_eq!(session_cookie(&headers), None);
+    assert_eq!(session_cookie(&headers, false), None);
 
     headers.insert(header::COOKIE, "re0auth_session=".parse().unwrap());
     assert_eq!(
-        session_cookie(&headers),
+        session_cookie(&headers, false),
         None,
         "empty value is not a session"
     );
@@ -487,12 +487,12 @@ fn cookie_parsing_ignores_malformed_pairs() {
             .parse()
             .unwrap(),
     );
-    assert_eq!(session_cookie(&headers), Some("abc".to_string()));
-    assert_eq!(csrf_cookie(&headers), Some("def".to_string()));
+    assert_eq!(session_cookie(&headers, false), Some("abc".to_string()));
+    assert_eq!(csrf_cookie(&headers, false), Some("def".to_string()));
 
     headers.insert(header::COOKIE, "re0auth_session=a=b".parse().unwrap());
     assert_eq!(
-        session_cookie(&headers),
+        session_cookie(&headers, false),
         Some("a=b".to_string()),
         "split on first '=' only"
     );
@@ -558,7 +558,7 @@ fn an_empty_cookie_value_is_absent() {
     let mut headers = HeaderMap::new();
     headers.insert(header::COOKIE, "re0auth_session=".parse().unwrap());
     assert_eq!(
-        session_cookie(&headers),
+        session_cookie(&headers, false),
         None,
         "the library would return Some(\"\"); we must not"
     );

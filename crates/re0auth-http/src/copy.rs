@@ -8,6 +8,20 @@
 
 pub(crate) const AUTH_ERROR_TITLE: &str = "登录未完成";
 
+/// 内部错误只露这句，细节进日志
+pub(crate) const SERVER_ERROR: &str = "服务暂时不可用，请稍后重试";
+
+pub(crate) const LOGIN_REQUIRED: &str = "请先登录";
+pub(crate) const BAD_REQUEST: &str = "请求参数不正确";
+pub(crate) const PAGE_EXPIRED: &str = "页面已失效，请重试";
+pub(crate) const LOGIN_EXPIRED: &str = "登录已失效，请重新登录";
+pub(crate) const IDP_UNAVAILABLE: &str = "登录方式暂时不可用";
+pub(crate) const IDP_UNKNOWN: &str = "未知的登录方式";
+pub(crate) const IDP_REQUIRED: &str = "请选择登录方式";
+pub(crate) const RATE_LIMITED: &str = "操作过于频繁，请稍后再试";
+pub(crate) const NOT_FOUND: &str = "页面不存在";
+pub(crate) const TICKET_INVALID: &str = "授权请求无效，请重新发起";
+
 pub(crate) const MISSING_USER_CODE: &str = "缺少设备码";
 
 pub(crate) const DEVICE_APPROVAL_TITLE: &str = "批准设备";

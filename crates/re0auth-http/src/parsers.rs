@@ -27,12 +27,12 @@ use uuid::Uuid;
 
 use crate::{ApiError, Shape, invalid_client_response, invalid_request};
 
-pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, "re0auth_session")
+pub(crate) fn session_cookie(headers: &HeaderMap, secure: bool) -> Option<String> {
+    cookie_value(headers, super::cookies::session_cookie_name(secure))
 }
 
-pub(crate) fn csrf_cookie(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, "re0auth_csrf")
+pub(crate) fn csrf_cookie(headers: &HeaderMap, secure: bool) -> Option<String> {
+    cookie_value(headers, super::cookies::csrf_cookie_name(secure))
 }
 
 pub(crate) fn csrf_header(headers: &HeaderMap) -> Option<&str> {

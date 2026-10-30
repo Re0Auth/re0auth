@@ -76,7 +76,6 @@ pub(crate) fn device_error_page(message: &str) -> Response {
 }
 
 pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
-    let message = error.to_string();
     let status = match &error {
         AuthError::IdpUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         AuthError::Idp(error) => idp_status(error),
@@ -92,7 +91,7 @@ pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
     let body = html! {
         main.card {
             h1 { (copy::AUTH_ERROR_TITLE) }
-            p.muted { (message) }
+            p.muted { (user_message(&error)) }
         }
     };
     HtmlFailure(Box::new(html_response(
@@ -100,6 +99,28 @@ pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
         copy::AUTH_ERROR_TITLE,
         body,
     )))
+}
+
+/// 内部错误文案固定，避免把数据库或上游细节送进浏览器
+fn user_message(error: &AuthError) -> &'static str {
+    match error {
+        AuthError::LoginRequired => copy::LOGIN_REQUIRED,
+        AuthError::InvalidRequest(_) => copy::BAD_REQUEST,
+        AuthError::Csrf => copy::PAGE_EXPIRED,
+        AuthError::StateInvalid
+        | AuthError::StateExpired
+        | AuthError::StateConsumed
+        | AuthError::TicketExpired
+        | AuthError::TicketConsumed => copy::LOGIN_EXPIRED,
+        AuthError::InvalidTicket | AuthError::DeviceUnavailable => copy::TICKET_INVALID,
+        AuthError::IdpUnavailable => copy::IDP_UNAVAILABLE,
+        AuthError::UnknownIdentityProvider => copy::IDP_UNKNOWN,
+        AuthError::IdentityProviderRequired => copy::IDP_REQUIRED,
+        AuthError::RateLimited => copy::RATE_LIMITED,
+        AuthError::NotFound => copy::NOT_FOUND,
+        // 内部故障只给固定文案，具体原因留在日志里
+        AuthError::Repo(_) | AuthError::Internal | AuthError::Idp(_) => copy::SERVER_ERROR,
+    }
 }
 
 /// Wraps a page body in the one layout these Rust-rendered pages share.

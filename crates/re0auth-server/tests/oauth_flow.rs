@@ -218,7 +218,10 @@ async fn authorization_code_flow_reaches_userinfo_and_refresh() {
         .oneshot(
             Request::builder()
                 .uri(authorize_uri)
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -253,7 +256,10 @@ async fn authorization_code_flow_reaches_userinfo_and_refresh() {
                     "/api/oauth/pending?{}",
                     token_form(&[("request", request_id.as_str())])
                 ))
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -272,7 +278,7 @@ async fn authorization_code_flow_reaches_userinfo_and_refresh() {
             "decision": "approve",
         }),
         &[
-            ("cookie", &format!("re0auth_session={SESSION_RAW}")),
+            ("cookie", &format!("__Host-re0auth_session={SESSION_RAW}")),
             ("x-csrf-token", "csrf"),
         ],
     )
@@ -405,7 +411,10 @@ async fn authorize_request(app: &TestApp, state: &str) -> axum::response::Respon
         .oneshot(
             Request::builder()
                 .uri(authorize_uri(app, state))
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -443,7 +452,7 @@ async fn approve_authorization(app: &TestApp, state: &str) -> String {
             "decision": "approve",
         }),
         &[
-            ("cookie", &format!("re0auth_session={SESSION_RAW}")),
+            ("cookie", &format!("__Host-re0auth_session={SESSION_RAW}")),
             ("x-csrf-token", "csrf"),
         ],
     )
@@ -466,7 +475,10 @@ async fn revoke_authorization(app: &TestApp) -> axum::response::Response {
             Request::builder()
                 .method(Method::DELETE)
                 .uri(format!("/api/me/authorizations/{}", app.client_id.0))
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
                 .header("x-csrf-token", "csrf")
                 .body(Body::empty())
                 .expect("request"),
@@ -482,7 +494,10 @@ async fn list_authorizations(app: &TestApp) -> Value {
         .oneshot(
             Request::builder()
                 .uri("/api/me/authorizations")
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -586,7 +601,7 @@ async fn consent_denial_and_existing_consent_shortcut() {
             "request_id": request_id,
             "decision": "deny",
         }),
-        &[("cookie", &format!("re0auth_session={SESSION_RAW}"))],
+        &[("cookie", &format!("__Host-re0auth_session={SESSION_RAW}"))],
     )
     .await;
     assert_eq!(missing_csrf.status(), StatusCode::FORBIDDEN);
@@ -599,7 +614,7 @@ async fn consent_denial_and_existing_consent_shortcut() {
             "decision": "deny",
         }),
         &[
-            ("cookie", &format!("re0auth_session={SESSION_RAW}")),
+            ("cookie", &format!("__Host-re0auth_session={SESSION_RAW}")),
             ("x-csrf-token", "csrf"),
         ],
     )
@@ -635,7 +650,7 @@ async fn consent_denial_and_existing_consent_shortcut() {
             "decision": "approve",
         }),
         &[
-            ("cookie", &format!("re0auth_session={SESSION_RAW}")),
+            ("cookie", &format!("__Host-re0auth_session={SESSION_RAW}")),
             ("x-csrf-token", "csrf"),
         ],
     )
@@ -686,7 +701,10 @@ async fn revoking_consent_requires_csrf() {
             Request::builder()
                 .method(Method::DELETE)
                 .uri(format!("/api/me/authorizations/{}", app.client_id.0))
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -1062,7 +1080,7 @@ async fn binding_routes_keep_their_guards() {
         &app,
         "/api/me/bindings/begin",
         serde_json::json!({ "upstream": "phigros" }),
-        &[("cookie", &format!("re0auth_session={SESSION_RAW}"))],
+        &[("cookie", &format!("__Host-re0auth_session={SESSION_RAW}"))],
     )
     .await;
     assert_eq!(no_csrf.status(), StatusCode::FORBIDDEN);
@@ -1075,7 +1093,7 @@ async fn binding_routes_keep_their_guards() {
         "/api/me/bindings/begin",
         serde_json::json!({ "upstream": "phigros" }),
         &[
-            ("cookie", &format!("re0auth_session={SESSION_RAW}")),
+            ("cookie", &format!("__Host-re0auth_session={SESSION_RAW}")),
             ("x-csrf-token", "csrf"),
         ],
     )
@@ -1090,7 +1108,10 @@ async fn binding_routes_keep_their_guards() {
             Request::builder()
                 .method(Method::DELETE)
                 .uri("/api/me/bindings")
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
                 .body(Body::empty())
                 .expect("request"),
         )
@@ -1108,7 +1129,10 @@ async fn binding_routes_keep_their_guards() {
             Request::builder()
                 .method(Method::DELETE)
                 .uri("/api/me/bindings")
-                .header(header::COOKIE, format!("re0auth_session={SESSION_RAW}"))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
                 .header("x-csrf-token", "csrf")
                 .body(Body::empty())
                 .expect("request"),

@@ -135,7 +135,9 @@ pub(crate) async fn auth_callback(
         .map_err(auth_error_html)?
     {
         LoginOutcome::Session { created, return_to } => {
-            let response = Redirect::to(&return_to).into_response();
+            // 出口再验一次，不依赖写入时的把关
+            let response =
+                Redirect::to(&re0auth_app::return_to::or_fallback(&return_to)).into_response();
             Ok(with_session_cookies(&state, created, response))
         }
         LoginOutcome::DeviceApproval {
@@ -175,7 +177,8 @@ pub(crate) async fn me(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let context = session_context_from_headers(&state, &headers).await?;
-    let csrf = csrf_cookie(&headers).ok_or_else(|| auth_error(AuthError::LoginRequired))?;
+    let csrf = csrf_cookie(&headers, state.auth.secure_cookies())
+        .ok_or_else(|| auth_error(AuthError::LoginRequired))?;
     if !state.auth.validate_csrf(&context.session, &csrf) {
         return Err(auth_error(AuthError::LoginRequired));
     }
@@ -226,10 +229,12 @@ pub(crate) async fn logout(
 ) -> Result<Response, ApiError> {
     let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
-    let raw = session_cookie(&headers).ok_or_else(|| auth_error(AuthError::LoginRequired))?;
+    let secure = state.auth.secure_cookies();
+    let raw =
+        session_cookie(&headers, secure).ok_or_else(|| auth_error(AuthError::LoginRequired))?;
     state.auth.logout(&raw).await.map_err(auth_error)?;
     let mut response = StatusCode::NO_CONTENT.into_response();
-    clear_session_cookies(&mut response);
+    clear_session_cookies(&mut response, secure);
     Ok(response)
 }
 
@@ -245,7 +250,7 @@ pub(crate) async fn logout_all(
         .await
         .map_err(auth_error)?;
     let mut response = StatusCode::NO_CONTENT.into_response();
-    clear_session_cookies(&mut response);
+    clear_session_cookies(&mut response, state.auth.secure_cookies());
     Ok(response)
 }
 
@@ -253,7 +258,8 @@ pub(crate) async fn session_context_from_headers(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<SessionContext, ApiError> {
-    let raw = session_cookie(headers).ok_or_else(|| auth_error(AuthError::LoginRequired))?;
+    let raw = session_cookie(headers, state.auth.secure_cookies())
+        .ok_or_else(|| auth_error(AuthError::LoginRequired))?;
     state.auth.session_context(&raw).await.map_err(auth_error)
 }
 

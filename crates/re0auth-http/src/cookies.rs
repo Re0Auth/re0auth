@@ -23,11 +23,23 @@ pub(crate) fn with_session_cookies(
         .saturating_sub(created.session.created_at);
     append_set_cookie(
         &mut response,
-        session_set_cookie("re0auth_session", &created.cookie, max_age, secure, true),
+        session_set_cookie(
+            session_cookie_name(secure),
+            &created.cookie,
+            max_age,
+            secure,
+            true,
+        ),
     );
     append_set_cookie(
         &mut response,
-        session_set_cookie("re0auth_csrf", &created.csrf_token, max_age, secure, false),
+        session_set_cookie(
+            csrf_cookie_name(secure),
+            &created.csrf_token,
+            max_age,
+            secure,
+            false,
+        ),
     );
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -36,14 +48,14 @@ pub(crate) fn with_session_cookies(
     response
 }
 
-pub(crate) fn clear_session_cookies(response: &mut Response) {
+pub(crate) fn clear_session_cookies(response: &mut Response, secure: bool) {
     append_set_cookie(
         response,
-        session_set_cookie("re0auth_session", "", 0, false, true),
+        session_set_cookie(session_cookie_name(secure), "", 0, secure, true),
     );
     append_set_cookie(
         response,
-        session_set_cookie("re0auth_csrf", "", 0, false, false),
+        session_set_cookie(csrf_cookie_name(secure), "", 0, secure, false),
     );
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -56,6 +68,30 @@ const LOGIN_INTENT_TTL_SECS: i64 = 600;
 
 const LOGIN_INTENT_COOKIE: &str = "re0auth_login";
 const LOGIN_INTENT_COOKIE_HOST: &str = "__Host-re0auth_login";
+
+const SESSION_COOKIE: &str = "re0auth_session";
+const SESSION_COOKIE_HOST: &str = "__Host-re0auth_session";
+const CSRF_COOKIE: &str = "re0auth_csrf";
+const CSRF_COOKIE_HOST: &str = "__Host-re0auth_csrf";
+
+/// `__Host-` 阻止子域覆盖同名 Cookie
+#[must_use]
+pub(crate) fn session_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        SESSION_COOKIE_HOST
+    } else {
+        SESSION_COOKIE
+    }
+}
+
+#[must_use]
+pub(crate) fn csrf_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        CSRF_COOKIE_HOST
+    } else {
+        CSRF_COOKIE
+    }
+}
 
 /// `__Host-` pins the cookie to this origin: no `Domain`, `Path=/`, `Secure`.
 ///
@@ -110,5 +146,33 @@ pub(crate) fn session_set_cookie(
 pub(crate) fn append_set_cookie(response: &mut Response, cookie: Cookie<'_>) {
     if let Ok(value) = header::HeaderValue::from_str(&cookie.to_string()) {
         response.headers_mut().append(header::SET_COOKIE, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_secure_session_cookie_carries_the_host_prefix() {
+        // 子域无法用 __Host- 名覆盖，这正是前缀的意义
+        assert_eq!(session_cookie_name(true), "__Host-re0auth_session");
+        assert_eq!(csrf_cookie_name(true), "__Host-re0auth_csrf");
+        assert_eq!(session_cookie_name(false), "re0auth_session");
+        assert_eq!(csrf_cookie_name(false), "re0auth_csrf");
+    }
+
+    #[test]
+    fn a_host_prefixed_cookie_is_secure_and_path_rooted() {
+        for secure in [true, false] {
+            let cookie = session_set_cookie(session_cookie_name(secure), "v", 60, secure, true);
+            assert_eq!(cookie.path(), Some("/"));
+            assert_eq!(cookie.http_only(), Some(true));
+            assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+            assert_eq!(cookie.secure(), Some(secure));
+            if secure {
+                assert_eq!(cookie.domain(), None, "__Host- forbids a Domain attribute");
+            }
+        }
     }
 }

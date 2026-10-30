@@ -587,7 +587,7 @@ async fn authorize_with_a_bogus_session_cookie_redirects_to_login() {
         "/oauth/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256",
         app.client_id.0
     );
-    let (status, _, location) = get_with_cookie(&app, &uri, "re0auth_session=forged").await;
+    let (status, _, location) = get_with_cookie(&app, &uri, "__Host-re0auth_session=forged").await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert!(location.expect("redirect").starts_with("/login?"));
 }
@@ -791,14 +791,14 @@ async fn session_endpoints_require_a_cookie_and_csrf() {
     }
 
     // A forged session cookie is not a session.
-    let (status, body, _) = get_with_cookie(&app, "/api/me", "re0auth_session=forged").await;
+    let (status, body, _) = get_with_cookie(&app, "/api/me", "__Host-re0auth_session=forged").await;
     assert_api(status, &body, StatusCode::UNAUTHORIZED, "login_required");
 
     // Malformed cookies must not be parsed leniently into a session.
     for cookie in [
-        "re0auth_session",
-        "re0auth_session=",
-        "=;re0auth_session",
+        "__Host-re0auth_session",
+        "__Host-re0auth_session=",
+        "=;__Host-re0auth_session",
         "foo=bar",
     ] {
         let (status, body, _) = get_with_cookie(&app, "/api/me", cookie).await;
@@ -1136,7 +1136,7 @@ async fn authenticated(app: &App) -> (String, String) {
             .expect("session");
     (
         format!(
-            "re0auth_session={}; re0auth_csrf={}",
+            "__Host-re0auth_session={}; __Host-re0auth_csrf={}",
             created.cookie, created.csrf_token
         ),
         created.csrf_token,
@@ -1159,7 +1159,10 @@ async fn me_requires_a_csrf_cookie_that_matches_the_session() {
     assert_api(status, &body, StatusCode::UNAUTHORIZED, "login_required");
 
     // A CSRF cookie that does not match the session is refused, not ignored.
-    let mismatched = format!("{}; re0auth_csrf=wrong", cookie.split(';').next().unwrap());
+    let mismatched = format!(
+        "{}; __Host-re0auth_csrf=wrong",
+        cookie.split(';').next().unwrap()
+    );
     let (status, body, _) = get_with_cookie(&app, "/api/me", &mismatched).await;
     assert_api(status, &body, StatusCode::UNAUTHORIZED, "login_required");
 }
@@ -1243,9 +1246,9 @@ async fn logout_all_clears_cookies_and_marks_them_secure() {
     // The session cookie is HttpOnly; the CSRF cookie deliberately is not, since
     // the SPA has to read it to echo the header.
     assert!(
-        cleared
-            .iter()
-            .any(|value| value.starts_with("re0auth_session=;") && value.contains("HttpOnly")),
+        cleared.iter().any(
+            |value| value.starts_with("__Host-re0auth_session=;") && value.contains("HttpOnly")
+        ),
         "{cleared:?}"
     );
 
