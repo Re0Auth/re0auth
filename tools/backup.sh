@@ -5,6 +5,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 DATA_DIR=${DATA_DIR:-data}
+KEY_DIR=${KEY_DIR:-$DATA_DIR/keys}
 BACKUP_DIR=${BACKUP_DIR:-backups}
 DB=${DB:-$DATA_DIR/re0auth.db}
 
@@ -19,7 +20,7 @@ if [ ! -f "$DB" ]; then
     exit 1
 fi
 
-for f in "$DATA_DIR/master.key" "$DATA_DIR/signing-key.pem"; do
+for f in "$KEY_DIR/master.key" "$KEY_DIR/signing-key.pem"; do
     if [ ! -f "$f" ]; then
         echo "缺少密钥文件: $f" >&2
         echo "三样必须一起备份，缺一件备份就不可恢复" >&2
@@ -52,8 +53,8 @@ if [ "$integrity" != "ok" ]; then
     exit 1
 fi
 
-cp "$DATA_DIR/master.key" "$key_out"
-cp "$DATA_DIR/signing-key.pem" "$sign_out"
+cp "$KEY_DIR/master.key" "$key_out"
+cp "$KEY_DIR/signing-key.pem" "$sign_out"
 
 chmod 600 "$db_out" "$key_out" "$sign_out"
 
