@@ -12,5 +12,7 @@ $:
       env:
         CNB_WELCOME_CMD: echo "开发环境就绪"
       stages:
+        - name: 配置 GitHub 远程
+          script: git -C /workspace remote add github https://github.com/Re0Auth/re0auth.git 2>/dev/null || git -C /workspace remote set-url github https://github.com/Re0Auth/re0auth.git
         - name: 环境已创建
           script: echo ok
