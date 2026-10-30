@@ -15,8 +15,14 @@ pub use oauth2::{OAuth2Config, OAuth2Kind, OAuth2Provider};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use chrono::Utc;
 use jsonwebtoken::jwk::{Jwk, JwkSet};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use jsonwebtoken::{Algorithm, decode_header};
+use openidconnect::core::{CoreIdToken, CoreJsonWebKey};
+use openidconnect::{
+    ClaimsVerificationError, ClientId, ClientSecret, IdTokenVerifier, IssuerUrl, JsonWebKeySet,
+    Nonce,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
@@ -100,17 +106,6 @@ struct DiscoveryDocument {
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     id_token: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct IdTokenClaims {
-    iss: String,
-    sub: String,
-    aud: Value,
-    nonce: Option<String>,
-    name: Option<String>,
-    preferred_username: Option<String>,
-    email: Option<String>,
 }
 
 #[derive(Clone)]
@@ -284,48 +279,80 @@ impl OidcProvider {
     async fn verify_id_token(&self, token: &str, expected_nonce: &str) -> IdpResult<IdpIdentity> {
         let header =
             decode_header(token).map_err(|error| IdpError::InvalidToken(error.to_string()))?;
+        // 方案甲：自研头检查保留在库之前
         reject_unsupported_header(&header)?;
         let kid = header
             .kid
             .ok_or_else(|| IdpError::InvalidToken("id token has no kid".to_string()))?;
         let jwk = self.signing_key(&kid).await?;
-        let decoding = DecodingKey::from_jwk(&jwk)
-            .map_err(|error| IdpError::InvalidToken(error.to_string()))?;
-        // INV-TOKEN-01: the id_token must carry iss/aud/exp/sub, and its use is
-        // never interchangeable with an access token.
-        let mut validation = Validation::new(ACCEPTED_ALG);
-        validation.set_issuer(&[self.issuer.as_str()]);
-        validation.set_audience(&[self.client_id.as_str()]);
-        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        validation.leeway = ID_TOKEN_LEEWAY_SECS;
-        validation.validate_exp = true;
-        let decoded = decode::<IdTokenClaims>(token, &decoding, &validation)
-            .map_err(|error| IdpError::InvalidToken(error.to_string()))?;
-        let claims = decoded.claims;
 
-        if claims.iss.trim_end_matches('/') != self.issuer {
-            return Err(IdpError::IssuerMismatch);
-        }
-        if !audience_is_only(&claims.aud, &self.client_id) {
+        // 只喂这一把 key，缓存与 unique_key 仍归本仓
+        let keys: JsonWebKeySet<CoreJsonWebKey> = serde_json::from_value(serde_json::json!({
+            "keys": [jwk]
+        }))
+        .map_err(|error| IdpError::InvalidToken(format!("jwk conversion failed: {error}")))?;
+
+        let client_id = ClientId::new(self.client_id.clone());
+        let issuer = IssuerUrl::new(self.issuer.clone())
+            .map_err(|error| IdpError::InvalidToken(format!("issuer is not a URL: {error}")))?;
+        let verifier = if self.client_secret.is_empty() {
+            IdTokenVerifier::new_public_client(client_id, issuer, keys)
+        } else {
+            IdTokenVerifier::new_confidential_client(
+                client_id,
+                ClientSecret::new(self.client_secret.clone()),
+                issuer,
+                keys,
+            )
+        };
+
+        // 库无容差配置，用时钟回拨复现原 60 秒 leeway
+        let verifier = verifier
+            .set_time_fn(|| Utc::now() - chrono::Duration::seconds(ID_TOKEN_LEEWAY_SECS as i64));
+
+        let id_token: CoreIdToken = token
+            .parse()
+            .map_err(|error| IdpError::InvalidToken(format!("undecodable id token: {error}")))?;
+        let claims = id_token
+            .claims(&verifier, &Nonce::new(expected_nonce.to_string()))
+            .map_err(claims_error)?;
+
+        // 方案甲：库之外再跑一次本仓的 aud 判据
+        let audiences = serde_json::to_value(claims.audiences()).unwrap_or(Value::Null);
+        if !audience_is_only(&audiences, &self.client_id) {
             return Err(IdpError::InvalidToken("audience mismatch".to_string()));
         }
-        if claims.nonce.as_deref() != Some(expected_nonce) {
-            return Err(IdpError::NonceMismatch);
-        }
-        if claims.sub.trim().is_empty() {
+
+        let subject = claims.subject().as_str().to_string();
+        if subject.trim().is_empty() {
             return Err(IdpError::InvalidToken("missing subject".to_string()));
         }
         let display_name = claims
-            .name
-            .or(claims.preferred_username)
-            .or(claims.email)
+            .name()
+            .and_then(|localized| localized.get(None))
+            .map(|value| value.as_str().to_string())
+            .or_else(|| {
+                claims
+                    .preferred_username()
+                    .map(|value| value.as_str().to_string())
+            })
+            .or_else(|| claims.email().map(|value| value.as_str().to_string()))
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| claims.sub.clone());
+            .unwrap_or_else(|| subject.clone());
         Ok(IdpIdentity {
             issuer: self.issuer.clone(),
-            subject: claims.sub,
+            subject,
             display_name,
         })
+    }
+}
+
+/// 库的错误按语义映射回既有变体
+fn claims_error(error: ClaimsVerificationError) -> IdpError {
+    match error {
+        ClaimsVerificationError::InvalidNonce(_) => IdpError::NonceMismatch,
+        ClaimsVerificationError::InvalidIssuer(_) => IdpError::IssuerMismatch,
+        other => IdpError::InvalidToken(other.to_string()),
     }
 }
 

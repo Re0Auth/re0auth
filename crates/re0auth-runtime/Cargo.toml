@@ -9,6 +9,7 @@ license.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 hex.workspace = true
+http.workspace = true
 ipnet.workspace = true
 re0auth-api = { version = "0.10.0", path = "../re0auth-api" }
 reqwest.workspace = true

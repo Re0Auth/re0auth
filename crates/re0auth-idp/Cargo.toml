@@ -8,7 +8,11 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
+http.workspace = true
 jsonwebtoken.workspace = true
+oauth2.workspace = true
+openidconnect.workspace = true
 re0auth-api = { version = "0.10.0", path = "../re0auth-api" }
 re0auth-runtime = { version = "0.1.0", path = "../re0auth-runtime" }
 serde.workspace = true

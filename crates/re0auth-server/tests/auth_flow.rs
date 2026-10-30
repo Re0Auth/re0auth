@@ -247,6 +247,10 @@ async fn discovery(State(mock): State<MockIdp>) -> Json<Value> {
         "authorization_endpoint": format!("{}/authorize", mock.base),
         "token_endpoint": format!("{}/token", mock.base),
         "jwks_uri": format!("{}/jwks", mock.base),
+        // OIDC Discovery 规定以下三项必填
+        "response_types_supported": ["code"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["RS256"],
     });
     let forced = mock.discovery_override.lock().expect("override").clone();
     if let Some((field, value)) = forced {
@@ -274,7 +278,11 @@ async fn token(
         basic: headers.contains_key(header::AUTHORIZATION),
         form_secret: form.client_secret.is_some(),
     });
-    Json(json!({ "id_token": mock.sign() }))
+    Json(json!({
+        "access_token": "mock-access-token",
+        "token_type": "Bearer",
+        "id_token": mock.sign()
+    }))
 }
 
 async fn start_mock() -> MockIdp {
