@@ -11,8 +11,8 @@ use uuid::Uuid;
 use re0auth_api::idp::{IdpClient, IdpError};
 use re0auth_api::oauth::{APPROVAL_TICKET_USE, ApprovalTicketClaims, TokenSigner};
 use re0auth_api::ports::{
-    ApprovalDecision, ApprovalTicket, Binding, BindingStatus, Identity, LoginTransaction, RepoError,
-    Session, Storage, User, UserRole,
+    ApprovalDecision, ApprovalTicket, Binding, BindingStatus, Identity, LoginTransaction,
+    RepoError, Session, Storage, User, UserRole,
 };
 use re0auth_api::{BindingId, ClientId, Clock, IdentityId, Random, SessionId, UserId};
 use re0auth_domain::{
