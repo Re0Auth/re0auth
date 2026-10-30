@@ -1705,6 +1705,7 @@ dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
  "governor",
+ "hex",
  "hkdf",
  "hmac",
  "jsonwebtoken",
@@ -1867,6 +1868,7 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots",
+ "zeroize",
 ]
 
 [[package]]
@@ -1899,6 +1901,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

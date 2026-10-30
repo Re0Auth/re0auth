@@ -19,6 +19,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+zeroize.workspace = true
 url.workspace = true
 uuid.workspace = true
 re0auth-api = { version = "0.10.0", path = "../re0auth-api" }

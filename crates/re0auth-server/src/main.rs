@@ -36,6 +36,7 @@ use re0auth_connectors::inflight::ByteBudget;
 use re0auth_idp::oauth2::{OAuth2Config, OAuth2Provider};
 use re0auth_idp::{OidcConfig, OidcProvider};
 use re0auth_runtime::http_client::GuardedClient;
+use zeroize::Zeroizing;
 
 /// How often the housekeeping sweep runs. Expired rows are retained for an
 /// hour past expiry, so a ten-minute cadence keeps the tables small without
@@ -441,6 +442,9 @@ pub(crate) fn client_secret_hasher(cfg: &config::Config) -> anyhow::Result<HmacC
     HmacClientSecretHasher::with_keys(current_version, pairs)
 }
 
+/// 主密钥版本与其十六进制材料
+type MasterKeys = (u32, Vec<(u32, Zeroizing<String>)>);
+
 /// Resolves the configured current and retired master keys.
 ///
 /// The sealer, client-secret pepper, and connector vault share this set: a
@@ -448,7 +452,7 @@ pub(crate) fn client_secret_hasher(cfg: &config::Config) -> anyhow::Result<HmacC
 /// The checks here are deliberately repeated from `config::validate`; the CLI
 /// and embedded callers can construct a `Config` without going through the file
 /// loader, and this is the last boundary before keys are used.
-fn master_keys(cfg: &config::Config) -> anyhow::Result<(u32, Vec<(u32, String)>)> {
+fn master_keys(cfg: &config::Config) -> anyhow::Result<MasterKeys> {
     let current_version = cfg.crypto.master_key_version;
     if current_version == 0 {
         anyhow::bail!("crypto.master_key_version must be greater than zero");

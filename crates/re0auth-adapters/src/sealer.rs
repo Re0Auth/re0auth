@@ -9,6 +9,8 @@ use std::path::Path;
 
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
+use hkdf::Hkdf;
+use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use re0auth_api::secret::{SealedSecret, SecretSealer};
@@ -23,6 +25,8 @@ use secrecy::ExposeSecret;
 
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
+/// 与另两处派生密钥的 info 互不相同
+const HKDF_INFO: &[u8] = b"re0auth/sealer-kek";
 /// The version used when no explicit current version is supplied.
 ///
 /// Runtime callers must pass `crypto.master_key_version` through
@@ -89,7 +93,7 @@ impl AesGcmSealer {
                 );
             }
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
-            key.copy_from_slice(&bytes);
+            key.copy_from_slice(bytes.as_slice());
             if parsed.insert(version, key).is_some() {
                 anyhow::bail!("encryption key version {version} was configured twice");
             }
@@ -146,7 +150,7 @@ impl AesGcmSealer {
     ///
     /// Exposed so other key derivations (the client-secret pepper) share one
     /// source of truth instead of re-implementing the precedence rules.
-    pub fn master_key_hex(file: Option<&Path>) -> anyhow::Result<String> {
+    pub fn master_key_hex(file: Option<&Path>) -> anyhow::Result<Zeroizing<String>> {
         resolve_master_key(std::env::var("RE0AUTH_ENCRYPTION_KEY").ok(), file)
     }
 
@@ -166,14 +170,28 @@ impl AesGcmSealer {
 
     /// The cipher for a given key version, or an error naming the version.
     fn cipher(&self, key_version: u32) -> Re0Result<Aes256Gcm> {
-        let key = self.keys.get(&key_version).ok_or_else(|| {
+        let master = self.keys.get(&key_version).ok_or_else(|| {
             Re0Error::Internal(format!(
                 "no encryption key is configured for version {key_version}; \
                  declare it as a retired key and run the rotation again"
             ))
         })?;
-        Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| internal("invalid AES-256 key"))
+        let kek = derive_kek(master, key_version);
+        Aes256Gcm::new_from_slice(kek.as_ref()).map_err(|_| internal("invalid AES-256 key"))
     }
+}
+
+/// 主密钥不直接当 AES 密钥，按版本派生
+fn derive_kek(master: &Zeroizing<[u8; KEY_LEN]>, key_version: u32) -> Zeroizing<[u8; KEY_LEN]> {
+    let hkdf = Hkdf::<Sha256>::new(None, master.as_ref());
+    let mut info = Vec::with_capacity(HKDF_INFO.len() + 4);
+    info.extend_from_slice(HKDF_INFO);
+    info.extend_from_slice(&key_version.to_be_bytes());
+    let mut kek = Zeroizing::new([0u8; KEY_LEN]);
+    // KEY_LEN 远小于 HKDF 的输出上限，失败不可能发生
+    hkdf.expand(&info, kek.as_mut())
+        .expect("hkdf expand into 32 bytes");
+    kek
 }
 
 fn aad(binding: &BindingId) -> Vec<u8> {
@@ -232,18 +250,21 @@ impl SecretSealer for AesGcmSealer {
         let payload_cipher =
             Aes256Gcm::new_from_slice(dek.as_ref()).map_err(|_| internal("invalid AES-256 key"))?;
         let nonce = nonce_from(sealed.nonce())?;
-        let plaintext = payload_cipher
-            .decrypt(
-                &nonce,
-                Payload {
-                    msg: sealed.ciphertext(),
-                    aad: &binding_aad,
-                },
-            )
-            .map_err(|_| internal("sealed secret failed authentication"))?;
-        let text =
-            String::from_utf8(plaintext).map_err(|_| internal("sealed secret is not UTF-8"))?;
-        Ok(SecretString::from(text))
+        let plaintext = Zeroizing::new(
+            payload_cipher
+                .decrypt(
+                    &nonce,
+                    Payload {
+                        msg: sealed.ciphertext(),
+                        aad: &binding_aad,
+                    },
+                )
+                .map_err(|_| internal("sealed secret failed authentication"))?,
+        );
+        // 先校验再拷贝，失败路径的明文留在 Zeroizing 里
+        let text = std::str::from_utf8(plaintext.as_slice())
+            .map_err(|_| internal("sealed secret is not UTF-8"))?;
+        Ok(SecretString::from(text.to_owned()))
     }
 
     fn rewrap(&self, binding: &BindingId, sealed: &SealedSecret) -> Re0Result<SealedSecret> {
@@ -368,6 +389,17 @@ mod tests {
 
     fn token() -> SecretString {
         SecretString::from("sub-token-value".to_string())
+    }
+
+    #[test]
+    fn wrapped_dek_is_pinned_to_the_kek_derivation() {
+        // payload 用 DEK 加密，与 KEK 无关；信封才随派生路径变化
+        let binding = BindingId(uuid::Uuid::from_bytes([0x22; 16]));
+        let sealed = sealer().seal(&binding, &token()).expect("seal");
+        assert_eq!(
+            hex::encode(sealed.wrapped_dek()),
+            "cbbeeaf409c481b60aa05e93cad9747a2517660ae4d19205623d06df93987f00374574cc19fc014dae4a65f7553b5402"
+        );
     }
 
     #[test]

@@ -30,6 +30,7 @@ uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+hex.workspace = true
 re0auth-contract = { version = "0.1.0", path = "../re0auth-contract" }
 tokio.workspace = true
 uuid.workspace = true

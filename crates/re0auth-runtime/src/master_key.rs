@@ -13,6 +13,8 @@
 use std::fs;
 use std::path::Path;
 
+use zeroize::Zeroizing;
+
 /// Resolves the master key from exactly one source.
 ///
 /// `env_value` is the raw environment value (already read by the caller, so this
@@ -22,13 +24,13 @@ use std::path::Path;
 pub fn resolve_master_key(
     env_value: Option<String>,
     file: Option<&Path>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Zeroizing<String>> {
     let env_value = env_value.filter(|value| !value.trim().is_empty());
     match (env_value, file) {
         (Some(_), Some(_)) => anyhow::bail!(
             "both RE0AUTH_ENCRYPTION_KEY and crypto.master_key_file are set; configure exactly one"
         ),
-        (Some(value), None) => Ok(value),
+        (Some(value), None) => Ok(Zeroizing::new(value)),
         (None, Some(path)) => read_key_file(path),
         (None, None) => anyhow::bail!(
             "no encryption key configured: set RE0AUTH_ENCRYPTION_KEY or crypto.master_key_file"
@@ -37,17 +39,20 @@ pub fn resolve_master_key(
 }
 
 /// Decodes a hex string into bytes, rejecting odd length and non-hex digits.
-pub fn decode_hex(raw: &str) -> anyhow::Result<Vec<u8>> {
-    hex::decode(raw.trim()).map_err(|error| match error {
+///
+/// Returns `Zeroizing` because every caller decodes key material.
+pub fn decode_hex(raw: &str) -> anyhow::Result<Zeroizing<Vec<u8>>> {
+    let bytes = hex::decode(raw.trim()).map_err(|error| match error {
         hex::FromHexError::OddLength => anyhow::anyhow!("encryption key hex has an odd length"),
         hex::FromHexError::InvalidHexCharacter { c, index } => {
             anyhow::anyhow!("encryption key hex has an invalid character {c:?} at position {index}")
         }
         _ => anyhow::anyhow!("encryption key is not valid hex"),
-    })
+    })?;
+    Ok(Zeroizing::new(bytes))
 }
 
-fn read_key_file(path: &Path) -> anyhow::Result<String> {
+fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -64,7 +69,7 @@ fn read_key_file(path: &Path) -> anyhow::Result<String> {
     }
     let content = fs::read_to_string(path)
         .map_err(|error| anyhow::anyhow!("read encryption key file {}: {error}", path.display()))?;
-    Ok(content.trim().to_string())
+    Ok(Zeroizing::new(content.trim().to_string()))
 }
 
 #[cfg(test)]
@@ -99,7 +104,9 @@ mod tests {
     fn a_blank_env_value_counts_as_absent() {
         let file = key_file();
         assert_eq!(
-            resolve_master_key(Some("   ".to_string()), Some(&file)).expect("file wins"),
+            resolve_master_key(Some("   ".to_string()), Some(&file))
+                .expect("file wins")
+                .as_str(),
             MASTER
         );
         assert!(resolve_master_key(Some("".to_string()), None).is_err());
@@ -108,7 +115,10 @@ mod tests {
 
     #[test]
     fn decode_hex_rejects_odd_and_non_hex() {
-        assert_eq!(decode_hex("0f1e").expect("valid hex"), vec![0x0f, 0x1e]);
+        assert_eq!(
+            decode_hex("0f1e").expect("valid hex").as_slice(),
+            &[0x0f, 0x1e]
+        );
         assert!(decode_hex("abc").is_err(), "odd length");
         assert!(decode_hex("zz").is_err(), "non-hex digit");
     }

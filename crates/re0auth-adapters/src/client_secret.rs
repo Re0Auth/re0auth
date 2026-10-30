@@ -71,7 +71,7 @@ impl HmacClientSecretHasher {
                 );
             }
             let mut master = Zeroizing::new([0u8; KEY_LEN]);
-            master.copy_from_slice(&bytes);
+            master.copy_from_slice(bytes.as_slice());
             if parsed.insert(version, master).is_some() {
                 anyhow::bail!("client-secret key version {version} was configured twice");
             }
