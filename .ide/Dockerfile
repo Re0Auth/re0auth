@@ -8,15 +8,11 @@ RUN apt-get update \
      curl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# 锁定工具链，避免重复下载
-ENV RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH
-
+# 装默认位置并链进 PATH，免环境变量
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-  | sh -s -- -y --no-modify-path --profile minimal \
+  | sh -s -- -y --profile minimal \
       --default-toolchain 1.98.0 -c rustfmt -c clippy \
-  && rustc --version
+  && ln -sf /root/.cargo/bin/* /usr/local/bin/
 
 # 缺 Node 24 时补齐
 RUN node --version 2>/dev/null | grep -q '^v24' \
