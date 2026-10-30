@@ -1198,3 +1198,150 @@ async fn a_replayed_authorization_code_revokes_what_it_issued() {
         "the access token must die with its family"
     );
 }
+
+// --------------------------------------------------------- security guards
+
+/// 自定义 redirect_uri 的授权 URI，不动 `authorize_uri`
+fn authorize_uri_with(app: &TestApp, redirect_uri: &str, scope: &str) -> String {
+    let challenge = pkce::challenge_s256(VERIFIER);
+    let mut authorize = url::Url::parse(&format!("{ISSUER}/oauth/authorize")).expect("URL");
+    authorize
+        .query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", &app.client_id.0.to_string())
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("scope", scope)
+        .append_pair("state", "state-security")
+        .append_pair("code_challenge", &challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("nonce", "nonce-123");
+    match authorize.query() {
+        Some(query) => format!("{}?{query}", authorize.path()),
+        None => authorize.path().to_string(),
+    }
+}
+
+async fn authorize_with_redirect(
+    app: &TestApp,
+    redirect_uri: &str,
+    scope: &str,
+) -> axum::response::Response {
+    app.router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(authorize_uri_with(app, redirect_uri, scope))
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("authorize")
+}
+
+/// 测试内自带第二个 client，不碰 `setup`
+async fn insert_second_client(app: &TestApp) -> ClientId {
+    let client_id = ClientId::new();
+    let now = SystemClock.now();
+    app.store
+        .clients()
+        .insert(
+            &Client {
+                id: client_id,
+                name: "second-client".to_string(),
+                redirect_uris: vec![REDIRECT_URI.to_string()],
+                allowed_scopes: vec!["openid".to_string(), "profile".to_string()],
+                raw_access: false,
+                status: ClientStatus::Approved,
+                secret_hash: None,
+                created_at: now,
+                updated_at: now,
+            },
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::ClientCreated,
+                1_000,
+                "client",
+            ),
+        )
+        .await
+        .expect("second client");
+    client_id
+}
+
+async fn exchange_code_with(
+    app: &TestApp,
+    client_id: &ClientId,
+    code: &str,
+    verifier: &str,
+) -> axum::response::Response {
+    post_form(
+        app,
+        token_form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", &client_id.0.to_string()),
+            ("code", code),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_verifier", verifier),
+        ]),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn authorize_rejects_a_redirect_uri_with_a_suffix() {
+    let app = setup().await;
+    let response =
+        authorize_with_redirect(&app, "https://client.example/callback.evil.com", "openid").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_request");
+}
+
+#[tokio::test]
+async fn authorize_rejects_a_redirect_uri_with_traversal() {
+    let app = setup().await;
+    let response =
+        authorize_with_redirect(&app, "https://client.example/callback/../evil", "openid").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_request");
+}
+
+#[tokio::test]
+async fn a_code_is_not_redeemable_by_another_client() {
+    let app = setup().await;
+    let other_client = insert_second_client(&app).await;
+    let code = approve_authorization(&app, "state-cross-client").await;
+
+    let stolen = exchange_code_with(&app, &other_client, &code, VERIFIER).await;
+    assert_eq!(stolen.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(stolen).await["error"], "invalid_grant");
+
+    // 失败的兑换不得烧掉 code
+    let original = exchange_code(&app, &code).await;
+    assert_eq!(original.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_pkce_bound_code_cannot_be_redeemed_with_a_verifier_mismatch() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-pkce").await;
+    let wrong = "wrong-verifier-0123456789-0123456789-0123456789-0123";
+
+    let response = exchange_code_with(&app, &app.client_id, &code, wrong).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
+    // 错误 verifier 不得触发重放回收
+    let original = exchange_code(&app, &code).await;
+    assert_eq!(original.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_scope_outside_the_client_registration_is_invalid_scope() {
+    let app = setup().await;
+    let response = authorize_with_redirect(&app, REDIRECT_URI, "openid secrets").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_scope");
+}
