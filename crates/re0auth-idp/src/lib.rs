@@ -375,11 +375,6 @@ impl IdpClient for OidcProvider {
 }
 
 /// 同一 kid 命中多把钥匙时必须拒绝
-///
-/// `JwkSet::find` is `iter().find`, so a set with two keys under one `kid`
-/// silently picks whichever came first. An IdP rotating a key that way would
-/// have us verify against a semi-arbitrary one; the set is malformed enough
-/// that guessing is worse than failing.
 fn unique_key<'a>(keys: &'a [Jwk], kid: &str) -> IdpResult<Option<&'a Jwk>> {
     let mut matches = keys
         .iter()
