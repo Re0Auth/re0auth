@@ -8,7 +8,7 @@ RUN npm ci --include=dev
 COPY web/ ./
 RUN npm run build
 
-FROM rust:1.98.0-bookworm AS builder
+FROM rust:1.99.1-bookworm AS builder
 
 # aws-lc-sys (jsonwebtoken/aws_lc_rs) builds through CMake; SQLite is bundled.
 RUN apt-get update \

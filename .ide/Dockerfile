@@ -11,7 +11,7 @@ RUN apt-get update \
 # 装默认位置并链进 PATH，免环境变量
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
   | sh -s -- -y --profile minimal \
-      --default-toolchain 1.98.0 -c rustfmt -c clippy \
+      --default-toolchain 1.99.1 -c rustfmt -c clippy \
   && ln -sf /root/.cargo/bin/* /usr/local/bin/
 
 # 缺 Node 24 时补齐
