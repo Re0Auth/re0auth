@@ -18,6 +18,9 @@ pub struct Config {
     /// INV-CACHE-01..03. Absent means caching is off.
     #[serde(default)]
     pub cache: CacheConfig,
+    /// 绑定凭证的惰性推断阈值。
+    #[serde(default)]
+    pub binding_probe: BindingProbeConfig,
     /// Retention windows (Q-032). Defaults are the decided policy.
     #[serde(default)]
     pub retention: RetentionConfig,
@@ -270,6 +273,27 @@ impl Default for CacheConfig {
             max_bytes: default_cache_max_bytes(),
         }
     }
+}
+
+/// 绑定凭证的惰性推断阈值。
+/// 不探测上游，只按未刷新时长推断
+#[derive(Debug, Deserialize)]
+pub struct BindingProbeConfig {
+    /// 超过该天数未刷新即视为失效
+    #[serde(default = "default_binding_probe_after_days")]
+    pub after_days: u64,
+}
+
+impl Default for BindingProbeConfig {
+    fn default() -> Self {
+        Self {
+            after_days: default_binding_probe_after_days(),
+        }
+    }
+}
+
+fn default_binding_probe_after_days() -> u64 {
+    6
 }
 
 fn default_cache_ttl_secs() -> u64 {

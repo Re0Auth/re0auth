@@ -733,7 +733,6 @@ pub enum BindingStatus {
     Active,
     NeedsReauth,
     Revoked,
-    Expired,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

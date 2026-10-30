@@ -11,7 +11,7 @@ use uuid::Uuid;
 use re0auth_api::idp::{IdpClient, IdpError};
 use re0auth_api::oauth::{APPROVAL_TICKET_USE, ApprovalTicketClaims, TokenSigner};
 use re0auth_api::ports::{
-    ApprovalDecision, ApprovalTicket, BindingStatus, Identity, LoginTransaction, RepoError,
+    ApprovalDecision, ApprovalTicket, Binding, BindingStatus, Identity, LoginTransaction, RepoError,
     Session, Storage, User, UserRole,
 };
 use re0auth_api::{BindingId, ClientId, Clock, IdentityId, Random, SessionId, UserId};
@@ -148,7 +148,6 @@ fn binding_status_str(status: BindingStatus) -> &'static str {
         BindingStatus::Active => "active",
         BindingStatus::NeedsReauth => "needs_reauth",
         BindingStatus::Revoked => "revoked",
-        BindingStatus::Expired => "expired",
     }
 }
 
@@ -181,6 +180,8 @@ pub struct AuthService {
     /// INV-CACHE-02: swept when a binding is revoked, so the stale path cannot
     /// keep serving a player's data after they unbound.
     cache: Arc<dyn re0auth_api::cache::Cache>,
+    /// 推断凭证失效的秒数阈值，0 表示不推断
+    binding_probe_after_secs: i64,
 }
 
 /// One configured identity provider and the name that selects it.
@@ -230,7 +231,17 @@ impl AuthService {
             secure_cookies,
             device_attempts: Arc::new(Mutex::new(HashMap::new())),
             cache: Arc::new(re0auth_api::cache::NoCache),
+            binding_probe_after_secs: 0,
         }
+    }
+
+    /// 启用超时未刷新即视为失效的推断
+    #[must_use]
+    pub fn with_binding_probe(mut self, after_days: u64) -> Self {
+        self.binding_probe_after_secs = i64::try_from(after_days)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(86_400);
+        self
     }
 
     /// Enables cache invalidation on binding revoke (INV-CACHE-02).
@@ -627,10 +638,14 @@ impl AuthService {
     /// "unlink" believe the action did not work.
     pub async fn list_bindings(&self, user_id: UserId) -> AuthResult<Vec<BindingView>> {
         let bindings = self.storage.bindings().list_by_user(&user_id).await?;
-        Ok(bindings
-            .into_iter()
-            .filter(|binding| binding.status != BindingStatus::Revoked)
-            .map(|binding| BindingView {
+        let now = self.clock.now();
+        let mut views = Vec::with_capacity(bindings.len());
+        for mut binding in bindings {
+            if binding.status == BindingStatus::Revoked {
+                continue;
+            }
+            self.downgrade_if_stale(&mut binding, now).await;
+            views.push(BindingView {
                 id: binding.id.0.to_string(),
                 connector: binding.upstream_id,
                 status: binding_status_str(binding.status),
@@ -638,8 +653,36 @@ impl AuthService {
                 updated_at: binding.updated_at,
                 last_refreshed_at: binding.last_refreshed_at,
                 last_error_code: binding.last_error_code,
-            })
-            .collect())
+            });
+        }
+        Ok(views)
+    }
+
+    /// 超过阈值未刷新则推断凭证失效
+    async fn downgrade_if_stale(&self, binding: &mut Binding, now: i64) {
+        if self.binding_probe_after_secs <= 0 || binding.status != BindingStatus::Active {
+            return;
+        }
+        let since = binding.last_refreshed_at.unwrap_or(binding.created_at);
+        if now.saturating_sub(since) <= self.binding_probe_after_secs {
+            return;
+        }
+        let fact = SecurityFact::new(
+            AuditAction::BindingNeedsReauth,
+            now,
+            format!("binding:{}", binding.id.0),
+        )
+        .actor(binding.user_id);
+        let marked = self
+            .storage
+            .bindings()
+            .mark_needs_reauth(&binding.id, "stale_credential", &fact, now)
+            .await;
+        // 标记失败不阻断列表，下次访问再试
+        if marked.is_ok() {
+            binding.status = BindingStatus::NeedsReauth;
+            binding.last_error_code = Some("stale_credential".to_string());
+        }
     }
 
     /// Revokes a binding and deletes its stored sub-credential atomically.

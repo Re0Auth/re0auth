@@ -151,7 +151,6 @@ fn status_to_str(status: BindingStatus) -> &'static str {
         BindingStatus::Active => "active",
         BindingStatus::NeedsReauth => "needs_reauth",
         BindingStatus::Revoked => "revoked",
-        BindingStatus::Expired => "expired",
     }
 }
 
@@ -205,7 +204,6 @@ fn status_from_str(value: &str) -> RepoResult<BindingStatus> {
         "active" => Ok(BindingStatus::Active),
         "needs_reauth" => Ok(BindingStatus::NeedsReauth),
         "revoked" => Ok(BindingStatus::Revoked),
-        "expired" => Ok(BindingStatus::Expired),
         other => Err(RepoError::Backend(format!(
             "unknown binding status: {other}"
         ))),

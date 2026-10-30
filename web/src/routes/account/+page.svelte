@@ -189,9 +189,7 @@
 			case 'pending':
 				return { label: '待确认', hint: '上游还没有完成绑定。' };
 			case 'needs_reauth':
-				return { label: '需要重新授权', hint: '上游凭证已失效，重新绑定后才能读取数据。' };
-			case 'expired':
-				return { label: '已过期', hint: '上游凭证已过期。' };
+				return { label: '需要重新授权', hint: '检测到上游凭证已失效，重新绑定后才能读取数据。' };
 			default:
 				return { label: status, hint: '' };
 		}

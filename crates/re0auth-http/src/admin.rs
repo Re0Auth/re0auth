@@ -140,7 +140,6 @@ fn binding_status(raw: &str) -> Result<BindingStatus, ApiError> {
         "active" => BindingStatus::Active,
         "needs_reauth" => BindingStatus::NeedsReauth,
         "revoked" => BindingStatus::Revoked,
-        "expired" => BindingStatus::Expired,
         _ => return Err(invalid_request("unknown binding status", Shape::Problem)),
     })
 }

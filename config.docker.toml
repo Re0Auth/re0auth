@@ -30,6 +30,11 @@ enabled = true
 ttl_secs = 300
 max_bytes = 8388608
 
+# 超过该天数未刷新即推断凭证失效。
+# 不探测上游：上游 TTL 不可知。
+[binding_probe]
+after_days = 6
+
 # Mozilla trust bundle only; no extra CA, no private-network or loopback exemption.
 [tls]
 allow_private_net = false

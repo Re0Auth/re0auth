@@ -582,7 +582,6 @@ fn binding_status_str(status: re0auth_api::ports::BindingStatus) -> &'static str
         BindingStatus::Active => "active",
         BindingStatus::NeedsReauth => "needs_reauth",
         BindingStatus::Revoked => "revoked",
-        BindingStatus::Expired => "expired",
     }
 }
 

@@ -701,7 +701,8 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         random.clone(),
         &cfg.server.issuer,
     )
-    .with_cache(Arc::clone(&cache));
+    .with_cache(Arc::clone(&cache))
+    .with_binding_probe(cfg.binding_probe.after_days);
     let mut state = re0auth_http::AppState::new(oauth, auth)
         .with_rate_limiter(build_rate_limiter(&cfg, clock.clone()))
         // INV-RES-02: the router caps bodies at the configured value. Wiring this
