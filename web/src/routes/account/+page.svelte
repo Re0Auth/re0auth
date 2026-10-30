@@ -139,7 +139,7 @@
 			);
 			window.location.assign(started.authorization_url);
 		} catch (cause) {
-			if (cause instanceof ApiError && cause.status === 401) {
+			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
 				openLogin(currentLocation());
 				return;
 			}

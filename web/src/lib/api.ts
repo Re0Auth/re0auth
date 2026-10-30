@@ -112,7 +112,8 @@ const problemSchema = z.object({
 });
 
 function csrfToken(): string | null {
-	const prefix = 're0auth_csrf=';
+	// 与后端 secure_cookies 对齐：https 用 __Host- 前缀
+	const prefix = location.protocol === 'https:' ? '__Host-re0auth_csrf=' : 're0auth_csrf=';
 	const value = document.cookie
 		.split(';')
 		.map((part) => part.trim())
