@@ -115,13 +115,7 @@ async fn seed(
 async fn a_binding_past_the_threshold_is_downgraded() {
     let now = 1_000_000;
     let store = Arc::new(MemoryStore::new());
-    let (user, binding) = seed(
-        &store,
-        now,
-        BindingStatus::Active,
-        Some(now - 7 * DAY),
-    )
-    .await;
+    let (user, binding) = seed(&store, now, BindingStatus::Active, Some(now - 7 * DAY)).await;
 
     let views = service(store.clone(), now, 6)
         .list_bindings(user)
@@ -130,7 +124,10 @@ async fn a_binding_past_the_threshold_is_downgraded() {
 
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].status, "needs_reauth");
-    assert_eq!(views[0].last_error_code.as_deref(), Some("stale_credential"));
+    assert_eq!(
+        views[0].last_error_code.as_deref(),
+        Some("stale_credential")
+    );
 
     let stored = store
         .bindings()
@@ -150,13 +147,7 @@ async fn a_binding_past_the_threshold_is_downgraded() {
 async fn a_binding_within_the_threshold_stays_active() {
     let now = 1_000_000;
     let store = Arc::new(MemoryStore::new());
-    let (user, _) = seed(
-        &store,
-        now,
-        BindingStatus::Active,
-        Some(now - 5 * DAY),
-    )
-    .await;
+    let (user, _) = seed(&store, now, BindingStatus::Active, Some(now - 5 * DAY)).await;
 
     let views = service(store.clone(), now, 6)
         .list_bindings(user)
@@ -196,13 +187,7 @@ async fn a_binding_never_refreshed_falls_back_to_created_at() {
 async fn a_zero_threshold_disables_the_inference() {
     let now = 1_000_000;
     let store = Arc::new(MemoryStore::new());
-    let (user, _) = seed(
-        &store,
-        now,
-        BindingStatus::Active,
-        Some(now - 30 * DAY),
-    )
-    .await;
+    let (user, _) = seed(&store, now, BindingStatus::Active, Some(now - 30 * DAY)).await;
 
     let views = service(store.clone(), now, 0)
         .list_bindings(user)
@@ -216,13 +201,7 @@ async fn a_zero_threshold_disables_the_inference() {
 async fn a_revoked_binding_is_not_listed_nor_downgraded() {
     let now = 1_000_000;
     let store = Arc::new(MemoryStore::new());
-    let (user, binding) = seed(
-        &store,
-        now,
-        BindingStatus::Revoked,
-        Some(now - 30 * DAY),
-    )
-    .await;
+    let (user, binding) = seed(&store, now, BindingStatus::Revoked, Some(now - 30 * DAY)).await;
 
     let views = service(store.clone(), now, 6)
         .list_bindings(user)
