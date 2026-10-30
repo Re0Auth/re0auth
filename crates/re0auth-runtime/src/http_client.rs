@@ -436,39 +436,6 @@ impl GuardedClient {
         self.read_text(response).await
     }
 
-    /// 返回原始响应，状态码不判错
-    pub async fn execute(
-        &self,
-        request: http::Request<Vec<u8>>,
-    ) -> anyhow::Result<http::Response<Vec<u8>>> {
-        let raw = request.uri().to_string();
-        let (url, pinned) = self
-            .vet(&raw)
-            .await
-            .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
-
-        let mut builder = client.request(request.method().clone(), url);
-        for (name, value) in request.headers() {
-            builder = builder.header(name, value);
-        }
-        if !request.body().is_empty() {
-            builder = builder.body(request.body().clone());
-        }
-        let response = builder.send().await?;
-
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = read_limited(response, self.max_body).await?;
-
-        let mut out = http::Response::builder().status(status);
-        for (name, value) in headers.iter() {
-            out = out.header(name, value);
-        }
-        out.body(body)
-            .map_err(|error| anyhow::anyhow!("building outbound response: {error}"))
-    }
-
     /// GETs `url` with an `Accept` header and returns the body as text.
     pub async fn get_text(&self, url: &str, accept: &str) -> anyhow::Result<String> {
         let (url, pinned) = self
