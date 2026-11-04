@@ -41,7 +41,7 @@ fn main() {
          Run one of:\n\
          \n\
              sh tools/build-all.sh          (frontend, then the release binary)\n\
-             cd web && npm ci --include=dev && npm run build\n\
+             cd web && pnpm install --frozen-lockfile && pnpm run build\n\
          \n\
          Expected output at: {}\n\
          `web/build` is gitignored because it is a build artifact; `cargo build`\n\

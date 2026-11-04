@@ -16,11 +16,11 @@ SvelteKit 静态 SPA，承载登录入口、授权同意、设备码入口和账
 
 ## 开发
 
-要求 Node 24 与 npm 11，后端默认运行在 `127.0.0.1:8080`。
+要求 Node 24 与 pnpm 11，后端默认运行在 `127.0.0.1:8080`。
 
 ```sh
-npm ci --include=dev
-npm run dev
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
 
 `vite.config.ts` 已把 `/auth`、`/api`、`/oauth`、`/device/start`、`/device/approve`、`/device/deny`、`/userinfo`、`/.well-known`、`/jwks.json` 代理到后端；`/device`、`/login`、`/consent` 留在 SPA。
@@ -28,12 +28,12 @@ npm run dev
 ## 检查与构建
 
 ```sh
-npm run check
-npm run build
-npm run test:e2e
+pnpm run check
+pnpm run build
+pnpm run test:e2e
 ```
 
-`test:e2e` 需要先构建 release 二进制并安装 Chromium：`npx playwright install chromium`。输出在 `build/`，由 `adapter-static` 生成 `index.html` 作为 SPA fallback。`re0auth-http` 通过 `rust-embed` 在编译时嵌入 `web/build`，所以本地跑 `cargo build`/`cargo test` 前必须先完成一次 `npm run build`；也可以在仓库根运行 `sh tools/build-all.sh`。CI 与 Dockerfile 已按这个顺序编排。
+`test:e2e` 需要先构建 release 二进制并安装 Chromium：`pnpm exec playwright install chromium`。输出在 `build/`，由 `adapter-static` 生成 `index.html` 作为 SPA fallback。`re0auth-http` 通过 `rust-embed` 在编译时嵌入 `web/build`，所以本地跑 `cargo build`/`cargo test` 前必须先完成一次 `pnpm run build`；也可以在仓库根运行 `sh tools/build-all.sh`。CI 与 Dockerfile 已按这个顺序编排。
 
 ## 前端约束
 

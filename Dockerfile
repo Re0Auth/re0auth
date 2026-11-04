@@ -3,10 +3,11 @@
 FROM node:24-bookworm-slim AS web
 
 WORKDIR /web
-COPY web/package.json web/package-lock.json ./
-RUN npm ci --include=dev
+RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod=false
 COPY web/ ./
-RUN npm run build
+RUN pnpm run build
 
 FROM rust:1.99.1-bookworm AS builder
 

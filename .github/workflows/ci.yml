@@ -19,19 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
 
       # rust-embed embeds web/build at compile time. A clean checkout cannot
       # build the workspace until the SPA has been built.
       - name: web assets
         run: |
           cd web
-          npm ci --include=dev
-          npm run build
+          pnpm install --frozen-lockfile
+          pnpm run build
 
       # rust-toolchain.toml pins 1.99.1; rustup installs it on first use.
       - name: toolchain
@@ -70,33 +73,39 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
 
       # NODE_ENV=production on a dev machine would omit devDependencies; keep
       # the flag explicit in CI so the build cannot depend on ambient state.
       - name: install
-        run: npm ci --include=dev
+        run: pnpm install --frozen-lockfile
 
       - name: check
-        run: npm run check
+        run: pnpm run check
 
       - name: build
-        run: npm run build
+        run: pnpm run build
 
   e2e:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
 
       - name: toolchain
         run: rustup show
@@ -109,8 +118,8 @@ jobs:
       - name: web assets
         run: |
           cd web
-          npm ci --include=dev
-          npm run build
+          pnpm install --frozen-lockfile
+          pnpm run build
 
       - name: release binary
         run: cargo build --release --locked -p re0auth-server
@@ -118,12 +127,12 @@ jobs:
       - name: browser
         run: |
           cd web
-          npx playwright install --with-deps chromium
+          pnpm exec playwright install --with-deps chromium
 
       - name: browser e2e
         run: |
           cd web
-          npm run test:e2e
+          pnpm run test:e2e
 
   docker:
     runs-on: ubuntu-24.04
