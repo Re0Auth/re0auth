@@ -26,7 +26,6 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware;
 use axum::response::Response;
 use axum::routing::{delete, get, patch, post};
-use tower_http::timeout::TimeoutLayer;
 use re0auth_app::admin_service::AdminService;
 use re0auth_app::auth::AuthService;
 use re0auth_app::gateway::GatewayService;
@@ -40,6 +39,7 @@ use routes::oauth::{
 use routes::session::{
     auth_callback, authorizations, login, logout, logout_all, me, providers, revoke_authorization,
 };
+use tower_http::timeout::TimeoutLayer;
 
 pub use routes::session::{MeUserView, MeView};
 pub(crate) use routes::session::{require_csrf, session_context_from_headers};

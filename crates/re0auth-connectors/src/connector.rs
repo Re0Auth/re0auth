@@ -510,7 +510,7 @@ mod tests {
             TlsConfig::default(),
             std::time::Duration::from_secs(10),
         )
-            .expect("clients");
+        .expect("clients");
         let broker = HttpBroker::new(clients, 4 * 1024 * 1024).with_inflight_budget(budget);
 
         let result = broker

@@ -254,12 +254,11 @@ async fn build_data_plane(
     let upstream_timeout = std::time::Duration::from_secs(cfg.timeouts.upstream_secs);
     // One client per connector; the global [tls] flags were already checked as
     // a ceiling in `config::validate`, so they cannot widen a connector here.
-    let clients =
-        re0auth_connectors::connector::ConnectorClients::new(
-            &endpoints,
-            cfg.tls.trust_config()?,
-            upstream_timeout,
-        )?;
+    let clients = re0auth_connectors::connector::ConnectorClients::new(
+        &endpoints,
+        cfg.tls.trust_config()?,
+        upstream_timeout,
+    )?;
     for endpoint in &endpoints {
         tracing::info!(
             connector = %endpoint.name,
@@ -597,7 +596,8 @@ async fn load_signer(
 }
 
 async fn serve(cfg: config::Config) -> anyhow::Result<()> {
-    let store = Arc::new(SqliteStore::connect_with(&cfg.database.url, cfg.database.options()).await?);
+    let store =
+        Arc::new(SqliteStore::connect_with(&cfg.database.url, cfg.database.options()).await?);
     sync_connectors(&cfg, &store).await?;
     let clock = Arc::new(SystemClock);
     let signer = Arc::new(load_signer(&cfg, &store, clock.as_ref()).await?);

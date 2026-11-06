@@ -1455,4 +1455,3 @@ mod tests {
         assert_eq!(sqlite_code_error("999"), None);
     }
 }
-
