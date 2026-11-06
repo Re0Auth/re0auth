@@ -1,43 +1,87 @@
 @import 'tailwindcss';
+@plugin "@tailwindcss/typography";
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
 
 @theme inline {
 	--font-sans:
-		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Noto Sans SC', 'Microsoft YaHei',
-		sans-serif;
+		'Source Han Sans & Saira Hybrid', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+		'Noto Sans SC', 'Microsoft YaHei', sans-serif;
 	--font-mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', 'SFMono-Regular', monospace;
+
+	/* Re0Auth 语义 */
 	--color-bg: var(--bg);
+	--color-surface: var(--surface);
 	--color-fg: var(--fg);
-	--color-muted: var(--muted);
-	--color-border: var(--border);
+	--color-fg-2: var(--fg-2);
+	--color-fg-3: var(--fg-3);
+	--color-link: var(--accent);
+	--color-danger: var(--danger);
+	--color-border-strong: var(--border-strong);
+
+	/* shadcn 语义映射 */
+	--color-background: var(--bg);
+	--color-foreground: var(--fg);
 	--color-primary: var(--primary);
 	--color-primary-fg: var(--primary-fg);
-	--color-accent: var(--accent);
-	--color-danger: var(--danger);
+	--color-primary-foreground: var(--primary-fg);
+	--color-secondary: var(--surface);
+	--color-secondary-foreground: var(--fg);
+	--color-muted: var(--hover);
+	--color-muted-foreground: var(--fg-2);
+	--color-accent: var(--hover);
+	--color-accent-foreground: var(--fg);
+	--color-destructive: var(--danger);
+	--color-destructive-foreground: var(--bg);
+	--color-border: var(--border);
+	--color-input: var(--border);
+	--color-ring: var(--accent);
+	--color-card: var(--surface);
+	--color-card-foreground: var(--fg);
+	--color-popover: var(--surface);
+	--color-popover-foreground: var(--fg);
+
+	/* 圆角 */
+	--radius-sm: 6px;
+	--radius-md: 8px;
+	--radius-lg: 12px;
 }
 
 :root {
-	color-scheme: light dark;
-	--bg: #ffffff;
-	--fg: #171717;
-	--muted: #4d4d4d;
-	--border: rgb(0 0 0 / 0.08);
-	--primary: #171717;
-	--primary-fg: #ffffff;
-	--accent: #0a72ef;
-	--danger: #d92d20;
+	color-scheme: light;
+	--bg: #fafafa;
+	--surface: #ffffff;
+	--fg: #18181b;
+	--fg-2: #52525b;
+	--fg-3: #8f8f96;
+	--muted: var(--fg-2);
+	--border: rgb(0 0 0 / 0.09);
+	--border-strong: rgb(0 0 0 / 0.16);
+	--hover: rgb(0 0 0 / 0.04);
+	--primary: #18181b;
+	--primary-fg: #fafafa;
+	--accent: #2563eb;
+	--danger: #dc2626;
+	--motion-fast: 150ms;
+	--motion-base: 220ms;
+	--motion-slow: 300ms;
+	--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-@media (prefers-color-scheme: dark) {
-	:root {
-		--bg: #0a0a0a;
-		--fg: #fafafa;
-		--muted: #a1a1a1;
-		--border: rgb(255 255 255 / 0.12);
-		--primary: #fafafa;
-		--primary-fg: #171717;
-		--accent: #3b82f6;
-		--danger: #f97066;
-	}
+:root[data-theme='dark'] {
+	color-scheme: dark;
+	--bg: #09090b;
+	--surface: #18181b;
+	--fg: #fafafa;
+	--fg-2: #a1a1aa;
+	--fg-3: #71717a;
+	--muted: var(--fg-2);
+	--border: rgb(255 255 255 / 0.1);
+	--border-strong: rgb(255 255 255 / 0.18);
+	--hover: rgb(255 255 255 / 0.06);
+	--primary: #fafafa;
+	--primary-fg: #09090b;
+	--accent: #60a5fa;
+	--danger: #f87171;
 }
 
 html,
@@ -69,7 +113,7 @@ body {
 	.auth-card {
 		width: 100%;
 		max-width: 460px;
-		background: var(--bg);
+		background: var(--surface);
 		border-radius: 8px;
 		box-shadow: 0 0 0 1px var(--border);
 		padding: 28px;
@@ -78,7 +122,7 @@ body {
 	.account-card {
 		width: 100%;
 		max-width: 720px;
-		background: var(--bg);
+		background: var(--surface);
 		border-radius: 8px;
 		box-shadow: 0 0 0 1px var(--border);
 		padding: 28px;
@@ -98,6 +142,7 @@ body {
 	.account-list {
 		margin-top: 24px;
 		border-radius: 8px;
+		background: var(--surface);
 		box-shadow: 0 0 0 1px var(--border);
 	}
 
@@ -303,6 +348,7 @@ body {
 		padding: 0;
 		list-style: none;
 		border-radius: 8px;
+		background: var(--surface);
 		box-shadow: 0 0 0 1px var(--border);
 	}
 
@@ -334,3 +380,62 @@ body {
 		color: var(--fg);
 	}
 }
+
+/* 页面骨架：认证窄卡 / 文档长文 / 门户宽区 */
+.doc-page,
+.portal-page {
+	min-height: 100dvh;
+	padding: 48px 24px 64px;
+}
+
+.doc-container {
+	width: 100%;
+	max-width: 880px;
+	margin: 0 auto;
+}
+
+.doc-body {
+	max-width: 680px;
+	margin-inline: auto;
+}
+
+.portal-container {
+	width: 100%;
+	max-width: 720px;
+	margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+	.doc-page,
+	.portal-page {
+		padding: 24px 16px 48px;
+	}
+}
+
+/* 长文排版：prose 变量对齐主题色 */
+.prose {
+	--tw-prose-body: var(--fg-2);
+	--tw-prose-headings: var(--fg);
+	--tw-prose-lead: var(--fg-2);
+	--tw-prose-links: var(--accent);
+	--tw-prose-bold: var(--fg);
+	--tw-prose-counters: var(--fg-3);
+	--tw-prose-bullets: var(--border-strong);
+	--tw-prose-hr: var(--border);
+	--tw-prose-quotes: var(--fg-2);
+	--tw-prose-quote-borders: var(--border-strong);
+	--tw-prose-captions: var(--fg-3);
+	--tw-prose-code: var(--fg);
+	--tw-prose-pre-code: var(--fg);
+	--tw-prose-pre-bg: var(--surface);
+	--tw-prose-th-borders: var(--border);
+	--tw-prose-td-borders: var(--border);
+	max-width: 680px;
+	line-height: 1.75;
+}
+
+.prose h2 {
+	border-bottom: 1px solid var(--border);
+	padding-bottom: 0.35rem;
+}
+

@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ArrowRight, ExternalLink } from 'lucide-svelte';
-	import AuthShell from '#lib/components/AuthShell.svelte';
+	import { ArrowRight, ExternalLink, KeyRound } from 'lucide-svelte';
+	import AuthLayout from '#lib/components/layouts/AuthLayout.svelte';
+	import { Alert, AlertDescription } from '#lib/components/ui/alert/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
 	import {
 		fetchProviders,
 		readQuery,
@@ -38,27 +40,47 @@
 	}
 </script>
 
-<AuthShell
+<AuthLayout
 	title="登录 Re0Auth"
-	subtitle="使用外部身份提供商完成登录。Re0Auth 不保存你的密码。"
+	subtitle="通过外部身份提供商完成登录"
 >
 	{#if loading}
 		<p class="meta">正在读取登录方式…</p>
 	{:else if error}
-		<div class="alert" role="alert">
-			<span>{error}</span>
-		</div>
+		<Alert variant="destructive" class="mb-6 rounded-md">
+			<AlertDescription>{error}</AlertDescription>
+		</Alert>
 		<div class="auth-actions">
-			<button class="btn-primary" type="button" onclick={loadProviders}>重试</button>
+			<Button class="h-11 w-full rounded-sm" type="button" onclick={loadProviders}>重试</Button>
 		</div>
 	{:else if providers.length === 0}
 		<p class="meta">当前未配置登录方式，请联系站点管理员。</p>
-	{:else}
+	{:else if providers.length === 1}
 		<div class="auth-actions">
 			{#each providers as provider (provider.name)}
-				<button class="btn-primary" type="button" onclick={() => login(provider.name)}>
-					{providers.length === 1 ? '继续登录' : `使用 ${provider.display_name} 登录`}
+				<Button
+					class="h-11 w-full rounded-sm"
+					type="button"
+					onclick={() => login(provider.name)}
+				>
+					继续登录
 					<ArrowRight size={16} aria-hidden="true" />
+				</Button>
+			{/each}
+		</div>
+	{:else}
+		<div class="mt-6 divide-y divide-border overflow-hidden rounded-md border border-border bg-surface">
+			{#each providers as provider (provider.name)}
+				<button
+					class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm transition-colors hover:bg-hover"
+					type="button"
+					onclick={() => login(provider.name)}
+				>
+					<span class="flex items-center gap-2.5">
+						<KeyRound size={15} strokeWidth={1.8} class="text-fg-3" aria-hidden="true" />
+						<span>{provider.display_name}</span>
+					</span>
+					<ArrowRight size={15} class="text-fg-3" aria-hidden="true" />
 				</button>
 			{/each}
 		</div>
@@ -70,4 +92,4 @@
 	<p class="meta">
 		首次登录会创建一个新账号。已经用过其他登录方式的，请继续用同一种，否则会得到两个互不相通的账号。
 	</p>
-</AuthShell>
+</AuthLayout>

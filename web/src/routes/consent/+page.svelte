@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { AlertCircle, Check, ShieldCheck, X } from 'lucide-svelte';
-	import AuthShell from '#lib/components/AuthShell.svelte';
+	import AuthLayout from '#lib/components/layouts/AuthLayout.svelte';
+	import { Alert, AlertDescription } from '#lib/components/ui/alert/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
 	import {
 		ApiError,
 		apiGet,
@@ -124,7 +126,7 @@
 	}
 </script>
 
-<AuthShell
+<AuthLayout
 	title="确认授权"
 	subtitle={pending ? `${clientName} 请求访问你的 Re0Auth 账号。` : '正在读取授权请求…'}
 >
@@ -143,61 +145,58 @@
 			{/each}
 		</ul>
 		{#if pending.missing_bindings.length > 0}
-			<div class="notice" role="status">
-				<AlertCircle size={16} strokeWidth={1.8} aria-hidden="true" />
-				<div>
+			<Alert class="mt-4 rounded-md" role="status">
+				<AlertCircle />
+				<AlertDescription>
 					<p>
-						授权本身可以完成，但这些权限需要先连接对应上游账号才能读取数据：
+						授权本身可以完成，但这些权限需要先连接对应的游戏账号才能读取数据：
 						<strong>{pending.missing_bindings.map((item) => item.upstream_id).join('、')}</strong>。
 					</p>
 					<div class="auth-actions">
 						{#each pending.missing_bindings as missing (missing.upstream_id)}
-							<button
-								class="btn-secondary"
+							<Button
+								variant="outline"
+								class="h-11 w-full rounded-sm"
 								type="button"
 								disabled={connecting === missing.upstream_id}
 								onclick={() => connect(missing.upstream_id)}
 							>
 								<ShieldCheck size={16} aria-hidden="true" />
 								连接 {missing.upstream_id}
-							</button>
+							</Button>
 						{/each}
 					</div>
 					<p class="meta">
 						连接后回到本页继续授权。数据读取时才会校验绑定，未连接不会影响本次授权的完成。
 					</p>
-				</div>
-			</div>
+				</AlertDescription>
+			</Alert>
 		{/if}
 		<p class="meta">
 			授权后将返回 <code>{redirectHost}</code>。请求将在 <code>{expiresAt}</code> 过期。
 		</p>
 		<div class="auth-actions">
-			<button
-				class="btn-primary"
-				type="button"
-				disabled={submitting}
-				onclick={() => decide('approve')}
-			>
+			<Button class="h-11 w-full rounded-sm" type="button" disabled={submitting} onclick={() => decide('approve')}>
 				<Check size={16} aria-hidden="true" />
 				批准
-			</button>
-			<button
-				class="btn-secondary"
+			</Button>
+			<Button
+				variant="outline"
+				class="h-11 w-full rounded-sm"
 				type="button"
 				disabled={submitting}
 				onclick={() => decide('deny')}
 			>
 				<X size={16} aria-hidden="true" />
 				拒绝
-			</button>
+			</Button>
 		</div>
 	{/if}
 
 	{#if error}
-		<div class="alert" role="alert">
-			<AlertCircle size={16} aria-hidden="true" />
-			<span>{error}</span>
-		</div>
+		<Alert variant="destructive" class="mt-4 rounded-md">
+			<AlertCircle />
+			<AlertDescription>{error}</AlertDescription>
+		</Alert>
 	{/if}
-</AuthShell>
+</AuthLayout>

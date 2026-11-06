@@ -332,8 +332,8 @@ test('consent page approves and account can revoke', async ({ browser }) => {
 	// The bindings section is fed by `/api/me/bindings`. A user who has never
 	// linked an upstream still has to see the section, or the page silently
 	// hides a feature that exists.
-	await expect(page.getByRole('heading', { name: '已绑定的上游账号' })).toBeVisible();
-	await expect(page.getByText('还没有绑定上游账号。')).toBeVisible();
+	await expect(page.getByRole('heading', { name: '已绑定的游戏账号' })).toBeVisible();
+	await expect(page.getByText('还没有绑定游戏账号。')).toBeVisible();
 	await page.getByRole('button', { name: /撤销 E2E Client/ }).click();
 	await expect(page.getByText('还没有应用获得授权。')).toBeVisible();
 	await page.getByRole('button', { name: /退出所有会话/ }).click();
@@ -399,6 +399,6 @@ test('account connects an upstream and the binding comes back active', async ({ 
 	// The killswitch removes every binding in one action and lands on the empty
 	// state, which is what proves the button is wired, not just rendered.
 	await page.getByRole('button', { name: '解除全部绑定' }).click();
-	await expect(page.getByText('还没有绑定上游账号。')).toBeVisible();
+	await expect(page.getByText('还没有绑定游戏账号。')).toBeVisible();
 	await context.close();
 });

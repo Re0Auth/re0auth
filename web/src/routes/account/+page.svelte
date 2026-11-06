@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { AlertCircle, Link2, LogOut, Plus, ShieldCheck, Unlink } from 'lucide-svelte';
-	import AccountShell from '#lib/components/AccountShell.svelte';
+	import PortalLayout from '#lib/components/layouts/PortalLayout.svelte';
+	import { Alert, AlertDescription } from '#lib/components/ui/alert/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
 	import {
 		ApiError,
 		apiDelete,
@@ -187,16 +189,16 @@
 			case 'active':
 				return { label: '已连接', hint: '' };
 			case 'pending':
-				return { label: '待确认', hint: '上游还没有完成绑定。' };
+				return { label: '待确认', hint: '游戏账号还没有完成绑定。' };
 			case 'needs_reauth':
-				return { label: '需要重新授权', hint: '检测到上游凭证已失效，重新绑定后才能读取数据。' };
+				return { label: '需要重新授权', hint: '游戏账号的访问凭据已失效，重新绑定后才能读取数据。' };
 			default:
 				return { label: status, hint: '' };
 		}
 	}
 </script>
 
-<AccountShell>
+<PortalLayout>
 	<header class="account-header">
 		<div>
 			<h1 class="auth-title">账号与授权</h1>
@@ -205,32 +207,33 @@
 			</p>
 		</div>
 		{#if me}
-			<button
-				class="btn-secondary compact"
+			<Button
+				variant="outline"
+				class="h-9 shrink-0 rounded-sm px-3 text-sm"
 				type="button"
 				disabled={loggingOut}
 				onclick={logoutAll}
 			>
 				<LogOut size={15} aria-hidden="true" />
 				退出所有会话
-			</button>
+			</Button>
 		{/if}
 	</header>
 
 	{#if justLoggedIn && me}
-		<div class="notice" role="status">
-			<ShieldCheck size={16} aria-hidden="true" />
-			<span>登录成功，这是你当前的授权状态。</span>
-		</div>
+		<Alert class="mt-4 rounded-md">
+			<ShieldCheck />
+			<AlertDescription>登录成功，这是你当前的授权状态。</AlertDescription>
+		</Alert>
 	{/if}
 
 	{#if loading}
 		<p class="meta">正在加载已授权应用…</p>
 	{:else if error && !me}
-		<div class="alert" role="alert">
-			<AlertCircle size={16} aria-hidden="true" />
-			<span>{error}</span>
-		</div>
+		<Alert variant="destructive" class="mt-4 rounded-md">
+			<AlertCircle />
+			<AlertDescription>{error}</AlertDescription>
+		</Alert>
 	{:else if authorizations.length === 0}
 		<p class="meta">还没有应用获得授权。下次应用请求访问时会在这里出现。</p>
 	{:else}
@@ -246,31 +249,32 @@
 						<p class="scope-name">{authorization.scopes.join(' · ')}</p>
 						<p class="meta">最近授权：{formatDate(authorization.updated_at)}</p>
 					</div>
-					<button
-						class="btn-secondary compact revoke"
+					<Button
+						variant="outline"
+						class="h-9 shrink-0 rounded-sm px-3 text-sm text-fg-2 hover:border-danger/40 hover:text-danger"
 						type="button"
 						disabled={revoking === authorization.client_id}
 						aria-label={`撤销 ${authorization.client_name} 的授权`}
 						onclick={() => revoke(authorization.client_id)}
 					>
 						撤销
-					</button>
+					</Button>
 				</article>
 			{/each}
 		</div>
 	{/if}
 
 	{#if error && me}
-		<div class="alert" role="alert">
-			<AlertCircle size={16} aria-hidden="true" />
-			<span>{error}</span>
-		</div>
+		<Alert variant="destructive" class="mt-4 rounded-md">
+			<AlertCircle />
+			<AlertDescription>{error}</AlertDescription>
+		</Alert>
 	{/if}
 
 	<section class="bindings">
-		<h2 class="section-title">已绑定的上游账号</h2>
+		<h2 class="section-title">已绑定的游戏账号</h2>
 		{#if bindings.length === 0}
-			<p class="meta">还没有绑定上游账号。绑定后，授权应用才能读取你在上游的数据。</p>
+			<p class="meta">还没有绑定游戏账号。绑定后，授权应用才能读取你的数据。</p>
 		{:else}
 			<div class="account-list">
 				{#each bindings as binding (binding.id)}
@@ -289,30 +293,32 @@
 								<p class="meta">{state.hint}</p>
 							{/if}
 						</div>
-						<button
-							class="btn-secondary compact revoke"
+						<Button
+							variant="outline"
+							class="h-9 shrink-0 rounded-sm px-3 text-sm text-fg-2 hover:border-danger/40 hover:text-danger"
 							type="button"
 							disabled={unbinding === binding.id}
 							aria-label={`解除与 ${binding.connector} 的绑定`}
 							onclick={() => unlink(binding.id)}
 						>
 							解除
-						</button>
+						</Button>
 					</article>
 				{/each}
 			</div>
 		{/if}
 		{#if bindings.length > 0}
 			<div class="auth-actions">
-				<button
-					class="btn-secondary"
+				<Button
+					variant="outline"
+					class="h-11 w-full rounded-sm text-fg-2 hover:border-danger/40 hover:text-danger"
 					type="button"
 					disabled={unbindingAll}
 					onclick={unlinkAll}
 				>
 					<Unlink size={16} aria-hidden="true" />
 					解除全部绑定
-				</button>
+				</Button>
 			</div>
 		{/if}
 		{#if connectableUpstreams.length > 0}
@@ -324,10 +330,11 @@
 								<Link2 size={17} strokeWidth={1.8} aria-hidden="true" />
 								<span>{upstream}</span>
 							</div>
-							<p class="meta">尚未连接，连接后才能读取你在该上游的数据。</p>
+							<p class="meta">尚未连接，连接后才能读取你在该服务的数据。</p>
 						</div>
-						<button
-							class="btn-secondary compact"
+						<Button
+							variant="outline"
+							class="h-9 shrink-0 rounded-sm px-3 text-sm"
 							type="button"
 							disabled={connecting === upstream}
 							aria-label={`连接 ${upstream}`}
@@ -335,7 +342,7 @@
 						>
 							<Plus size={15} aria-hidden="true" />
 							连接
-						</button>
+						</Button>
 					</article>
 				{/each}
 			</div>
@@ -343,4 +350,4 @@
 	</section>
 
 	<p class="meta"><a href="/">返回首页</a></p>
-</AccountShell>
+</PortalLayout>
