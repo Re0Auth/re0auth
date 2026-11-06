@@ -3,6 +3,7 @@ use std::path::Path;
 
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
+use re0auth_adapters::storage::{DatabaseOptions, SqliteSynchronous};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -24,6 +25,9 @@ pub struct Config {
     /// Retention windows (Q-032). Defaults are the decided policy.
     #[serde(default)]
     pub retention: RetentionConfig,
+    /// 入站请求与上游调用的超时上限。
+    #[serde(default)]
+    pub timeouts: TimeoutsConfig,
     #[serde(default)]
     pub tls: TlsSettings,
     /// Identity providers, selected by the `idp` query parameter on `/auth/login`.
@@ -206,6 +210,70 @@ pub struct ServerConfig {
 #[derive(Debug, Deserialize)]
 pub struct DatabaseConfig {
     pub url: String,
+    /// SQLite 同步模式，默认 normal。
+    #[serde(default)]
+    pub synchronous: SqliteSynchronous,
+    /// SQLite 页缓存大小（MB）。
+    #[serde(default = "default_cache_size_mb")]
+    pub cache_size_mb: u32,
+    /// SQLite 内存映射大小（MB）；0 表示关闭。
+    #[serde(default = "default_mmap_size_mb")]
+    pub mmap_size_mb: u32,
+    /// 连接池上限。
+    #[serde(default = "default_pool_size")]
+    pub pool_size: u32,
+}
+
+impl DatabaseConfig {
+    #[must_use]
+    pub fn options(&self) -> DatabaseOptions {
+        DatabaseOptions {
+            synchronous: self.synchronous,
+            cache_size_mb: self.cache_size_mb,
+            mmap_size_mb: self.mmap_size_mb,
+            pool_size: self.pool_size,
+        }
+    }
+}
+
+fn default_cache_size_mb() -> u32 {
+    16
+}
+
+fn default_mmap_size_mb() -> u32 {
+    64
+}
+
+fn default_pool_size() -> u32 {
+    5
+}
+
+/// 超时上限；限流另由 `[rate_limit]` 负责。
+#[derive(Debug, Deserialize)]
+pub struct TimeoutsConfig {
+    /// 单个入站请求的处理上限（秒）。
+    #[serde(default = "default_request_secs")]
+    pub request_secs: u64,
+    /// 单次上游调用的上限（秒）。
+    #[serde(default = "default_upstream_secs")]
+    pub upstream_secs: u64,
+}
+
+impl Default for TimeoutsConfig {
+    fn default() -> Self {
+        Self {
+            request_secs: default_request_secs(),
+            upstream_secs: default_upstream_secs(),
+        }
+    }
+}
+
+fn default_request_secs() -> u64 {
+    30
+}
+
+fn default_upstream_secs() -> u64 {
+    10
 }
 
 fn default_master_key_version() -> u32 {

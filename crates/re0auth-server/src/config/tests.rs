@@ -1,4 +1,5 @@
 use super::*;
+use re0auth_adapters::storage::SqliteSynchronous;
 
 fn example_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.example.toml")
@@ -84,6 +85,22 @@ fn example_config_is_valid() {
     assert_eq!(cfg.limits.upstream_response_bytes, 4_194_304);
     assert_eq!(cfg.limits.upstream_inflight_bytes, 67_108_864);
     assert_eq!(cfg.limits.inbound_body_bytes, 1_048_576);
+}
+
+#[test]
+fn database_defaults_are_tuned_for_wal() {
+    let cfg = example();
+    assert_eq!(cfg.database.synchronous, SqliteSynchronous::Normal);
+    assert_eq!(cfg.database.cache_size_mb, 16);
+    assert_eq!(cfg.database.mmap_size_mb, 64);
+    assert_eq!(cfg.database.pool_size, 5);
+}
+
+#[test]
+fn timeout_defaults_are_conservative() {
+    let cfg = example();
+    assert_eq!(cfg.timeouts.request_secs, 30);
+    assert_eq!(cfg.timeouts.upstream_secs, 10);
 }
 
 #[test]

@@ -36,6 +36,9 @@ mod signing_keys;
 
 use audit::record_fact;
 
+mod options;
+pub use options::{DatabaseOptions, SqliteSynchronous};
+
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -43,21 +46,37 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
+        Self::connect_with(url, DatabaseOptions::default()).await
+    }
+
+    /// 同 [`Self::connect`]，但连接参数由调用方提供。
+    pub async fn connect_with(url: &str, options: DatabaseOptions) -> anyhow::Result<Self> {
         // One reading of the URL, shared with the vault-collision guard: the
         // `sqlite:` grammar is sqlx's, and `contains(":memory:")` also matched a
         // file whose name happened to contain that text.
         let database_file = crate::sqlite_path::database_file_path(url);
         let memory = database_file.is_none();
-        let mut options = SqliteConnectOptions::from_str(url)
+        let mut sqlx_options = SqliteConnectOptions::from_str(url)
             .with_context(|| format!("invalid SQLite URL: {url}"))?
             .foreign_keys(true)
             // 写事务很短，超过 5 秒的等待交给 503 重试
-            .busy_timeout(Duration::from_secs(5));
+            .busy_timeout(Duration::from_secs(5))
+            // NORMAL 崩溃时最多丢最后几个事务
+            .pragma("synchronous", options.synchronous.as_pragma())
+            // 负值表示单位为 KB
+            .pragma(
+                "cache_size",
+                format!("-{}", u64::from(options.cache_size_mb) * 1024),
+            )
+            .pragma(
+                "mmap_size",
+                (u64::from(options.mmap_size_mb) * 1024 * 1024).to_string(),
+            );
 
         if memory {
             // An in-memory database is private to one connection; a second one
             // would see an empty schema, so the pool is pinned to a single slot.
-            options = options.create_if_missing(false);
+            sqlx_options = sqlx_options.create_if_missing(false);
         } else {
             if let Some(parent) = database_file.as_deref().and_then(std::path::Path::parent)
                 && !parent.as_os_str().is_empty()
@@ -66,19 +85,19 @@ impl SqliteStore {
                     .with_context(|| format!("create SQLite directory {}", parent.display()))?;
             }
             // WAL keeps the housekeeping sweep from blocking request-path reads.
-            options = options
+            sqlx_options = sqlx_options
                 .create_if_missing(true)
                 .journal_mode(SqliteJournalMode::Wal);
         }
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(if memory { 1 } else { 5 })
+            .max_connections(if memory { 1 } else { options.pool_size.max(1) })
             .min_connections(if memory { 1 } else { 0 })
             // Idle connections are kept: single-binary deployments are low
             // traffic, and reconnecting costs more than holding the handle.
             .idle_timeout(None)
             .max_lifetime(None)
-            .connect_with(options)
+            .connect_with(sqlx_options)
             .await
             .context("connect SQLite")?;
 
@@ -1436,3 +1455,4 @@ mod tests {
         assert_eq!(sqlite_code_error("999"), None);
     }
 }
+

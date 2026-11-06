@@ -73,11 +73,16 @@ pub struct ConnectorClients {
 }
 
 impl ConnectorClients {
-    pub fn new(endpoints: &[ConnectorEndpoint], tls: TlsConfig) -> anyhow::Result<Self> {
+    pub fn new(
+        endpoints: &[ConnectorEndpoint],
+        tls: TlsConfig,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<Self> {
         let mut clients = HashMap::with_capacity(endpoints.len());
         for endpoint in endpoints {
             let (policy, allow_http) = runtime_policy(endpoint.egress);
-            let client = GuardedClient::with_tls(policy, allow_http, tls.clone())?;
+            let client =
+                GuardedClient::with_tls(policy, allow_http, tls.clone())?.with_timeout(timeout);
             clients.insert(endpoint.id, Arc::new(client));
         }
         Ok(Self { clients })
@@ -449,6 +454,7 @@ mod tests {
                 loopback.clone(),
             ],
             TlsConfig::default(),
+            std::time::Duration::from_secs(10),
         )
         .expect("clients");
 
@@ -499,7 +505,11 @@ mod tests {
         // A budget smaller than the response cap, so one reservation fills it.
         let budget = Arc::new(crate::ByteBudget::new(1024));
         let held = budget.reserve(&endpoint.id, 1024).expect("fill the budget");
-        let clients = ConnectorClients::new(std::slice::from_ref(&endpoint), TlsConfig::default())
+        let clients = ConnectorClients::new(
+            std::slice::from_ref(&endpoint),
+            TlsConfig::default(),
+            std::time::Duration::from_secs(10),
+        )
             .expect("clients");
         let broker = HttpBroker::new(clients, 4 * 1024 * 1024).with_inflight_budget(budget);
 

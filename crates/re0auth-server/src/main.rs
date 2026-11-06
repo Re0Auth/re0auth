@@ -251,10 +251,15 @@ async fn build_data_plane(
     endpoints: Vec<re0auth_api::connector::ConnectorEndpoint>,
     telemetry: Arc<dyn re0auth_api::ports::TelemetrySink>,
 ) -> anyhow::Result<(GatewayService, Option<BindingService>)> {
+    let upstream_timeout = std::time::Duration::from_secs(cfg.timeouts.upstream_secs);
     // One client per connector; the global [tls] flags were already checked as
     // a ceiling in `config::validate`, so they cannot widen a connector here.
     let clients =
-        re0auth_connectors::connector::ConnectorClients::new(&endpoints, cfg.tls.trust_config()?)?;
+        re0auth_connectors::connector::ConnectorClients::new(
+            &endpoints,
+            cfg.tls.trust_config()?,
+            upstream_timeout,
+        )?;
     for endpoint in &endpoints {
         tracing::info!(
             connector = %endpoint.name,
@@ -592,7 +597,7 @@ async fn load_signer(
 }
 
 async fn serve(cfg: config::Config) -> anyhow::Result<()> {
-    let store = Arc::new(SqliteStore::connect(&cfg.database.url).await?);
+    let store = Arc::new(SqliteStore::connect_with(&cfg.database.url, cfg.database.options()).await?);
     sync_connectors(&cfg, &store).await?;
     let clock = Arc::new(SystemClock);
     let signer = Arc::new(load_signer(&cfg, &store, clock.as_ref()).await?);
@@ -625,11 +630,13 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         // Used verbatim: `validate` has already required a non-empty list, because
         // there is no provider-neutral default (see `validate_provider_kind`).
         let scopes = idp.scopes.clone();
+        let upstream_timeout = std::time::Duration::from_secs(cfg.timeouts.upstream_secs);
         let http = GuardedClient::with_tls(
             cfg.tls.policy(),
             cfg.tls.allow_loopback,
             cfg.tls.trust_config()?,
-        )?;
+        )?
+        .with_timeout(upstream_timeout);
         tracing::info!(trust = %http.trust().describe(), "outbound TLS trust");
         // INV-NOLOG-01: startup logging prints counts and issuer names only, never
         // tokens, cookies, passwords or sub-credential plaintext.
@@ -712,7 +719,9 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         )
         // INV-RATE-01: an empty list means the header is never trusted, which is
         // the only safe default for a directly exposed instance.
-        .with_trusted_proxies(trusted_proxies(&cfg)?);
+        .with_trusted_proxies(trusted_proxies(&cfg)?)
+        // 慢客户端不能无限期占着连接；超时返回 408。
+        .with_request_timeout(std::time::Duration::from_secs(cfg.timeouts.request_secs));
 
     // B1: the admin surface shares the storage, clock and hasher with the rest
     // of the server, and gets the same cache so a killswitch revoke can

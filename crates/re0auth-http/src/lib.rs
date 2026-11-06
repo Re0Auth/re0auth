@@ -18,6 +18,7 @@ mod static_assets;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
@@ -25,6 +26,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware;
 use axum::response::Response;
 use axum::routing::{delete, get, patch, post};
+use tower_http::timeout::TimeoutLayer;
 use re0auth_app::admin_service::AdminService;
 use re0auth_app::auth::AuthService;
 use re0auth_app::gateway::GatewayService;
@@ -78,6 +80,8 @@ pub struct AppState {
     /// Empty means "never trust the header", which is the correct default for a
     /// directly exposed instance.
     pub trusted_proxies: Vec<client_address::ProxyRange>,
+    /// 单请求处理上限，超时返回 408。
+    pub request_timeout: Duration,
 }
 
 impl AppState {
@@ -92,7 +96,14 @@ impl AppState {
             rate: Arc::new(re0auth_api::rate::Unlimited),
             inbound_body_bytes: DEFAULT_INBOUND_BODY_BYTES,
             trusted_proxies: Vec::new(),
+            request_timeout: Duration::from_secs(30),
         }
+    }
+
+    #[must_use]
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 
     #[must_use]
@@ -139,6 +150,7 @@ impl AppState {
 
 pub fn router(state: AppState) -> Router {
     let inbound_body_bytes = state.inbound_body_bytes;
+    let request_timeout = state.request_timeout;
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         // INV-READY-01: readiness means "can serve requests", not "process is
@@ -214,6 +226,11 @@ pub fn router(state: AppState) -> Router {
         // out made `limits.inbound_body_bytes` a knob that changed nothing.
         .layer(DefaultBodyLimit::max(inbound_body_bytes))
         .layer(middleware::from_fn(request_id::layer))
+        // 最外层：连读 body 也计时
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            request_timeout,
+        ))
         .with_state(state)
 }
 

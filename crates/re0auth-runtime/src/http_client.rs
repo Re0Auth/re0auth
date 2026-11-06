@@ -35,6 +35,9 @@ pub struct RawResponse {
 // INV-RES-01: one upstream response is capped at 4 MiB, raw included.
 const DEFAULT_MAX_BODY: usize = 4 * 1024 * 1024;
 
+/// 单次上游调用的默认上限；可被配置覆盖。
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The longest an upstream `Retry-After` is allowed to hold us.
 ///
 /// The header is untrusted input, and it is mirrored to our own callers as
@@ -94,6 +97,7 @@ pub struct GuardedClient {
     policy: OutboundPolicy,
     allow_http: bool,
     max_body: usize,
+    timeout: Duration,
     trust: TrustSummary,
     /// One client per host, keyed with the IP it is pinned to.
     ///
@@ -160,6 +164,7 @@ impl GuardedClient {
             policy,
             allow_http,
             max_body: DEFAULT_MAX_BODY,
+            timeout: DEFAULT_TIMEOUT,
             trust,
             clients: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -168,6 +173,13 @@ impl GuardedClient {
     #[must_use]
     pub fn trust(&self) -> TrustSummary {
         self.trust
+    }
+
+    /// 覆盖单次上游调用的超时；默认 10 秒。
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Resolves, vets, then pins the chosen address so DNS cannot be rebound
@@ -212,7 +224,7 @@ impl GuardedClient {
         }
 
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(self.timeout)
             .redirect(reqwest::redirect::Policy::none())
             // 系统代理会让 DNS 钉住失效，必须显式关掉
             .no_proxy()

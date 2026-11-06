@@ -7,6 +7,16 @@ trusted_proxies = []
 [database]
 url = "sqlite:///app/data/re0auth.db"
 
+# SQLite 调优。省略即用下列默认值。
+# synchronous = "normal"
+# cache_size_mb = 16
+# mmap_size_mb = 64
+# pool_size = 5
+
+# [timeouts]
+# request_secs = 30
+# upstream_secs = 10
+
 [crypto]
 master_key_file = "/app/data/keys/master.key"
 master_key_version = 1

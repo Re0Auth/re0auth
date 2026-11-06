@@ -10,6 +10,20 @@ trusted_proxies = []
 [database]
 url = "sqlite://data/re0auth.db"
 
+# SQLite 调优。省略即用下列默认值。
+# synchronous：WAL 下 normal 只可能在崩溃时丢掉最后几个事务，不会损坏库。
+# cache_size_mb / mmap_size_mb：页缓存与内存映射大小；mmap_size_mb = 0 关闭。
+# pool_size：连接池上限，单机部署 5 足够。
+# synchronous = "normal"
+# cache_size_mb = 16
+# mmap_size_mb = 64
+# pool_size = 5
+
+# 超时上限。request_secs 超时返回 408；upstream_secs 作用于每一次上游调用。
+# [timeouts]
+# request_secs = 30
+# upstream_secs = 10
+
 [crypto]
 master_key_file = "data/master.key"
 # 当前主密钥版本。轮换时改成 2，把新密钥写入 master_key_file，
