@@ -10,6 +10,11 @@ on:
         description: 版本号，形如 v0.1.0
         required: true
         type: string
+      allow_overwrite:
+        description: 允许覆盖已存在的镜像 tag（仅用于发布重试或回滚）
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -30,6 +35,9 @@ jobs:
 
   validate:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
@@ -55,6 +63,26 @@ jobs:
             exit 1
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # 同一个 vX.Y.Z 指向两份二进制时，升级与回滚都会失去意义：
+      # 引用该版本的人拿到的内容取决于拉取时间。已存在的 tag 一律拒绝，
+      # 只有显式勾选 allow_overwrite（发布重试/回滚）才放行。
+      - name: refuse to reuse a published version
+        if: ${{ !inputs.allow_overwrite }}
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+        run: |
+          set -eu
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          printf '%s' "$CNB_TOKEN" | docker login docker.cnb.cool -u cnb --password-stdin >/dev/null
+          for image in "$GHCR_IMAGE" "$CNB_IMAGE"; do
+            if docker buildx imagetools inspect "$image:$VERSION" >/dev/null 2>&1; then
+              echo "$image:$VERSION 已存在；请提升 workspace.package.version" >&2
+              exit 1
+            fi
+          done
 
   build:
     needs: [ci, validate]
