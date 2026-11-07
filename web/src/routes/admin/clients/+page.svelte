@@ -24,7 +24,6 @@
 	let loading = $state(true);
 	let loadingMore = $state(false);
 	let error = $state('');
-	let notice = $state('');
 
 	let formOpen = $state(false);
 	let editingId = $state<string | null>(null);
@@ -139,7 +138,6 @@
 				);
 				items = items.map((item) => (item.id === updated.id ? updated : item));
 				formOpen = false;
-				notice = '';
 			} else {
 				const created = await apiPost(
 					'/api/admin/clients',
@@ -162,7 +160,10 @@
 				formError = copy.admin.clients.conflict;
 				await load(true);
 			} else {
-				formError = `${copy.admin.clients.updateFailed}${describe(cause)}`;
+				const prefix = editingId
+					? copy.admin.clients.updateFailed
+					: copy.admin.clients.createFailed;
+				formError = `${prefix}${describe(cause)}`;
 			}
 		} finally {
 			saving = false;
@@ -210,9 +211,6 @@
 	<Button type="button" onclick={openCreate}>{copy.admin.clients.newClient}</Button>
 </div>
 
-{#if notice}
-	<Alert class="mt-4 rounded-md"><AlertDescription>{notice}</AlertDescription></Alert>
-{/if}
 {#if error}
 	<Alert variant="destructive" class="mt-4 rounded-md"><AlertDescription>{error}</AlertDescription></Alert>
 {/if}

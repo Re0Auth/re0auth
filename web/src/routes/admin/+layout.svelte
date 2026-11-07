@@ -36,6 +36,7 @@
 	{#if state === 'checking'}
 		<p class="meta mt-4">{copy.admin.checking}</p>
 	{:else if state === 'login'}
+		<h2 class="mt-6 text-lg font-semibold">{copy.admin.loginTitle}</h2>
 		<Alert class="mt-4 rounded-md">
 			<AlertDescription>{copy.admin.loginBody}</AlertDescription>
 		</Alert>
@@ -45,6 +46,7 @@
 			</Button>
 		</div>
 	{:else if state === 'forbidden'}
+		<h2 class="mt-6 text-lg font-semibold">{copy.admin.forbiddenTitle}</h2>
 		<Alert variant="destructive" class="mt-4 rounded-md">
 			<AlertDescription>{copy.admin.forbiddenBody}</AlertDescription>
 		</Alert>
