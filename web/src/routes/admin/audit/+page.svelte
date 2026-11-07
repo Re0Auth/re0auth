@@ -19,6 +19,7 @@
 	let loadingMore = $state(false);
 	let error = $state('');
 	let copiedId = $state('');
+	let copyFailedId = $state('');
 
 	// 时间输入是本地 datetime-local，服务端只要 Unix 秒。
 	let filter = $state({ actor: '', client: '', action: '', tier: '', from: '', to: '' });
@@ -78,7 +79,13 @@
 	}
 
 	async function copyId(id: string): Promise<void> {
-		copiedId = (await copyText(id)) ? id : `${id}:fail`;
+		if (await copyText(id)) {
+			copiedId = id;
+			copyFailedId = '';
+		} else {
+			copyFailedId = id;
+			copiedId = '';
+		}
 	}
 </script>
 
@@ -179,7 +186,7 @@
 									onclick={() => copyId(record.request_id ?? '')}
 								>
 									{record.request_id}
-									{#if copiedId === record.request_id}· {copy.admin.copied}{/if}
+									{#if copiedId === record.request_id}· {copy.admin.copied}{:else if copyFailedId === record.request_id}· {copy.admin.copyFailed}{/if}
 								</button>
 							{/if}
 						</td>
