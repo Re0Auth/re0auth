@@ -1156,10 +1156,11 @@ fn published_error_codes_match_the_code() {
         "only {} implemented codes parsed; the section split broke",
         implemented.len()
     );
+    // An empty planned list is the goal state: every promised code shipped.
+    // The heading check proves the section was read rather than silently skipped.
     assert!(
-        planned.len() >= 3,
-        "only {} planned codes parsed; the section split broke",
-        planned.len()
+        doc.contains("### 8.4"),
+        "the planned-codes section is missing; the document feed broke"
     );
 
     for code in &implemented {

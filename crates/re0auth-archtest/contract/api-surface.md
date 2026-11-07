@@ -10,7 +10,8 @@
 
 | 代码 | HTTP | 触发条件 |
 |---|---|---|
-| `invalid_request` | 400 | 缺少/非法参数，含**未知 `grant_type`** |
+| `invalid_request` | 400 | 缺少或非法参数；缺失 `grant_type` 也在此列 |
+| `unsupported_grant_type` | 400 | 授权类型不受支持（RFC 6749 §5.2 的精确化，非破坏性） |
 | `invalid_client` | 401 | 客户端认证失败；响应带 `WWW-Authenticate: Basic realm="token"` |
 | `invalid_grant` | 400 | 授权码/刷新令牌/设备码无效、过期或已用 |
 | `invalid_scope` | 400 | 请求了未注册的 scope |
@@ -45,7 +46,8 @@
 | `insufficient_scope` | 403 | 令牌或上游 scope 不足 |
 | `binding_required` | 403 | 用户没有该上游的绑定 |
 | `upstream_needs_reauth` | 403 / 401 | 绑定或上游凭据需要重新授权 |
-| `access_denied` | 403 | 绑定已撤销或已过期（**当前不细分两者**） |
+| `access_denied` | 403 | 绑定存在但尚未激活（`pending`） |
+| `binding_revoked` | 403 | 绑定已被撤销；重新授权无用，需要重新连接 |
 | `unknown_connector` | 404 | 未注册的连接器 |
 | `endpoint_not_found` | 404 | 连接器上没有该资源 |
 | `raw_not_allowed` | 403 | 客户端无 `raw_access`，或令牌缺 `<connector>.raw.read` scope（INV-RAW-01 双闸门） |
@@ -64,18 +66,17 @@
 
 401 与 403 分开：401 表示 token 无效/过期（密码学上无法验证），403 表示 token 有效但权限不足。**混用会导致"重授权 → 仍然 403 → 再重授权"的死循环。**
 
-`upstream_needs_reauth` 与 `access_denied` 的区别：前者表示**需要用户重新授权**才能恢复；后者表示绑定已被撤销或过期，重新授权不解决问题，需要重新绑定。因为当前 `BindingInactive` 同时覆盖 revoked 与 expired，两者共用 `access_denied`；细分推迟。
+`upstream_needs_reauth`、`binding_revoked` 与 `access_denied` 的区别：前者表示**需要用户重新授权**才能恢复；`binding_revoked` 表示绑定已被撤销，重新授权不解决问题，必须重新连接（`binding_required` 则是从未连过）；`access_denied` 只覆盖尚未激活的 `pending` 绑定。三者的修复动作不同，混用会把用户送进「重授权 → 仍然 403」的死循环。
 
 ### 8.4 规划中、尚未实现的错误码
 
 以下代码**不在当前契约内**，出现任何一个是 bug：
 
-| 代码 | 状态 | 依赖 |
+| 代码 | 状态 | 说明 |
 |---|---|---|
-| `binding_revoked` | 未实现 | 见 §8.3 的 `access_denied` 说明 |
-| `unsupported_grant_type` | 未实现 | 未知 `grant_type` 目前报 `invalid_request`（RFC 6749 允许，但不够精确） |
-| `unsupported_token_type` | 未实现 | 仅吊销 access token；refresh token 的清走 `/api/me/authorizations` 或会话登出 |
+| `unsupported_token_type` | 已结案，不实现 | RFC 7009 §2.2.1 要求「无法用提示定位时必须扩展到所有令牌类型检索」。本服务同时支持 access 与 refresh 的吊销，「服务不支持该令牌类型」的场景为零；若对未知提示返回 400，反而违反该 MUST，并把常见的 `urn:ietf:params:oauth:token-type:refresh_token` 写法从成功变成回归。`/oauth/revoke` 只解析 `token_type_hint`，从不据它拒绝。 |
 
+`binding_revoked` 与 `unsupported_grant_type` 已实现，见 §8.2 / §8.3。
 补实现时必须同时更新本节与 §8.2/§8.3，不允许只改代码。
 
 ## 9. Header、分页、版本

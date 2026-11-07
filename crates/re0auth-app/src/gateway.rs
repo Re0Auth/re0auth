@@ -61,6 +61,8 @@ pub enum GatewayError {
     BindingNeedsReauth,
     #[error("binding is not active")]
     BindingInactive,
+    #[error("binding has been revoked")]
+    BindingRevoked,
     #[error("connector not registered")]
     ConnectorNotFound,
     #[error("resource not registered on this connector")]
@@ -97,6 +99,7 @@ impl GatewayError {
             Self::BindingRequired => "binding_required",
             Self::BindingNeedsReauth => "upstream_needs_reauth",
             Self::BindingInactive => "access_denied",
+            Self::BindingRevoked => "binding_revoked",
             Self::ConnectorNotFound => "unknown_connector",
             Self::UnknownResource => "endpoint_not_found",
             Self::RawNotAllowed => "raw_not_allowed",
@@ -268,7 +271,9 @@ impl GatewayService {
         match binding.status {
             BindingStatus::Active => {}
             BindingStatus::NeedsReauth => return Err(GatewayError::BindingNeedsReauth),
-            _ => return Err(GatewayError::BindingInactive),
+            BindingStatus::Revoked => return Err(GatewayError::BindingRevoked),
+            // 生产不创建 pending，保留旧码避免误报
+            BindingStatus::Pending => return Err(GatewayError::BindingInactive),
         }
 
         let subject = GatewayRequest::subject_for(&binding)?;

@@ -651,6 +651,11 @@ fn gateway_errors_map_to_client_facing_statuses() {
             "access_denied",
         ),
         (
+            GatewayError::BindingRevoked,
+            StatusCode::FORBIDDEN,
+            "binding_revoked",
+        ),
+        (
             GatewayError::InvalidRequest("bad"),
             StatusCode::BAD_REQUEST,
             "invalid_request",

@@ -18,7 +18,10 @@ use crate::parsers::{bearer_token, client_credentials, parse_client_id, session_
 use crate::rate::charge_unauthenticated;
 use crate::request_id;
 use crate::routes::session::{login_redirect, require_csrf, session_context_from_headers};
-use crate::{ApiError, AppState, Shape, auth_error, invalid_request, no_store, oauth_error};
+use crate::{
+    ApiError, AppState, Shape, auth_error, invalid_request, no_store, oauth_error,
+    unsupported_grant_type,
+};
 
 pub(crate) async fn discovery(State(state): State<AppState>) -> impl IntoResponse {
     let issuer = state.oauth.issuer();
@@ -309,7 +312,7 @@ pub(crate) async fn token(
                 .await
                 .map_err(|error| oauth_error(error, Shape::Rfc6749))?
         }
-        Some(_) => return Err(invalid_request("unsupported grant_type", Shape::Rfc6749)),
+        Some(_) => return Err(unsupported_grant_type(Shape::Rfc6749)),
         None => return Err(invalid_request("grant_type is required", Shape::Rfc6749)),
     };
 
@@ -342,6 +345,9 @@ pub(crate) struct RevokeForm {
     token: Option<String>,
     client_id: Option<String>,
     client_secret: Option<String>,
+    /// RFC 7009：未知提示须忽略并扩大检索
+    #[serde(rename = "token_type_hint")]
+    _token_type_hint: Option<String>,
 }
 
 /// RFC 7009 revocation endpoint.

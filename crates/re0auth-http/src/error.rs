@@ -23,7 +23,7 @@ pub(crate) fn gateway_error(error: GatewayError) -> ApiError {
     let status = match &error {
         GatewayError::InsufficientScope => StatusCode::FORBIDDEN,
         GatewayError::BindingRequired | GatewayError::BindingNeedsReauth => StatusCode::FORBIDDEN,
-        GatewayError::BindingInactive => StatusCode::FORBIDDEN,
+        GatewayError::BindingInactive | GatewayError::BindingRevoked => StatusCode::FORBIDDEN,
         GatewayError::InvalidRequest(_) | GatewayError::InvalidResource(_) => {
             StatusCode::BAD_REQUEST
         }
@@ -214,6 +214,15 @@ impl IntoResponse for ApiError {
 
 pub(crate) fn invalid_request(description: &'static str, shape: Shape) -> ApiError {
     shape.response(StatusCode::BAD_REQUEST, "invalid_request", description)
+}
+
+/// RFC 6749 §5.2 的精确码：请求本身合法，只是授权类型不支持
+pub(crate) fn unsupported_grant_type(shape: Shape) -> ApiError {
+    shape.response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_grant_type",
+        "the grant type is not supported",
+    )
 }
 
 /// Renders an `OAuthError` in the shape the calling lane uses.

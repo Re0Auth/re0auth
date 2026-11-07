@@ -929,7 +929,7 @@ async fn a_revoked_binding_never_receives_a_cached_payload() {
         .await
         .expect_err("a revoked binding must not be served from cache");
     assert!(
-        matches!(error, GatewayError::BindingInactive),
+        matches!(error, GatewayError::BindingRevoked),
         "got {error:?} instead of a binding refusal — the cache was read first"
     );
 }

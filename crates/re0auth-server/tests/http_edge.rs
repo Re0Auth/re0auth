@@ -634,7 +634,12 @@ async fn token_rejects_unknown_and_incomplete_grants() {
         form(&[("client_id", &client), ("grant_type", "magic")]),
     )
     .await;
-    assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_request");
+    assert_api(
+        status,
+        &body,
+        StatusCode::BAD_REQUEST,
+        "unsupported_grant_type",
+    );
 
     let (status, body, _) = post(
         &app,
@@ -2241,6 +2246,91 @@ async fn revoking_a_token_requires_it_to_belong_to_the_caller() {
     assert!(
         body.contains("invalid_grant"),
         "revoked refresh token must fail as invalid_grant: {body}"
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_token_type_hint_is_ignored_and_the_token_is_still_revoked() {
+    let app = app().await;
+    let code = "revoke-hint-code";
+    let verifier = "verifier-revoke-hint-0123456789-abcdefghijkl";
+    let challenge = re0auth_domain::pkce::challenge_s256(verifier);
+    let now = app.clock.now();
+    app.store
+        .auth_codes()
+        .insert(
+            &re0auth_api::ports::AuthCode {
+                id: re0auth_api::AuthCodeId::new(),
+                code_hash: re0auth_app::oauth::hash_secret(code),
+                client_id: app.confidential.id,
+                user_id: app.user_id,
+                redirect_uri: "https://client.example/callback".to_string(),
+                scopes: vec!["openid".to_string()],
+                code_challenge: Some(challenge),
+                code_challenge_method: Some("S256".to_string()),
+                nonce: None,
+                created_at: now,
+                expires_at: now + 600,
+                consumed_at: None,
+                family_id: None,
+            },
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::AuthCodeIssued,
+                now,
+                format!("client:{}", app.confidential.id.0),
+            ),
+        )
+        .await
+        .expect("seed code");
+    grant_consent(&app, app.confidential.id, &["openid"]).await;
+
+    let (status, body, _) = post(
+        &app,
+        "/oauth/token",
+        form(&[
+            ("client_id", app.confidential.id.0.to_string().as_str()),
+            ("client_secret", CONFIDENTIAL_SECRET),
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", "https://client.example/callback"),
+            ("code_verifier", verifier),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let payload: Value = serde_json::from_str(&body).expect("token json");
+    let access = payload["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+
+    // RFC 7009 §2.2.1：未知提示必须忽略并扩大检索，不得据此拒绝
+    let (status, _, _) = post(
+        &app,
+        "/oauth/revoke",
+        form(&[
+            ("token", access.as_str()),
+            ("client_id", app.confidential.id.0.to_string().as_str()),
+            ("client_secret", CONFIDENTIAL_SECRET),
+            ("token_type_hint", "urn:ietf:params:oauth:token-type:bogus"),
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _, _) = send(
+        &app,
+        Request::builder()
+            .uri("/userinfo")
+            .header(header::AUTHORIZATION, format!("Bearer {access}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an unknown hint must not stop the revocation"
     );
 }
 
