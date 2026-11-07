@@ -255,7 +255,7 @@
 						class="h-9 shrink-0 rounded-sm px-3 text-sm text-fg-2 hover:border-danger/40 hover:text-danger"
 						type="button"
 						disabled={revoking === authorization.client_id}
-						aria-label={`copy.account.revokeLabel(authorization.client_name)`}
+						aria-label={copy.account.revokeLabel(authorization.client_name)}
 						onclick={() => revoke(authorization.client_id)}
 					>
 						{copy.account.revoke}
@@ -299,7 +299,7 @@
 							class="h-9 shrink-0 rounded-sm px-3 text-sm text-fg-2 hover:border-danger/40 hover:text-danger"
 							type="button"
 							disabled={unbinding === binding.id}
-							aria-label={`copy.account.unbindLabel(binding.connector)`}
+							aria-label={copy.account.unbindLabel(binding.connector)}
 							onclick={() => unlink(binding.id)}
 						>
 							{copy.account.unbind}
@@ -338,7 +338,7 @@
 							class="h-9 shrink-0 rounded-sm px-3 text-sm"
 							type="button"
 							disabled={connecting === upstream}
-							aria-label={`copy.account.connectLabel(upstream)`}
+							aria-label={copy.account.connectLabel(upstream)}
 							onclick={() => connect(upstream)}
 						>
 							<Plus size={15} aria-hidden="true" />
