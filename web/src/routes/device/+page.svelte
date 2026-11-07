@@ -8,13 +8,14 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
 	import { fetchProviders, readQuery, type Provider } from '#lib/api.ts';
+	import { copy } from '#lib/copy.ts';
 
 	// Matches `USER_CODE_ALPHABET` in the backend: I, O, 0 and 1 are excluded
 	// because they are the pairs people misread. Accepting them here would only
 	// spend a round trip to be told the code does not exist.
 	const codeSchema = z
 		.string()
-		.regex(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/, '请输入形如 ABCD-EFGH 的设备码。');
+		.regex(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/, copy.device.codeFormat);
 
 	let code = $state('');
 	let error = $state('');
@@ -39,7 +40,7 @@
 			providers = await fetchProviders();
 			provider = providers.length === 1 ? (providers[0]?.name ?? '') : '';
 		} catch {
-			providerError = '无法读取登录方式，请稍后重试。';
+			providerError = copy.device.providersUnavailable;
 		} finally {
 			providersLoading = false;
 		}
@@ -55,15 +56,15 @@
 		if (submitting || providersLoading) return;
 		const parsed = codeSchema.safeParse(normalize(code));
 		if (!parsed.success) {
-			error = parsed.error.issues[0]?.message ?? '设备码格式不正确。';
+			error = parsed.error.issues[0]?.message ?? copy.device.codeInvalid;
 			return;
 		}
 		if (providers.length === 0) {
-			error = '当前未配置登录方式，请联系站点管理员。';
+			error = copy.device.noProviders;
 			return;
 		}
 		if (providers.length > 1 && !provider) {
-			error = '请选择登录方式。';
+			error = copy.device.providerRequired;
 			return;
 		}
 		error = '';
@@ -75,11 +76,11 @@
 </script>
 
 <AuthLayout
-	title="批准设备"
-	subtitle="输入设备上显示的代码。登录后确认授权，设备即可访问你的账号。"
+	title={copy.device.title}
+	subtitle={copy.device.subtitle}
 >
 	<form onsubmit={submit}>
-		<Label class="mb-1.5 block" for="user-code">设备码</Label>
+		<Label class="mb-1.5 block" for="user-code">{copy.device.codeLabel}</Label>
 		<Input
 			id="user-code"
 			class="mono h-11 rounded-sm"
@@ -97,15 +98,15 @@
 			}}
 		/>
 		{#if providers.length > 1}
-			<Label class="mt-4 mb-1.5 block" for="provider">登录方式</Label>
+			<Label class="mt-4 mb-1.5 block" for="provider">{copy.device.providerLabel}</Label>
 			<select id="provider" class="input" bind:value={provider}>
-				<option value="">请选择登录方式</option>
+				<option value="">{copy.device.providerPlaceholder}</option>
 				{#each providers as item (item.name)}
 					<option value={item.name}>{item.display_name}</option>
 				{/each}
 			</select>
 		{/if}
-		<p class="field-hint">代码通常显示在设备或机器人应用中，登录后请根据你的需要，再次确认权限。</p>
+		<p class="field-hint">{copy.device.hint}</p>
 		<div class="auth-actions">
 			<Button
 				class="h-11 w-full rounded-sm"
@@ -113,7 +114,7 @@
 				disabled={submitting || providersLoading}
 			>
 				<KeyRound size={16} aria-hidden="true" />
-				继续
+				{copy.device.submit}
 				<ArrowRight size={16} aria-hidden="true" />
 			</Button>
 		</div>
@@ -126,7 +127,7 @@
 		</Alert>
 		<div class="auth-actions">
 			<Button variant="outline" class="h-11 w-full rounded-sm" type="button" onclick={loadProviders}>
-				重试
+				{copy.common.retry}
 			</Button>
 		</div>
 	{/if}

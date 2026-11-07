@@ -59,6 +59,17 @@ pub enum UserRole {
     Admin,
 }
 
+impl UserRole {
+    /// 对外的稳定字符串；前端与文档都按这两个值判断
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Admin => "admin",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientStatus {
     Pending,

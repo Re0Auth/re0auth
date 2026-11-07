@@ -170,6 +170,8 @@ pub struct MeView {
 pub struct MeUserView {
     pub id: String,
     pub display_name: String,
+    /// 仅供界面决定是否显示管理入口，鉴权仍由服务端判定
+    pub role: &'static str,
 }
 
 pub(crate) async fn me(
@@ -186,6 +188,7 @@ pub(crate) async fn me(
         user: MeUserView {
             id: context.user.id.0.to_string(),
             display_name: context.user.display_name,
+            role: context.user.role.as_str(),
         },
         csrf_token: csrf,
     };

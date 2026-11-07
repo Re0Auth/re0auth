@@ -107,6 +107,7 @@ fn me_response_matches_the_spa_schema() {
         user: MeUserView {
             id: "user-id".to_string(),
             display_name: "Alice".to_string(),
+            role: "admin",
         },
         csrf_token: "csrf".to_string(),
     };
@@ -221,5 +222,151 @@ fn the_parser_rejects_a_shape_it_does_not_understand() {
     assert!(
         result.is_err(),
         "a missing schema must panic, not return empty"
+    );
+}
+
+// ---- 管理后台视图 --------------------------------------------------------
+// 管理界面是 B11 新加的消费方；字段同样由闸门钉住，改名会红。
+
+#[test]
+fn admin_client_matches_the_spa_schema() {
+    use re0auth_app::admin_service::{AdminClientView, Page};
+
+    let view = AdminClientView {
+        id: "client".to_string(),
+        name: "Bot".to_string(),
+        redirect_uris: vec!["https://bot.example/cb".to_string()],
+        allowed_scopes: vec!["openid".to_string()],
+        raw_access: false,
+        status: "approved",
+        has_secret: true,
+        created_at: 1,
+        updated_at: 2,
+    };
+    let json = serde_json::to_value(&view).expect("serialise");
+    assert_matches("adminClientSchema", &json);
+
+    let page = Page {
+        items: vec![view],
+        next_cursor: Some("next".to_string()),
+    };
+    assert_matches(
+        "adminClientPageSchema",
+        &serde_json::to_value(&page).expect("serialise page"),
+    );
+}
+
+#[test]
+fn admin_user_matches_the_spa_schema() {
+    use re0auth_app::admin_service::AdminUserView;
+
+    let view = AdminUserView {
+        id: "user".to_string(),
+        display_name: "Alice".to_string(),
+        role: "admin",
+        created_at: 1,
+        updated_at: 2,
+    };
+    assert_matches(
+        "adminUserSchema",
+        &serde_json::to_value(&view).expect("serialise"),
+    );
+}
+
+#[test]
+fn admin_connector_matches_the_spa_schema() {
+    use re0auth_app::admin_service::{AdminConnectorView, AdminResourceView, Page};
+
+    let view = AdminConnectorView {
+        id: "connector".to_string(),
+        name: "phihub".to_string(),
+        base_url: "https://upstream.example".to_string(),
+        allow_private_net: false,
+        allow_link_local_metadata: false,
+        resources: vec![AdminResourceView {
+            name: "save".to_string(),
+            path: "/get/cloud/saves".to_string(),
+            scope: "phihub.save.read".to_string(),
+            method: "GET",
+            idempotent: true,
+        }],
+    };
+    let json = serde_json::to_value(&view).expect("serialise");
+    assert_matches("adminConnectorSchema", &json);
+    assert_matches("adminResourceSchema", &json["resources"][0]);
+
+    let page = Page {
+        items: vec![view],
+        next_cursor: None,
+    };
+    assert_matches(
+        "adminConnectorPageSchema",
+        &serde_json::to_value(&page).expect("serialise page"),
+    );
+}
+
+#[test]
+fn admin_binding_matches_the_spa_schema() {
+    use re0auth_app::admin_service::AdminBindingView;
+
+    let view = AdminBindingView {
+        id: "binding".to_string(),
+        user_id: "user".to_string(),
+        connector: "phihub".to_string(),
+        upstream_user_id: "1502788182".to_string(),
+        status: "active",
+        created_at: 1,
+        updated_at: 2,
+        last_refreshed_at: Some(2),
+        last_error_code: None,
+    };
+    assert_matches(
+        "adminBindingSchema",
+        &serde_json::to_value(&view).expect("serialise"),
+    );
+}
+
+#[test]
+fn admin_audit_matches_the_spa_schema() {
+    use re0auth_app::admin_service::AdminAuditView;
+
+    let view = AdminAuditView {
+        id: "audit".to_string(),
+        occurred_at: 1,
+        actor_user_id: None,
+        client_id: None,
+        action: "binding_revoked",
+        target: "binding:1".to_string(),
+        outcome: "success",
+        severity: "info",
+        request_id: None,
+        tier: "fact",
+        detail: "revoked".to_string(),
+    };
+    assert_matches(
+        "adminAuditSchema",
+        &serde_json::to_value(&view).expect("serialise"),
+    );
+}
+
+#[test]
+fn one_time_secrets_match_the_spa_schema() {
+    use re0auth_app::admin_service::{CreatedClientView, RotatedSecretView};
+
+    assert_matches(
+        "createdClientSchema",
+        &serde_json::to_value(&CreatedClientView {
+            id: "client".to_string(),
+            secret: Some("secret".to_string()),
+        })
+        .expect("serialise"),
+    );
+    assert_matches(
+        "rotatedSecretSchema",
+        &serde_json::to_value(&RotatedSecretView {
+            id: "client".to_string(),
+            secret: "secret".to_string(),
+        })
+        .expect("serialise"),
     );
 }

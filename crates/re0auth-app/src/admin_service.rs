@@ -377,7 +377,7 @@ impl AdminService {
         Ok(AdminUserView {
             id: user.id.0.to_string(),
             display_name: user.display_name,
-            role: role_str(role),
+            role: role.as_str(),
             created_at: user.created_at,
             updated_at: now,
         })
@@ -559,13 +559,6 @@ fn page<T>(items: Vec<T>, limit: u32, cursor_of: impl Fn(&T) -> String) -> Page<
     Page { items, next_cursor }
 }
 
-fn role_str(role: UserRole) -> &'static str {
-    match role {
-        UserRole::Admin => "admin",
-        UserRole::User => "user",
-    }
-}
-
 fn client_status_str(status: ClientStatus) -> &'static str {
     match status {
         ClientStatus::Pending => "pending",
@@ -603,7 +596,7 @@ fn user_view(user: User) -> AdminUserView {
     AdminUserView {
         id: user.id.0.to_string(),
         display_name: user.display_name,
-        role: role_str(user.role),
+        role: user.role.as_str(),
         created_at: user.created_at,
         updated_at: user.updated_at,
     }

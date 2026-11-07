@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { copy } from '#lib/copy.ts';
 
 export class ApiError extends Error {
 	status: number;
@@ -51,7 +52,9 @@ export const consentResultSchema = z.object({
 
 export const userSchema = z.object({
 	id: z.string(),
-	display_name: z.string()
+	display_name: z.string(),
+	// 仅用于决定是否显示管理入口；真正的权限由服务端判定
+	role: z.enum(['user', 'admin'])
 });
 
 export const meSchema = z.object({
@@ -93,6 +96,115 @@ export const bindingRevocationSchema = z.object({
 	revoked: z.number().int().nonnegative()
 });
 
+// ---- 管理 API -----------------------------------------------------------
+// 字段与 re0auth_app::admin_service 的视图一一对应：
+// archtest 的 *_matches_the_spa_schema 会逐字段比对，改名会红。
+
+export const adminClientSchema = z.object({
+	id: z.string(),
+	name: z.string(),
+	redirect_uris: z.array(z.string()),
+	allowed_scopes: z.array(z.string()),
+	raw_access: z.boolean(),
+	status: z.string(),
+	has_secret: z.boolean(),
+	created_at: z.number().int().nonnegative(),
+	updated_at: z.number().int().nonnegative()
+});
+
+export const adminClientPageSchema = z.object({
+	items: z.array(adminClientSchema),
+	next_cursor: z.string().nullable()
+});
+
+export const createdClientSchema = z.object({
+	id: z.string(),
+	secret: z.string().nullable()
+});
+
+export const rotatedSecretSchema = z.object({
+	id: z.string(),
+	secret: z.string()
+});
+
+export const adminUserSchema = z.object({
+	id: z.string(),
+	display_name: z.string(),
+	role: z.string(),
+	created_at: z.number().int().nonnegative(),
+	updated_at: z.number().int().nonnegative()
+});
+
+export const adminUserPageSchema = z.object({
+	items: z.array(adminUserSchema),
+	next_cursor: z.string().nullable()
+});
+
+export const adminResourceSchema = z.object({
+	name: z.string(),
+	path: z.string(),
+	scope: z.string(),
+	method: z.string(),
+	idempotent: z.boolean()
+});
+
+export const adminConnectorSchema = z.object({
+	id: z.string(),
+	name: z.string(),
+	base_url: z.string(),
+	allow_private_net: z.boolean(),
+	allow_link_local_metadata: z.boolean(),
+	resources: z.array(adminResourceSchema)
+});
+
+export const adminConnectorPageSchema = z.object({
+	items: z.array(adminConnectorSchema),
+	next_cursor: z.string().nullable()
+});
+
+export const adminBindingSchema = z.object({
+	id: z.string(),
+	user_id: z.string(),
+	connector: z.string(),
+	upstream_user_id: z.string(),
+	status: z.string(),
+	created_at: z.number().int().nonnegative(),
+	updated_at: z.number().int().nonnegative(),
+	last_refreshed_at: z.number().int().nonnegative().nullable(),
+	last_error_code: z.string().nullable()
+});
+
+export const adminBindingPageSchema = z.object({
+	items: z.array(adminBindingSchema),
+	next_cursor: z.string().nullable()
+});
+
+export const adminAuditSchema = z.object({
+	id: z.string(),
+	occurred_at: z.number().int().nonnegative(),
+	actor_user_id: z.string().nullable(),
+	client_id: z.string().nullable(),
+	action: z.string(),
+	target: z.string(),
+	outcome: z.string(),
+	severity: z.string(),
+	request_id: z.string().nullable(),
+	tier: z.string(),
+	detail: z.string()
+});
+
+export const adminAuditPageSchema = z.object({
+	items: z.array(adminAuditSchema),
+	next_cursor: z.string().nullable()
+});
+
+export type AdminClient = z.infer<typeof adminClientSchema>;
+export type AdminUser = z.infer<typeof adminUserSchema>;
+export type AdminConnector = z.infer<typeof adminConnectorSchema>;
+export type AdminBinding = z.infer<typeof adminBindingSchema>;
+export type AdminAudit = z.infer<typeof adminAuditSchema>;
+
+
 export type Me = z.infer<typeof meSchema>;
 export type Authorization = z.infer<typeof authorizationSchema>;
 export type Binding = z.infer<typeof bindingSchema>;
@@ -123,7 +235,7 @@ function csrfToken(): string | null {
 
 async function decodeError(response: Response): Promise<ApiError> {
 	let code = `http_${response.status}`;
-	let message = response.statusText || '请求失败';
+	let message = response.statusText || copy.errors.requestFailed;
 	try {
 		const body = await response.json();
 		const oauth = oauthErrorSchema.safeParse(body);
@@ -159,14 +271,14 @@ export async function apiGet<T>(path: string, schema: z.ZodType<T>): Promise<T> 
 function requireCsrf(): string {
 	const csrf = csrfToken();
 	if (!csrf) {
-		throw new ApiError(401, 'missing_csrf', '缺少 CSRF 凭据，请重新登录。');
+		throw new ApiError(401, 'missing_csrf', copy.errors.missingCsrf);
 	}
 	return csrf;
 }
 
 async function send(
 	path: string,
-	method: 'POST' | 'DELETE',
+	method: 'POST' | 'PATCH' | 'DELETE',
 	body?: unknown
 ): Promise<Response> {
 	const headers: Record<string, string> = {
@@ -200,6 +312,15 @@ export async function apiPost<T>(
 export async function apiPostNoContent(path: string, body?: unknown): Promise<void> {
 	const response = await send(path, 'POST', body);
 	await response.body?.cancel();
+}
+
+export async function apiPatch<T>(
+	path: string,
+	body: unknown,
+	schema: z.ZodType<T>
+): Promise<T> {
+	const response = await send(path, 'PATCH', body);
+	return schema.parse(await response.json());
 }
 
 export async function apiDelete(path: string): Promise<void> {

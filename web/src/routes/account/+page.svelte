@@ -25,6 +25,7 @@
 		type Me
 	} from '#lib/api.ts';
 	import { scopeSummary } from '#lib/scopes.ts';
+	import { copy } from '#lib/copy.ts';
 
 	let me = $state<Me | null>(null);
 	let authorizations = $state<Authorization[]>([]);
@@ -167,14 +168,14 @@
 		if (cause instanceof ApiError) {
 			switch (cause.status) {
 				case 403:
-					return '安全校验失败，请刷新页面后重试。';
+					return copy.errors.checkFailed;
 				case 404:
-					return '这条授权已不存在，刷新页面后再试。';
+					return copy.errors.authorizationGone;
 				default:
 					return cause.message;
 			}
 		}
-		return '请求失败，请稍后重试。';
+		return copy.errors.fallback;
 	}
 
 	function formatDate(unix: number): string {
@@ -187,11 +188,11 @@
 	function bindingStatus(status: string): { label: string; hint: string } {
 		switch (status) {
 			case 'active':
-				return { label: '已连接', hint: '' };
+				return copy.account.bindingStatus.active;
 			case 'pending':
-				return { label: '待确认', hint: '游戏账号还没有完成绑定。' };
+				return copy.account.bindingStatus.pending;
 			case 'needs_reauth':
-				return { label: '需要重新授权', hint: '游戏账号的访问凭据已失效，重新绑定后才能读取数据。' };
+				return copy.account.bindingStatus.needsReauth;
 			default:
 				return { label: status, hint: '' };
 		}
@@ -201,9 +202,9 @@
 <PortalLayout>
 	<header class="account-header">
 		<div>
-			<h1 class="auth-title">账号与授权</h1>
+			<h1 class="auth-title">{copy.account.title}</h1>
 			<p class="auth-subtitle">
-				{me ? `${me.user.display_name} 的已授权应用` : '管理已授权应用'}
+				{me ? copy.account.subtitle(me.user.display_name) : copy.account.subtitleFallback}
 			</p>
 		</div>
 		{#if me}
@@ -215,7 +216,7 @@
 				onclick={logoutAll}
 			>
 				<LogOut size={15} aria-hidden="true" />
-				退出所有会话
+				{copy.account.logoutAll}
 			</Button>
 		{/if}
 	</header>
@@ -223,19 +224,19 @@
 	{#if justLoggedIn && me}
 		<Alert class="mt-4 rounded-md">
 			<ShieldCheck />
-			<AlertDescription>登录成功，这是你当前的授权状态。</AlertDescription>
+			<AlertDescription>{copy.account.loggedIn}</AlertDescription>
 		</Alert>
 	{/if}
 
 	{#if loading}
-		<p class="meta">正在加载已授权应用…</p>
+		<p class="meta">{copy.account.loading}</p>
 	{:else if error && !me}
 		<Alert variant="destructive" class="mt-4 rounded-md">
 			<AlertCircle />
 			<AlertDescription>{error}</AlertDescription>
 		</Alert>
 	{:else if authorizations.length === 0}
-		<p class="meta">还没有应用获得授权。下次应用请求访问时会在这里出现。</p>
+		<p class="meta">{copy.account.noAuthorizations}</p>
 	{:else}
 		<div class="account-list">
 			{#each authorizations as authorization (authorization.client_id)}
@@ -247,17 +248,17 @@
 						</div>
 						<p class="auth-row-scopes">{scopeSummary(authorization.scopes)}</p>
 						<p class="scope-name">{authorization.scopes.join(' · ')}</p>
-						<p class="meta">最近授权：{formatDate(authorization.updated_at)}</p>
+						<p class="meta">{copy.account.lastAuthorized(formatDate(authorization.updated_at))}</p>
 					</div>
 					<Button
 						variant="outline"
 						class="h-9 shrink-0 rounded-sm px-3 text-sm text-fg-2 hover:border-danger/40 hover:text-danger"
 						type="button"
 						disabled={revoking === authorization.client_id}
-						aria-label={`撤销 ${authorization.client_name} 的授权`}
+						aria-label={`copy.account.revokeLabel(authorization.client_name)`}
 						onclick={() => revoke(authorization.client_id)}
 					>
-						撤销
+						{copy.account.revoke}
 					</Button>
 				</article>
 			{/each}
@@ -272,9 +273,9 @@
 	{/if}
 
 	<section class="bindings">
-		<h2 class="section-title">已绑定的游戏账号</h2>
+		<h2 class="section-title">{copy.account.bindingsTitle}</h2>
 		{#if bindings.length === 0}
-			<p class="meta">还没有绑定游戏账号。绑定后，授权应用才能读取你的数据。</p>
+			<p class="meta">{copy.account.noBindings}</p>
 		{:else}
 			<div class="account-list">
 				{#each bindings as binding (binding.id)}
@@ -287,7 +288,7 @@
 							</div>
 							<p class="auth-row-scopes">
 								{state.label}{#if binding.last_refreshed_at}
-									· 最近刷新 {formatDate(binding.last_refreshed_at)}{/if}
+									· {copy.account.lastRefreshed(formatDate(binding.last_refreshed_at))}{/if}
 							</p>
 							{#if state.hint}
 								<p class="meta">{state.hint}</p>
@@ -298,10 +299,10 @@
 							class="h-9 shrink-0 rounded-sm px-3 text-sm text-fg-2 hover:border-danger/40 hover:text-danger"
 							type="button"
 							disabled={unbinding === binding.id}
-							aria-label={`解除与 ${binding.connector} 的绑定`}
+							aria-label={`copy.account.unbindLabel(binding.connector)`}
 							onclick={() => unlink(binding.id)}
 						>
-							解除
+							{copy.account.unbind}
 						</Button>
 					</article>
 				{/each}
@@ -317,7 +318,7 @@
 					onclick={unlinkAll}
 				>
 					<Unlink size={16} aria-hidden="true" />
-					解除全部绑定
+					{copy.account.unbindAll}
 				</Button>
 			</div>
 		{/if}
@@ -330,18 +331,18 @@
 								<Link2 size={17} strokeWidth={1.8} aria-hidden="true" />
 								<span>{upstream}</span>
 							</div>
-							<p class="meta">尚未连接，连接后才能读取你在该服务的数据。</p>
+							<p class="meta">{copy.account.notConnected}</p>
 						</div>
 						<Button
 							variant="outline"
 							class="h-9 shrink-0 rounded-sm px-3 text-sm"
 							type="button"
 							disabled={connecting === upstream}
-							aria-label={`连接 ${upstream}`}
+							aria-label={`copy.account.connectLabel(upstream)`}
 							onclick={() => connect(upstream)}
 						>
 							<Plus size={15} aria-hidden="true" />
-							连接
+							{copy.account.connect}
 						</Button>
 					</article>
 				{/each}
@@ -349,5 +350,5 @@
 		{/if}
 	</section>
 
-	<p class="meta"><a href="/">返回首页</a></p>
+	<p class="meta"><a href="/">{copy.account.backHome}</a></p>
 </PortalLayout>

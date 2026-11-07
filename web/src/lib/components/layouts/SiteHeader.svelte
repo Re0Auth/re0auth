@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { KeyRound, Menu, Monitor, Moon, Sun, X } from 'lucide-svelte';
 	import { apiGet, meSchema, type Me } from '#lib/api.ts';
+	import { copy } from '#lib/copy.ts';
 
 	type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -20,9 +21,9 @@
 
 	const themeOrder: ThemeMode[] = ['light', 'dark', 'system'];
 	const themeLabel: Record<ThemeMode, string> = {
-		light: '当前亮色，点击切换到暗色',
-		dark: '当前暗色，点击切换到跟随系统',
-		system: '当前跟随系统，点击切换到亮色'
+		light: copy.site.theme.light,
+		dark: copy.site.theme.dark,
+		system: copy.site.theme.system
 	};
 
 	function applyTheme(next: ThemeMode): void {
@@ -44,17 +45,20 @@
 	<nav class="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
 		<a href="/" class="flex items-center gap-2 text-sm font-semibold text-fg">
 			<KeyRound size={16} strokeWidth={1.8} aria-hidden="true" />
-			Re0Auth
+			{copy.site.name}
 		</a>
 
 		<div class="flex items-center gap-1">
 			<div class="hidden items-center gap-1 sm:flex">
-				<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/about">关于</a>
-				<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/device">批准设备</a>
+				<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/about">{copy.site.nav.about}</a>
+				<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/device">{copy.site.nav.device}</a>
 				{#if me}
-					<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/account">账号与授权</a>
+					<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/account">{copy.site.nav.account}</a>
+					{#if me.user.role === 'admin'}
+						<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/admin">{copy.site.nav.admin}</a>
+					{/if}
 				{:else}
-					<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/login">登录</a>
+					<a class="rounded-sm px-3 py-1.5 text-sm text-fg-2 transition-colors hover:bg-hover hover:text-fg" href="/login">{copy.site.nav.login}</a>
 				{/if}
 			</div>
 
@@ -76,7 +80,7 @@
 			<button
 				class="rounded-sm p-1.5 text-fg-2 transition-colors hover:bg-hover hover:text-fg sm:hidden"
 				type="button"
-				aria-label="菜单"
+				aria-label={copy.site.nav.menu}
 				aria-expanded={open}
 				onclick={() => (open = !open)}
 			>
@@ -87,12 +91,15 @@
 
 	{#if open}
 		<div class="border-t border-border px-4 py-2 sm:hidden">
-			<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/about">关于</a>
-			<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/device">批准设备</a>
+			<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/about">{copy.site.nav.about}</a>
+			<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/device">{copy.site.nav.device}</a>
 			{#if me}
-				<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/account">账号与授权</a>
+				<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/account">{copy.site.nav.account}</a>
+				{#if me.user.role === 'admin'}
+					<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/admin">{copy.site.nav.admin}</a>
+				{/if}
 			{:else}
-				<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/login">登录</a>
+				<a class="block rounded-sm px-2 py-2 text-sm text-fg-2 hover:bg-hover hover:text-fg" href="/login">{copy.site.nav.login}</a>
 			{/if}
 		</div>
 	{/if}

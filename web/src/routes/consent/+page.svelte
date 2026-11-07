@@ -17,6 +17,7 @@
 		type PendingConsent
 	} from '#lib/api.ts';
 	import { scopeDescription } from '#lib/scopes.ts';
+	import { copy } from '#lib/copy.ts';
 
 	let requestId = $state('');
 	let pending = $state<PendingConsent | null>(null);
@@ -45,7 +46,7 @@
 	onMount(async () => {
 		requestId = readQuery('request');
 		if (!requestId) {
-			error = '缺少授权请求参数，请返回发起授权的应用重新开始。';
+			error = copy.consent.missingRequest;
 			loading = false;
 			return;
 		}
@@ -109,16 +110,16 @@
 		if (cause instanceof ApiError) {
 			switch (cause.status) {
 				case 401:
-					return '登录状态已失效，请返回发起授权的应用重新开始。';
+					return copy.consent.sessionExpired;
 				case 403:
-					return '安全校验失败，请刷新页面后重试。';
+					return copy.errors.checkFailed;
 				case 404:
-					return '授权请求不存在或不属于当前登录会话，请返回应用重新发起授权。';
+					return copy.consent.requestNotFound;
 				default:
 					return cause.message;
 			}
 		}
-		return '请求失败，请稍后重试。';
+		return copy.consent.fallback;
 	}
 
 	function scopeLabel(scope: string): string {
@@ -127,13 +128,13 @@
 </script>
 
 <AuthLayout
-	title="确认授权"
-	subtitle={pending ? `${clientName} 请求访问你的 Re0Auth 账号。` : '正在读取授权请求…'}
+	title={copy.consent.title}
+	subtitle={pending ? copy.consent.subtitle(clientName) : copy.consent.loadingRequest}
 >
 	{#if loading}
-		<p class="meta">正在加载…</p>
+		<p class="meta">{copy.consent.loading}</p>
 	{:else if pending}
-		<ul class="scope-list" aria-label="请求的权限范围">
+		<ul class="scope-list" aria-label={copy.consent.scopeList}>
 			{#each pending.scopes as scope}
 				<li class="scope-item">
 					<ShieldCheck size={18} strokeWidth={1.8} aria-hidden="true" />
@@ -149,7 +150,7 @@
 				<AlertCircle />
 				<AlertDescription>
 					<p>
-						授权本身可以完成，但这些权限需要先连接对应的游戏账号才能读取数据：
+						{copy.consent.missingLead}
 						<strong>{pending.missing_bindings.map((item) => item.upstream_id).join('、')}</strong>。
 					</p>
 					<div class="auth-actions">
@@ -162,23 +163,23 @@
 								onclick={() => connect(missing.upstream_id)}
 							>
 								<ShieldCheck size={16} aria-hidden="true" />
-								连接 {missing.upstream_id}
+								{copy.consent.connect(missing.upstream_id)}
 							</Button>
 						{/each}
 					</div>
 					<p class="meta">
-						连接后回到本页继续授权。数据读取时才会校验绑定，未连接不会影响本次授权的完成。
+						{copy.consent.missingNote}
 					</p>
 				</AlertDescription>
 			</Alert>
 		{/if}
 		<p class="meta">
-			授权后将返回 <code>{redirectHost}</code>。请求将在 <code>{expiresAt}</code> 过期。
+			{copy.consent.redirectLead} <code>{redirectHost}</code>{copy.consent.redirectDue} <code>{expiresAt}</code> {copy.consent.redirectExpire}
 		</p>
 		<div class="auth-actions">
 			<Button class="h-11 w-full rounded-sm" type="button" disabled={submitting} onclick={() => decide('approve')}>
 				<Check size={16} aria-hidden="true" />
-				批准
+				{copy.consent.approve}
 			</Button>
 			<Button
 				variant="outline"
@@ -188,7 +189,7 @@
 				onclick={() => decide('deny')}
 			>
 				<X size={16} aria-hidden="true" />
-				拒绝
+				{copy.consent.deny}
 			</Button>
 		</div>
 	{/if}

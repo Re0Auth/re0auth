@@ -11,6 +11,7 @@
 		withLoginFlag,
 		type Provider
 	} from '#lib/api.ts';
+	import { copy } from '#lib/copy.ts';
 
 	let returnTo = $state('/account');
 	let providers = $state<Provider[]>([]);
@@ -28,7 +29,7 @@
 		try {
 			providers = await fetchProviders();
 		} catch {
-			error = '无法读取登录方式，请稍后重试。';
+			error = copy.login.providersUnavailable;
 		} finally {
 			loading = false;
 		}
@@ -41,20 +42,20 @@
 </script>
 
 <AuthLayout
-	title="登录 Re0Auth"
-	subtitle="通过外部身份提供商完成登录"
+	title={copy.login.title}
+	subtitle={copy.login.subtitle}
 >
 	{#if loading}
-		<p class="meta">正在读取登录方式…</p>
+		<p class="meta">{copy.login.loading}</p>
 	{:else if error}
 		<Alert variant="destructive" class="mb-6 rounded-md">
 			<AlertDescription>{error}</AlertDescription>
 		</Alert>
 		<div class="auth-actions">
-			<Button class="h-11 w-full rounded-sm" type="button" onclick={loadProviders}>重试</Button>
+			<Button class="h-11 w-full rounded-sm" type="button" onclick={loadProviders}>{copy.common.retry}</Button>
 		</div>
 	{:else if providers.length === 0}
-		<p class="meta">当前未配置登录方式，请联系站点管理员。</p>
+		<p class="meta">{copy.login.noProviders}</p>
 	{:else if providers.length === 1}
 		<div class="auth-actions">
 			{#each providers as provider (provider.name)}
@@ -63,7 +64,7 @@
 					type="button"
 					onclick={() => login(provider.name)}
 				>
-					继续登录
+					{copy.login.continueWith}
 					<ArrowRight size={16} aria-hidden="true" />
 				</Button>
 			{/each}
@@ -87,9 +88,9 @@
 	{/if}
 	<p class="meta">
 		<ExternalLink size={13} aria-hidden="true" />
-		登录过程会离开 Re0Auth，由外部 IdP 完成身份校验。
+		{copy.login.leaving}
 	</p>
 	<p class="meta">
-		首次登录会创建一个新账号。已经用过其他登录方式的，请继续用同一种，否则会得到两个互不相通的账号。
+		{copy.login.firstTime}
 	</p>
 </AuthLayout>
