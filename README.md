@@ -4,7 +4,7 @@
 
 上游凭据由 Connector 承担（可持有根凭证，只进独立加密存储或内存中转）；内核不存根凭证是工程卫生规则，不是安全承诺（ADR-0041）。
 
-当前状态：可运行的最小后端切片与最小 SvelteKit 静态 SPA。后端包含 SQLite 存储、授权码/同意/刷新/设备流、外部 OIDC 登录、Session/CSRF、一次性设备批准票据与 12 条 `/api/admin/*` 管理接口；前端包含 `/login`、`/consent`、`/device` 与 `/account` 账号授权管理（**管理后台 UI 未做**，见 `docs/BACKLOG.md` B11）。Playwright 浏览器 E2E 覆盖登录、同意、设备批准与绑定上游四条真实路径。
+当前状态：可运行的最小后端切片与最小 SvelteKit 静态 SPA。后端包含 SQLite 存储、授权码/同意/刷新/设备流、外部 OIDC 登录、Session/CSRF、一次性设备批准票据与 12 条 `/api/admin/*` 管理接口；前端包含 `/login`、`/consent`、`/device`、`/account` 账号授权管理与 `/admin` 管理后台（客户端、用户、绑定、审计、连接器）。Playwright 浏览器 E2E 覆盖登录、同意、设备批准、绑定上游与管理后台五条真实路径（6 个用例）。
 
 ## 构建
 
