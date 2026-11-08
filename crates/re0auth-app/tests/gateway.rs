@@ -8,7 +8,9 @@ use re0auth_api::connector::{
     BodyField, BodyValue, ConnectorBroker, ConnectorEndpoint, EgressPolicy, FaultClass,
     ResourceMethod, ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
 };
-use re0auth_api::ports::{Binding, BindingStatus, Storage, TelemetrySink, User, UserRole};
+use re0auth_api::ports::{
+    Binding, BindingStatus, Storage, TelemetrySink, User, UserRole, UserStatus,
+};
 use re0auth_api::secret::SecretSealer;
 use re0auth_api::{BindingId, Clock, ConnectorId, Re0Error, SecretString, UserId};
 use re0auth_app::circuit::{CircuitPolicy, CircuitTracker};
@@ -51,6 +53,7 @@ async fn harness_with_cache(cache: Arc<dyn re0auth_api::cache::Cache>) -> Harnes
         id: UserId::new(),
         display_name: "gateway-user".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: now,
         updated_at: now,
     };
@@ -255,6 +258,20 @@ async fn missing_binding_is_business_and_writes_no_circuit_state() {
     let app = harness().await;
     let other = app.endpoint.id;
     let stranger = UserId::new();
+    // A token always names a real user; the missing thing under test is the
+    // binding, not the account.
+    app.store
+        .users()
+        .create(&User {
+            id: stranger,
+            display_name: "stranger".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            created_at: 1_000,
+            updated_at: 1_000,
+        })
+        .await
+        .expect("stranger");
     let granted = scopes();
     let error = app
         .service
@@ -1183,4 +1200,23 @@ async fn a_non_idempotent_resource_is_never_retried() {
         .await
         .expect_err("a POST that may have taken effect must not be replayed");
     assert_eq!(broker.calls(), 1);
+}
+
+#[tokio::test]
+async fn a_banned_account_is_refused_before_any_upstream_call() {
+    let app = harness().await;
+    app.store
+        .users()
+        .set_status(&app.user.id, UserStatus::Banned, &fact_binding(), 1_000)
+        .await
+        .expect("ban");
+    let granted = scopes();
+    let error = app
+        .service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect_err("banned accounts are refused");
+    assert!(matches!(error, GatewayError::AccountBanned), "{error:?}");
+    assert_eq!(error.code(), "account_banned");
+    assert!(app.connector.calls().is_empty());
 }

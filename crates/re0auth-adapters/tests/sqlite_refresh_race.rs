@@ -36,6 +36,7 @@ async fn concurrent_refresh_rotates_once_and_revokes_the_family() {
         id: UserId::new(),
         display_name: "refresh-race".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: 1_000,
         updated_at: 1_000,
     };
@@ -119,6 +120,7 @@ async fn different_families_refresh_without_false_reuse() {
         id: UserId::new(),
         display_name: "refresh-families".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: 1_000,
         updated_at: 1_000,
     };

@@ -15,6 +15,7 @@ async fn seed_user_and_client(store: &SqliteStore) -> (UserId, ClientId) {
         id: UserId::new(),
         display_name: "audit-user".to_string(),
         role: re0auth_api::ports::UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: 1_000,
         updated_at: 1_000,
     };
@@ -261,6 +262,7 @@ async fn reuse_detection_relabels_the_fact() {
         id: UserId::new(),
         display_name: "reuse".to_string(),
         role: re0auth_api::ports::UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: 1_000,
         updated_at: 1_000,
     };

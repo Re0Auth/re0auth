@@ -342,6 +342,8 @@ struct TestApp {
     router: Router,
     client_id: ClientId,
     mock: MockIdp,
+    /// Kept so a test can act on the account the login created (B15).
+    store: Arc<SqliteStore>,
     _key: KeyGuard,
 }
 
@@ -544,6 +546,7 @@ async fn setup_with_providers(providers: &[(&str, &str)]) -> TestApp {
             .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345)))),
         client_id,
         mock,
+        store: Arc::new(store),
         _key: key,
     }
 }
@@ -1392,4 +1395,73 @@ async fn login_with_idp_redirects_to_the_selected_provider_when_several_exist() 
         location.contains("state="),
         "the selected provider must receive an authorization redirect: {location}"
     );
+}
+
+async fn begin_login(app: &TestApp) -> (String, String) {
+    let login_uri = format!("/auth/login?{}", form(&[("return_to", "/account")]));
+    let response = get_request(app, &login_uri, None).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let intent = login_intent(response.headers());
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("authorization redirect");
+    let authorization = Url::parse(location).expect("authorization url");
+    let query: HashMap<_, _> = authorization.query_pairs().into_owned().collect();
+    *app.mock.nonce.lock().expect("nonce") = query["nonce"].clone();
+    let callback = format!(
+        "/auth/callback?{}",
+        form(&[("code", "test-code"), ("state", query["state"].as_str())])
+    );
+    (intent, callback)
+}
+
+#[tokio::test]
+async fn a_banned_user_loses_the_session_and_cannot_log_in_again() {
+    let app = setup().await;
+    let (intent, callback) = begin_login(&app).await;
+    let response = get_request(&app, &callback, Some(&intent)).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let cookies = set_cookie_names(response.headers());
+    let cookie = cookie_header(&cookies);
+
+    let user = app
+        .store
+        .users()
+        .list(None, 1)
+        .await
+        .expect("list users")
+        .into_iter()
+        .next()
+        .expect("the login created a user");
+    let fact = re0auth_api::audit::SecurityFact::new(
+        re0auth_api::audit::AuditAction::UserBanned,
+        1_000,
+        format!("user:{}", user.id.0),
+    );
+    app.store
+        .users()
+        .set_status(
+            &user.id,
+            re0auth_api::ports::UserStatus::Banned,
+            &fact,
+            1_000,
+        )
+        .await
+        .expect("ban");
+
+    // The status gate refuses the still-open session even though this ban was
+    // written straight to the store; the admin path additionally revokes it.
+    let me = get_request(&app, "/api/me", Some(&cookie)).await;
+    assert_eq!(me.status(), StatusCode::FORBIDDEN);
+    let body: Value = serde_json::from_str(&response_text(me).await).expect("problem json");
+    assert_eq!(body["code"], "account_banned");
+
+    // A fresh login is refused at the callback with a readable page.
+    let (intent, callback) = begin_login(&app).await;
+    let response = get_request(&app, &callback, Some(&intent)).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let html = response_text(response).await;
+    assert!(html.contains("账号已被封禁"), "{html}");
 }

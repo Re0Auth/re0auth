@@ -14,7 +14,7 @@ use re0auth_api::ports::{
     Binding, BindingStatus, Client, ClientRepo, ClientStatus, ConsumeAuthCode, DeviceCode,
     DeviceCodeState, DeviceCodeStatus, Identity, LoginTransaction, LoginTransactionRepo,
     PendingBinding, PendingBindingRepo, RefreshToken, RefreshTokenRepo, RepoError, RepoResult,
-    RotateOutcome, RotateRefreshToken, Session, SessionRepo, User, UserRepo, UserRole,
+    RotateOutcome, RotateRefreshToken, Session, SessionRepo, User, UserRepo, UserRole, UserStatus,
 };
 use re0auth_api::secret::ClientSecretHash;
 use re0auth_api::{
@@ -164,6 +164,18 @@ fn role_from_str(value: &str) -> RepoResult<UserRole> {
     }
 }
 
+fn user_status_to_str(status: UserStatus) -> &'static str {
+    match status {
+        UserStatus::Active => "active",
+        UserStatus::Banned => "banned",
+    }
+}
+
+fn user_status_from_str(value: &str) -> RepoResult<UserStatus> {
+    UserStatus::parse(value)
+        .ok_or_else(|| RepoError::Backend(format!("unknown user status: {value}")))
+}
+
 fn status_to_str(status: BindingStatus) -> &'static str {
     match status {
         BindingStatus::Pending => "pending",
@@ -236,6 +248,7 @@ fn row_to_user(row: &SqliteRow) -> RepoResult<User> {
         )?),
         display_name: row.try_get("display_name").map_err(db_error)?,
         role: role_from_str(&row.try_get::<String, _>("role").map_err(db_error)?)?,
+        status: user_status_from_str(&row.try_get::<String, _>("status").map_err(db_error)?)?,
         created_at: row.try_get("created_at").map_err(db_error)?,
         updated_at: row.try_get("updated_at").map_err(db_error)?,
     })
@@ -417,11 +430,13 @@ fn row_to_binding(row: &SqliteRow) -> RepoResult<Binding> {
 impl UserRepo for SqliteStore {
     async fn create(&self, user: &User) -> RepoResult<()> {
         sqlx::query(
-            "INSERT INTO users (id, display_name, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO users (id, display_name, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(user.id.0.to_string())
         .bind(&user.display_name)
         .bind(role_to_str(user.role))
+        .bind(user_status_to_str(user.status))
         .bind(user.created_at)
         .bind(user.updated_at)
         .execute(&self.pool)
@@ -432,7 +447,7 @@ impl UserRepo for SqliteStore {
 
     async fn get(&self, id: &UserId) -> RepoResult<Option<User>> {
         let row = sqlx::query(
-            "SELECT id, display_name, role, created_at, updated_at FROM users WHERE id = ?",
+            "SELECT id, display_name, role, status, created_at, updated_at FROM users WHERE id = ?",
         )
         .bind(id.0.to_string())
         .fetch_optional(&self.pool)
@@ -458,7 +473,7 @@ impl UserRepo for SqliteStore {
 
     async fn find_by_identity(&self, issuer: &str, subject: &str) -> RepoResult<Option<User>> {
         let row = sqlx::query(
-            "SELECT u.id, u.display_name, u.role, u.created_at, u.updated_at \
+            "SELECT u.id, u.display_name, u.role, u.status, u.created_at, u.updated_at \
              FROM users u JOIN identities i ON i.user_id = u.id \
              WHERE i.issuer = ? AND i.subject = ?",
         )
@@ -482,7 +497,7 @@ impl UserRepo for SqliteStore {
     async fn list(&self, before: Option<&UserId>, limit: u32) -> RepoResult<Vec<User>> {
         let cursor = before.map(|id| id.0.to_string());
         let rows = sqlx::query(
-            "SELECT id, display_name, role, created_at, updated_at FROM users \
+            "SELECT id, display_name, role, status, created_at, updated_at FROM users \
              WHERE (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?",
         )
         .bind(&cursor)
@@ -504,6 +519,29 @@ impl UserRepo for SqliteStore {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         let result = sqlx::query("UPDATE users SET role = ?, updated_at = ? WHERE id = ?")
             .bind(role_to_str(role))
+            .bind(now)
+            .bind(id.0.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::NotFound);
+        }
+        record_fact(&mut tx, fact).await?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn set_status(
+        &self,
+        id: &UserId,
+        status: UserStatus,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let result = sqlx::query("UPDATE users SET status = ?, updated_at = ? WHERE id = ?")
+            .bind(user_status_to_str(status))
             .bind(now)
             .bind(id.0.to_string())
             .execute(&mut *tx)

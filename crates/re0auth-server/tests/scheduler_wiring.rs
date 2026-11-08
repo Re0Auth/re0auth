@@ -28,6 +28,7 @@ async fn store_with_session(expired_secs_ago: i64) -> (Arc<SqliteStore>, Vec<u8>
             id: user,
             display_name: "sweep".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         })

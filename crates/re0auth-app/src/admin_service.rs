@@ -16,7 +16,7 @@ use re0auth_api::audit::{AuditAction, SecurityFact};
 use re0auth_api::cache::{Cache, NoCache};
 use re0auth_api::ports::{
     AuditFilter, Binding, BindingQuery, Client, ClientStatus, ConnectorRecord, RepoError, Storage,
-    User, UserRole,
+    User, UserRole, UserStatus,
 };
 use re0auth_api::secret::ClientSecretHasher;
 use re0auth_api::{BindingId, ClientId, Clock, ConnectorId, Random, Unix, UserId};
@@ -80,6 +80,8 @@ pub struct AdminUserView {
     pub id: String,
     pub display_name: String,
     pub role: &'static str,
+    /// Admission state (B15); the admin console shows and toggles it.
+    pub status: &'static str,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -378,6 +380,63 @@ impl AdminService {
             id: user.id.0.to_string(),
             display_name: user.display_name,
             role: role.as_str(),
+            status: user.status.as_str(),
+            created_at: user.created_at,
+            updated_at: now,
+        })
+    }
+
+    /// Bans or unbans an account (B15).
+    ///
+    /// Banning revokes every session so the decision takes effect immediately;
+    /// the gateway still checks the status on every read, because a JWT stays
+    /// cryptographically valid until it expires.
+    pub async fn set_user_status(
+        &self,
+        actor: UserId,
+        target: UserId,
+        status: UserStatus,
+        correlation_id: Option<&str>,
+    ) -> Result<AdminUserView, AdminError> {
+        let now = self.clock.now();
+        let user = self
+            .storage
+            .users()
+            .get(&target)
+            .await?
+            .ok_or(AdminError::NotFound)?;
+        // Same lockout logic as role changes: an instance must keep one admin
+        // that can still sign in.
+        if status == UserStatus::Banned && user.status != UserStatus::Banned {
+            if target == actor {
+                return Err(AdminError::Conflict("you cannot ban yourself"));
+            }
+            if user.role == UserRole::Admin && self.storage.users().count_admins().await? <= 1 {
+                return Err(AdminError::Conflict("the last admin cannot be banned"));
+            }
+        }
+        let action = if status == UserStatus::Banned {
+            AuditAction::UserBanned
+        } else {
+            AuditAction::UserUnbanned
+        };
+        let fact = SecurityFact::new(action, now, format!("user:{}", target.0))
+            .actor(actor)
+            .with_request_id(correlation_id);
+        self.storage
+            .users()
+            .set_status(&target, status, &fact, now)
+            .await?;
+        if status == UserStatus::Banned {
+            // Sessions die with the ban; the per-request status check is the
+            // second gate, not the only one.
+            self.storage.sessions().revoke_all(&target, now).await?;
+        }
+        Ok(AdminUserView {
+            id: user.id.0.to_string(),
+            display_name: user.display_name,
+            role: user.role.as_str(),
+            status: status.as_str(),
             created_at: user.created_at,
             updated_at: now,
         })
@@ -597,6 +656,7 @@ fn user_view(user: User) -> AdminUserView {
         id: user.id.0.to_string(),
         display_name: user.display_name,
         role: user.role.as_str(),
+        status: user.status.as_str(),
         created_at: user.created_at,
         updated_at: user.updated_at,
     }

@@ -25,6 +25,7 @@ async fn store_with_user() -> (SqliteStore, UserId) {
         id: UserId::new(),
         display_name: "revoke-user".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: 1_000,
         updated_at: 1_000,
     };

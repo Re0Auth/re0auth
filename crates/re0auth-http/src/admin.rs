@@ -19,13 +19,15 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use re0auth_api::audit::{AuditAction, AuditTier};
-use re0auth_api::ports::{AuditFilter, BindingQuery, BindingStatus, ClientStatus, UserRole};
+use re0auth_api::ports::{
+    AuditFilter, BindingQuery, BindingStatus, ClientStatus, UserRole, UserStatus,
+};
 use re0auth_api::{AuditId, BindingId, ClientId, ConnectorId, UserId};
 use re0auth_app::admin_service::{AdminService, ClientPatch, NewClientInput, Page};
 use re0auth_app::auth::SessionContext;
 
 use crate::{
-    ApiError, AppState, Shape, admin_error, admin_required, invalid_request, no_store,
+    ApiError, AppState, Shape, admin_error, admin_required, auth_error, invalid_request, no_store,
     problem_response, request_id, require_csrf, session_context_from_headers,
 };
 
@@ -119,6 +121,11 @@ fn client_status(raw: &str) -> Result<ClientStatus, ApiError> {
             ));
         }
     })
+}
+
+fn user_status(raw: &str) -> Result<UserStatus, ApiError> {
+    UserStatus::parse(raw)
+        .ok_or_else(|| invalid_request("status must be active or banned", Shape::Problem))
 }
 
 fn user_role(raw: &str) -> Result<UserRole, ApiError> {
@@ -332,7 +339,11 @@ pub(crate) async fn list_users(
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct UpdateUserBody {
-    role: String,
+    /// At least one of \`role\` / \`status\` must be present.
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
 }
 
 pub(crate) async fn update_user(
@@ -345,12 +356,33 @@ pub(crate) async fn update_user(
     require_csrf(&state, &context, &headers)?;
     let body = json_body(body)?;
     let target = path_id(&id, "user id must be a UUID", UserId)?;
-    let role = user_role(&body.role)?;
-    let view = service(&state)?
-        .set_user_role(context.user.id, target, role, request_id::of(&headers))
-        .await
-        .map_err(admin_error)?;
-    Ok(no_store(Json(view).into_response()))
+    if body.role.is_none() && body.status.is_none() {
+        return Err(invalid_request(
+            "role or status is required",
+            Shape::Problem,
+        ));
+    }
+    let service = service(&state)?;
+    let mut view = None;
+    if let Some(raw) = body.role.as_deref() {
+        let role = user_role(raw)?;
+        view = Some(
+            service
+                .set_user_role(context.user.id, target, role, request_id::of(&headers))
+                .await
+                .map_err(admin_error)?,
+        );
+    }
+    if let Some(raw) = body.status.as_deref() {
+        let status = user_status(raw)?;
+        view = Some(
+            service
+                .set_user_status(context.user.id, target, status, request_id::of(&headers))
+                .await
+                .map_err(admin_error)?,
+        );
+    }
+    Ok(no_store(Json(view.expect("checked above")).into_response()))
 }
 
 // ---- Connectors (read-only) ----------------------------------------------
@@ -467,4 +499,48 @@ pub(crate) async fn list_audit(
         .await
         .map_err(admin_error)?;
     Ok(no_store(Json(page).into_response()))
+}
+
+/// Admin killswitch: revokes every binding of one user, or the whole instance.
+///
+/// Same per-item cascade as the user-facing killswitch (F-6/B16): an upstream
+/// that refuses keeps its row and shows up in "failed" instead of silently
+/// disappearing from the local database.
+#[derive(Debug, Deserialize)]
+pub(crate) struct KillswitchBody {
+    #[serde(default)]
+    user: Option<String>,
+}
+
+pub(crate) async fn killswitch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Json<KillswitchBody>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let context = admin_session(&state, &headers).await?;
+    require_csrf(&state, &context, &headers)?;
+    let body = json_body(body)?;
+    let Some(binding) = state.binding.as_ref() else {
+        return Err(problem_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "binding is not configured for this deployment",
+        ));
+    };
+    let summary = match body.user.as_deref() {
+        Some(raw) => {
+            let user = Uuid::parse_str(raw)
+                .map(UserId)
+                .map_err(|_| invalid_request("user must be a UUID", Shape::Problem))?;
+            binding
+                .cascade_revoke_as(user, context.user.id, request_id::of(&headers))
+                .await
+                .map_err(auth_error)?
+        }
+        None => binding
+            .cascade_revoke_all(context.user.id, request_id::of(&headers))
+            .await
+            .map_err(auth_error)?,
+    };
+    Ok(no_store(Json(summary).into_response()))
 }

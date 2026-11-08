@@ -72,6 +72,7 @@ async fn fixture() -> Fixture {
             id: user,
             display_name: "cache-user".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         })

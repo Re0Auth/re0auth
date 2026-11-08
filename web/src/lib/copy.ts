@@ -204,12 +204,23 @@ export const copy = {
 		},
 		users: {
 			title: '用户',
-			subtitle: '角色的变更会写入审计。不能降级自己，也不能降级最后一个管理员。',
+			subtitle: '角色与封禁都会写入审计。不能降级或封禁自己，也不能动最后一个管理员。',
 			role: '角色',
+			status: '状态',
 			displayName: '显示名',
 			createdAt: '创建时间',
 			roleChanged: '角色已更新。',
-			roleFailed: '修改失败：'
+			roleFailed: '修改失败：',
+			ban: '封禁',
+			unban: '解封',
+			banConfirm: '封禁会立即撤销该账号的全部会话，并拒绝其登录与网关读取。继续？',
+			banned: '已封禁。',
+			unbanned: '已解封。',
+			statusFailed: '状态修改失败：'
+		},
+		userStatus: {
+			active: '正常',
+			banned: '已封禁'
 		},
 		bindings: {
 			title: '绑定',

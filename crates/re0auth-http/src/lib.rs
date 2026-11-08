@@ -219,6 +219,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/connectors/{id}", get(admin::get_connector))
         .route("/api/admin/bindings", get(admin::list_bindings))
         .route("/api/admin/bindings/{id}", delete(admin::revoke_binding))
+        .route("/api/admin/killswitch", post(admin::killswitch))
         .route("/api/admin/audit", get(admin::list_audit))
         .fallback(static_assets::serve)
         // INV-RES-02: reject oversized bodies before any extractor buffers them.

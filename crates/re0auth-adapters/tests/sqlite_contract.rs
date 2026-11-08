@@ -23,6 +23,7 @@ async fn sub_credentials_are_stored_sealed_and_removed_on_revoke() {
         id: UserId::new(),
         display_name: "sealed-user".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: 1_000,
         updated_at: 1_000,
     };
@@ -185,6 +186,7 @@ async fn concurrent_binding_upserts_converge_on_one_row() {
         id: UserId::new(),
         display_name: "race".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: 1_000,
         updated_at: 1_000,
     };

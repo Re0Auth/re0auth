@@ -22,7 +22,9 @@ use re0auth_api::cache::{Cache, NoCache, binding_prefix};
 use re0auth_api::connector::{
     ConnectorAuth, ConnectorEndpoint, ConnectorRegistry, ExchangedCredential, UpstreamError,
 };
-use re0auth_api::ports::{Binding, BindingStatus, PendingBinding, RepoError, Storage};
+use re0auth_api::ports::{
+    Binding, BindingQuery, BindingStatus, PendingBinding, RepoError, Storage,
+};
 use re0auth_api::secret::SecretSealer;
 use re0auth_api::{BindingId, Clock, Random, Unix, UserId};
 use re0auth_domain::gateway;
@@ -408,15 +410,83 @@ impl BindingService {
         user: UserId,
         correlation_id: Option<&str>,
     ) -> Result<BindingRevocationSummary, AuthError> {
-        let now = self.clock.now();
-        let mut revoked = 0u64;
-        let mut failed = Vec::new();
         let bindings = self
             .storage
             .bindings()
             .list_by_user(&user)
             .await
             .map_err(AuthError::Repo)?;
+        self.cascade_revoke_bindings(bindings, user, correlation_id)
+            .await
+    }
+
+    /// Admin-initiated cascade for one user's bindings (B16).
+    ///
+    /// The audit fact names the admin as actor while the rows belong to the
+    /// user; that is what makes "who cut this account off" answerable.
+    pub async fn cascade_revoke_as(
+        &self,
+        user: UserId,
+        actor: UserId,
+        correlation_id: Option<&str>,
+    ) -> Result<BindingRevocationSummary, AuthError> {
+        let bindings = self
+            .storage
+            .bindings()
+            .list_by_user(&user)
+            .await
+            .map_err(AuthError::Repo)?;
+        self.cascade_revoke_bindings(bindings, actor, correlation_id)
+            .await
+    }
+
+    /// Admin killswitch for the whole instance (B16).
+    ///
+    /// Pages through every binding and applies the same per-item cascade; one
+    /// unreachable upstream never stops the sweep.
+    pub async fn cascade_revoke_all(
+        &self,
+        actor: UserId,
+        correlation_id: Option<&str>,
+    ) -> Result<BindingRevocationSummary, AuthError> {
+        let query = BindingQuery {
+            user: None,
+            upstream: None,
+            status: None,
+        };
+        let mut all = Vec::new();
+        let mut cursor: Option<BindingId> = None;
+        loop {
+            let page = self
+                .storage
+                .bindings()
+                .list_all(cursor.as_ref(), &query, 500)
+                .await
+                .map_err(AuthError::Repo)?;
+            let more = page.len() == 500;
+            let Some(last) = page.last().map(|binding| binding.id) else {
+                break;
+            };
+            cursor = Some(last);
+            all.extend(page);
+            if !more {
+                break;
+            }
+        }
+        self.cascade_revoke_bindings(all, actor, correlation_id)
+            .await
+    }
+
+    /// The one cascade loop: upstream first, keep the row when it refuses.
+    async fn cascade_revoke_bindings(
+        &self,
+        bindings: Vec<Binding>,
+        actor: UserId,
+        correlation_id: Option<&str>,
+    ) -> Result<BindingRevocationSummary, AuthError> {
+        let now = self.clock.now();
+        let mut revoked = 0u64;
+        let mut failed = Vec::new();
         for binding in bindings {
             if binding.status == BindingStatus::Revoked {
                 continue;
@@ -434,7 +504,7 @@ impl BindingService {
                 now,
                 format!("binding:{}", binding.id.0),
             )
-            .actor(user)
+            .actor(actor)
             .with_request_id(correlation_id);
             match self
                 .storage

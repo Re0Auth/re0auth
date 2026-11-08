@@ -13,7 +13,7 @@ use re0auth_api::connector::{
     ConnectorAuth, ConnectorEndpoint, ConnectorRegistry, EgressPolicy, ExchangedCredential,
     UpstreamError,
 };
-use re0auth_api::ports::{BindingStatus, Storage, User, UserRole};
+use re0auth_api::ports::{BindingStatus, Storage, User, UserRole, UserStatus};
 use re0auth_api::secret::{SealedSecret, SecretSealer};
 use re0auth_api::{
     BindingId, Clock, ConnectorId, Random, Re0Error, Re0Result, SecretString, Unix, UserId,
@@ -207,6 +207,7 @@ async fn setup_with_cache(
             id: user,
             display_name: "binder".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: NOW,
             updated_at: NOW,
         })
@@ -576,6 +577,7 @@ async fn revoking_a_binding_tells_the_upstream() {
             id: user,
             display_name: "binder".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: NOW,
             updated_at: NOW,
         })
@@ -633,6 +635,7 @@ async fn a_revoked_binding_is_not_revoked_again() {
             id: user,
             display_name: "binder".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: NOW,
             updated_at: NOW,
         })
@@ -721,4 +724,83 @@ async fn a_cascade_revokes_locally_once_the_upstream_confirms() {
 
     let bindings = store.bindings().list_by_user(&user).await.expect("list");
     assert_eq!(bindings[0].status, BindingStatus::Revoked);
+}
+
+#[tokio::test]
+async fn an_admin_cascade_all_revokes_every_users_bindings() {
+    let (store, service, user) = setup(RecordingAuth::ok()).await;
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let other = UserId::new();
+    store
+        .users()
+        .create(&User {
+            id: other,
+            display_name: "other".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            created_at: NOW,
+            updated_at: NOW,
+        })
+        .await
+        .expect("other user");
+    let started = service
+        .start(other, "phigros", "/account")
+        .await
+        .expect("start");
+    service
+        .complete(other, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let summary = service
+        .cascade_revoke_all(user, None)
+        .await
+        .expect("cascade");
+    assert_eq!(summary.revoked, 2);
+    assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+    for account in [user, other] {
+        let bindings = store.bindings().list_by_user(&account).await.expect("list");
+        assert!(
+            bindings
+                .iter()
+                .all(|binding| binding.status == BindingStatus::Revoked),
+            "every binding must be revoked"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_admin_cascade_names_the_admin_as_actor() {
+    let (store, service, user) = setup(RecordingAuth::ok()).await;
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let admin = UserId::new();
+    let summary = service
+        .cascade_revoke_as(user, admin, None)
+        .await
+        .expect("cascade");
+    assert_eq!(summary.revoked, 1);
+
+    let facts = store.audits().by_actor(&admin, 10).await.expect("audit");
+    assert_eq!(
+        facts.len(),
+        1,
+        "the fact belongs to the admin, not the user"
+    );
+    assert_eq!(facts[0].action, AuditAction::BindingRevoked);
 }

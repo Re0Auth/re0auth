@@ -138,6 +138,7 @@ export const adminUserSchema = z.object({
 	id: z.string(),
 	display_name: z.string(),
 	role: z.string(),
+	status: z.string(),
 	created_at: z.number().int().nonnegative(),
 	updated_at: z.number().int().nonnegative()
 });

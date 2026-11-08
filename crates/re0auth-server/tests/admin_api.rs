@@ -75,6 +75,7 @@ async fn app() -> App {
             id: admin_id,
             display_name: "Root".to_string(),
             role: UserRole::Admin,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         })
@@ -87,6 +88,7 @@ async fn app() -> App {
             id: user_id,
             display_name: "Member".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         })
@@ -414,4 +416,116 @@ async fn connectors_are_read_only_and_use_the_shared_envelope() {
     )
     .await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn banning_a_user_revokes_the_session_and_writes_the_fact() {
+    let app = app().await;
+
+    // The member's session works before the ban.
+    let (status, _) = get(&app, "/api/me", &app.user_cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body, _) = write(
+        &app,
+        Method::PATCH,
+        &format!("/api/admin/users/{}", app.user_id.0),
+        Some(&app.admin_csrf),
+        None,
+        Some(&json!({"status": "banned"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["status"], "banned");
+
+    // The ban kills the open session outright.
+    let (status, _) = get(&app, "/api/me", &app.user_cookie).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, body) = get(
+        &app,
+        "/api/admin/audit?action=user_banned",
+        &app.admin_cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        body["items"][0]["target"],
+        json!(format!("user:{}", app.user_id.0))
+    );
+}
+
+#[tokio::test]
+async fn an_admin_cannot_ban_themselves_and_bad_status_is_rejected() {
+    let app = app().await;
+
+    let (status, body, _) = write(
+        &app,
+        Method::PATCH,
+        &format!("/api/admin/users/{}", app.admin_id.0),
+        Some(&app.admin_csrf),
+        None,
+        Some(&json!({"status": "banned"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body: {body}");
+    assert_eq!(body["code"], "conflict");
+
+    let (status, body, _) = write(
+        &app,
+        Method::PATCH,
+        &format!("/api/admin/users/{}", app.user_id.0),
+        Some(&app.admin_csrf),
+        None,
+        Some(&json!({"status": "frozen"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    assert_eq!(body["code"], "invalid_request");
+
+    let (status, body, _) = write(
+        &app,
+        Method::PATCH,
+        &format!("/api/admin/users/{}", app.user_id.0),
+        Some(&app.admin_csrf),
+        None,
+        Some(&json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+}
+
+#[tokio::test]
+async fn killswitch_requires_a_configured_binding_service() {
+    let app = app().await;
+    let (status, body, _) = write(
+        &app,
+        Method::POST,
+        "/api/admin/killswitch",
+        Some(&app.admin_csrf),
+        None,
+        Some(&json!({})),
+    )
+    .await;
+    // This instance has no connectors, so there is no cascade to run.
+    assert_eq!(status, StatusCode::NOT_FOUND, "body: {body}");
+    assert_eq!(body["code"], "not_found");
+}
+
+#[tokio::test]
+async fn killswitch_requires_an_admin_session() {
+    let app = app().await;
+    let (status, body, _) = send(
+        &app,
+        Method::POST,
+        "/api/admin/killswitch",
+        Some(&app.user_cookie),
+        Some(&app.admin_csrf),
+        None,
+        Some(&json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+    assert_eq!(body["code"], "forbidden");
 }

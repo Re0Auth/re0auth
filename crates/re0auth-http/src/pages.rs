@@ -82,6 +82,7 @@ pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
         AuthError::UnknownIdentityProvider => StatusCode::NOT_FOUND,
         AuthError::IdentityProviderRequired => StatusCode::BAD_REQUEST,
         AuthError::LoginRequired => StatusCode::UNAUTHORIZED,
+        AuthError::AccountBanned => StatusCode::FORBIDDEN,
         AuthError::NotFound => StatusCode::NOT_FOUND,
         AuthError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         AuthError::Repo(RepoError::Busy) => StatusCode::SERVICE_UNAVAILABLE,
@@ -105,6 +106,7 @@ pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
 fn user_message(error: &AuthError) -> &'static str {
     match error {
         AuthError::LoginRequired => copy::LOGIN_REQUIRED,
+        AuthError::AccountBanned => copy::ACCOUNT_BANNED,
         AuthError::InvalidRequest(_) => copy::BAD_REQUEST,
         AuthError::Csrf => copy::PAGE_EXPIRED,
         AuthError::StateInvalid

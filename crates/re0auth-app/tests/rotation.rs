@@ -87,6 +87,7 @@ async fn seeded_store(count: usize) -> (Arc<MemoryStore>, Vec<BindingId>) {
                 id: owner,
                 display_name: format!("rotation-user-{index}"),
                 role: re0auth_api::ports::UserRole::User,
+                status: re0auth_api::ports::UserStatus::Active,
                 created_at: 1_000,
                 updated_at: 1_000,
             })

@@ -58,6 +58,7 @@
 | `upstream_response_too_large` | 502 | 上游响应超过 4 MiB 被截断 |
 | `upstream_unavailable` | 502 | 上游不可达、超时或 5xx |
 | `upstream_contract_changed` | 502 | 上游 JSON 不满足资源配置声明的视图（路径缺失或类型不符） |
+| `account_banned` | 403 | 账号已被封禁（登录与网关两条入口都拒绝） |
 | `internal_error` | 500 | 服务端内部错误 |
 | `invalid_csrf` | 403 | 状态变更缺少或错误的 CSRF 令牌 |
 | `rate_limited` | 429 | 本服务限流（设备码尝试、匿名入口按 IP、数据面按 client_id），响应带 `Retry-After` |
@@ -136,6 +137,7 @@ GET    /api/admin/connectors
 GET    /api/admin/connectors/{id}
 GET    /api/admin/bindings
 DELETE /api/admin/bindings/{id}
+POST   /api/admin/killswitch
 GET    /api/admin/audit
 ```
 - 版本：路径 `/api/v1`；破坏性变更升 v2，旧版至少保留 6 个月。

@@ -80,6 +80,7 @@ async fn seed(
             id: user,
             display_name: "stale-user".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         })

@@ -49,6 +49,7 @@ fn user(now: Unix) -> User {
         id: UserId::new(),
         display_name: "contract-user".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: now,
         updated_at: now,
     }
@@ -800,6 +801,7 @@ pub async fn pending_binding_contract<S: Storage>(store: &S) {
             id: owner,
             display_name: "pending-binding-owner".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: 1_000,
             updated_at: 1_000,
         })

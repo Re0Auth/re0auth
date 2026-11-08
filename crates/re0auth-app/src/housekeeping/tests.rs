@@ -43,6 +43,7 @@ async fn seed_user(store: &MemoryStore, now: Unix) -> UserId {
             id: user,
             display_name: "probe".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         })

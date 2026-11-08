@@ -25,6 +25,7 @@ async fn binding_with_v1_secret(sealer: &AesGcmSealer) -> (Arc<MemoryStore>, Bin
             id: user,
             display_name: "rotation".to_string(),
             role: re0auth_api::ports::UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: 1_000,
             updated_at: 1_000,
         })

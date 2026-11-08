@@ -21,7 +21,7 @@ use re0auth_api::ports::{
     LoginTransactionRepo, PendingAuthorization, PendingAuthorizationRepo, PendingBinding,
     PendingBindingRepo, RefreshToken, RefreshTokenRepo, RepoError, RepoResult, RotateOutcome,
     RotateRefreshToken, Session, SessionRepo, SigningKeyRecord, SigningKeyRepo, Storage, User,
-    UserRepo, UserRole,
+    UserRepo, UserRole, UserStatus,
 };
 use re0auth_api::secret::SealedSecret;
 use re0auth_api::{
@@ -126,6 +126,23 @@ impl UserRepo for MemoryStore {
             return Err(RepoError::NotFound);
         };
         user.role = role;
+        user.updated_at = now;
+        Self::push_fact(&mut inner, fact);
+        Ok(())
+    }
+
+    async fn set_status(
+        &self,
+        id: &UserId,
+        status: UserStatus,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        let mut inner = self.lock();
+        let Some(user) = inner.users.get_mut(id) else {
+            return Err(RepoError::NotFound);
+        };
+        user.status = status;
         user.updated_at = now;
         Self::push_fact(&mut inner, fact);
         Ok(())

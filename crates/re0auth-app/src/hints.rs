@@ -111,6 +111,7 @@ mod tests {
                 id: *user,
                 display_name: "Alice".to_string(),
                 role: UserRole::User,
+                status: re0auth_api::ports::UserStatus::Active,
                 created_at: 1_000,
                 updated_at: 1_000,
             })

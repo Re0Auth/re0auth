@@ -48,6 +48,7 @@ async fn service() -> (Arc<MemoryStore>, AdminService, UserId) {
             id: admin,
             display_name: "root".to_string(),
             role: UserRole::Admin,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: 1,
             updated_at: 1,
         })
@@ -126,6 +127,7 @@ async fn an_admin_revoke_writes_a_fact_with_the_admin_as_actor() {
             id: owner,
             display_name: "owner".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: 1,
             updated_at: 1,
         })
@@ -240,6 +242,7 @@ async fn admin_client_mutations_write_security_facts() {
             id: target,
             display_name: "member".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: 1,
             updated_at: 1,
         })

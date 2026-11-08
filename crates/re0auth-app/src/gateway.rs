@@ -15,7 +15,7 @@ use re0auth_api::connector::{
     BindingAction, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, FaultClass,
     ResourceRequest, UpstreamError, UpstreamPayload,
 };
-use re0auth_api::ports::{Binding, BindingStatus, NoTelemetry, Storage, TelemetrySink};
+use re0auth_api::ports::{Binding, BindingStatus, NoTelemetry, Storage, TelemetrySink, UserStatus};
 use re0auth_api::secret::SecretSealer;
 use re0auth_api::view::{ViewOutput, ViewSpec};
 use re0auth_api::{AuditId, ClientId, Clock, ConnectorId, Re0Error, UserId};
@@ -81,6 +81,9 @@ pub enum GatewayError {
     /// The upstream JSON does not satisfy the declared view (ADR-0049).
     #[error("upstream response does not match the declared view")]
     ContractChanged,
+    /// The account is banned (B15); checked on every data-plane read.
+    #[error("account is banned")]
+    AccountBanned,
     #[error("connector not registered")]
     ConnectorNotFound,
     #[error("resource not registered on this connector")]
@@ -232,6 +235,7 @@ impl GatewayError {
             Self::BindingInactive => "access_denied",
             Self::BindingRevoked => "binding_revoked",
             Self::ContractChanged => "upstream_contract_changed",
+            Self::AccountBanned => "account_banned",
             Self::ConnectorNotFound => "unknown_connector",
             Self::UnknownResource => "endpoint_not_found",
             Self::RawNotAllowed => "raw_not_allowed",
@@ -366,6 +370,19 @@ impl GatewayService {
     ) -> Result<UpstreamPayload, GatewayError> {
         gateway::validate_resource_name(request.resource)
             .map_err(|error| GatewayError::InvalidResource(error.field(ResourceField::Name)))?;
+
+        // B15: admission is enforced here too, not only at login. A banned
+        // account keeps a valid-looking token until it expires, so a login-only
+        // check would leave the data plane open for minutes.
+        match self.storage.users().get(&request.user_id).await {
+            Ok(Some(user)) if user.status == UserStatus::Banned => {
+                return Err(GatewayError::AccountBanned);
+            }
+            Ok(Some(_)) => {}
+            // A token naming a vanished user is an internal inconsistency, not a
+            // client error.
+            Ok(None) | Err(_) => return Err(GatewayError::Internal),
+        }
 
         let endpoint = match self.registry.resolve(&request.connector_id).await {
             Ok(endpoint) => endpoint,

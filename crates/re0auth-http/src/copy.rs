@@ -12,6 +12,7 @@ pub(crate) const AUTH_ERROR_TITLE: &str = "登录未完成";
 pub(crate) const SERVER_ERROR: &str = "服务暂时不可用，请稍后重试";
 
 pub(crate) const LOGIN_REQUIRED: &str = "请先登录";
+pub(crate) const ACCOUNT_BANNED: &str = "账号已被封禁，无法登录";
 pub(crate) const BAD_REQUEST: &str = "请求参数不正确";
 pub(crate) const PAGE_EXPIRED: &str = "页面已失效，请重试";
 pub(crate) const LOGIN_EXPIRED: &str = "登录已失效，请重新登录";

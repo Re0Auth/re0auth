@@ -24,6 +24,7 @@ pub(crate) fn gateway_error(error: GatewayError) -> ApiError {
         GatewayError::InsufficientScope => StatusCode::FORBIDDEN,
         GatewayError::BindingRequired | GatewayError::BindingNeedsReauth => StatusCode::FORBIDDEN,
         GatewayError::BindingInactive | GatewayError::BindingRevoked => StatusCode::FORBIDDEN,
+        GatewayError::AccountBanned => StatusCode::FORBIDDEN,
         GatewayError::InvalidRequest(_) | GatewayError::InvalidResource(_) => {
             StatusCode::BAD_REQUEST
         }
@@ -98,6 +99,11 @@ pub(crate) fn auth_error(error: AuthError) -> ApiError {
             StatusCode::UNAUTHORIZED,
             "login_required",
             "an active session is required",
+        ),
+        AuthError::AccountBanned => problem_response(
+            StatusCode::FORBIDDEN,
+            "account_banned",
+            "this account is banned",
         ),
         AuthError::IdpUnavailable => problem_response(
             StatusCode::SERVICE_UNAVAILABLE,

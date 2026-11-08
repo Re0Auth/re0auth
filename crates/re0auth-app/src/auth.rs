@@ -12,7 +12,7 @@ use re0auth_api::idp::{IdpClient, IdpError};
 use re0auth_api::oauth::{APPROVAL_TICKET_USE, ApprovalTicketClaims, TokenSigner};
 use re0auth_api::ports::{
     ApprovalDecision, ApprovalTicket, Binding, BindingStatus, Identity, LoginTransaction,
-    RepoError, Session, Storage, User, UserRole,
+    RepoError, Session, Storage, User, UserRole, UserStatus,
 };
 use re0auth_api::{BindingId, ClientId, Clock, IdentityId, Random, SessionId, UserId};
 use re0auth_domain::{
@@ -27,6 +27,9 @@ use crate::return_to;
 pub enum AuthError {
     #[error("login required")]
     LoginRequired,
+    /// The account exists but is not admitted (B15).
+    #[error("account is banned")]
+    AccountBanned,
     #[error("invalid request: {0}")]
     InvalidRequest(&'static str),
     #[error("invalid csrf token")]
@@ -527,6 +530,7 @@ impl AuthService {
     }
 
     pub async fn session_context(&self, cookie: &str) -> AuthResult<SessionContext> {
+        // 封禁后再访问会话入口一律拒绝；会话本身通常已被撤销，这里是第二道闸。
         let now = self.clock.now();
         let id_hash = hash_secret(cookie);
         let session = self
@@ -549,6 +553,9 @@ impl AuthService {
             .get(&session.user_id)
             .await?
             .ok_or(AuthError::LoginRequired)?;
+        if user.status == UserStatus::Banned {
+            return Err(AuthError::AccountBanned);
+        }
         Ok(SessionContext { session, user })
     }
 
@@ -892,6 +899,10 @@ impl AuthService {
             .find_by_identity(&identity.issuer, &identity.subject)
             .await?
         {
+            // 封禁在登录入口就要拦住，不能等到会话建立之后。
+            if user.status == UserStatus::Banned {
+                return Err(AuthError::AccountBanned);
+            }
             return Ok(user.id);
         }
 
@@ -899,6 +910,7 @@ impl AuthService {
             id: UserId::new(),
             display_name: display_name(identity),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         };

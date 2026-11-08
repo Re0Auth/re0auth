@@ -393,6 +393,7 @@ async fn subjects_from_different_providers_do_not_collide() {
         id: github.user_id,
         display_name: "A".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: now,
         updated_at: now,
     };
@@ -407,6 +408,7 @@ async fn subjects_from_different_providers_do_not_collide() {
         id: qq.user_id,
         display_name: "B".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: now,
         updated_at: now,
     };

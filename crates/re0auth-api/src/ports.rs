@@ -93,11 +93,45 @@ pub struct Client {
     pub updated_at: Unix,
 }
 
+/// Whether an account may sign in and reach the data plane.
+///
+/// A separate axis from UserRole: banning is an abuse decision, not a privilege
+/// change, and the two must not be conflated (a banned admin is still an admin
+/// record, just one that may not act).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserStatus {
+    Active,
+    Banned,
+}
+
+impl UserStatus {
+    /// The stable string used by the database and the admin API.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Banned => "banned",
+        }
+    }
+
+    /// Parses the wire spelling; unknown values are None, never a default.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "active" => Some(Self::Active),
+            "banned" => Some(Self::Banned),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct User {
     pub id: UserId,
     pub display_name: String,
     pub role: UserRole,
+    /// Admission state; every entry point that accepts a user must check it.
+    pub status: UserStatus,
     pub created_at: Unix,
     pub updated_at: Unix,
 }
@@ -781,6 +815,15 @@ pub trait UserRepo: Send + Sync {
         &self,
         id: &UserId,
         role: UserRole,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()>;
+    /// Changes a user's admission status. Same transaction/audit rule as
+    /// set_role.
+    async fn set_status(
+        &self,
+        id: &UserId,
+        status: UserStatus,
         fact: &SecurityFact,
         now: Unix,
     ) -> RepoResult<()>;

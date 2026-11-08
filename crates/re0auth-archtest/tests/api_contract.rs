@@ -264,6 +264,7 @@ fn admin_user_matches_the_spa_schema() {
         id: "user".to_string(),
         display_name: "Alice".to_string(),
         role: "admin",
+        status: "banned",
         created_at: 1,
         updated_at: 2,
     };

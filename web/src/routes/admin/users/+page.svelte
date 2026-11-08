@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { Alert, AlertDescription } from '#lib/components/ui/alert/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import Modal from '#lib/components/admin/Modal.svelte';
 	import {
 		ApiError,
 		adminUserPageSchema,
@@ -20,6 +21,8 @@
 	let error = $state('');
 	let notice = $state('');
 	let busyId = $state('');
+	let banOpen = $state(false);
+	let banTarget = $state<AdminUser | null>(null);
 
 	onMount(() => {
 		void load(true);
@@ -72,6 +75,25 @@
 			busyId = '';
 		}
 	}
+
+	async function setStatus(user: AdminUser, status: 'active' | 'banned'): Promise<void> {
+		if (busyId) return;
+		busyId = user.id;
+		error = '';
+		notice = '';
+		try {
+			const updated = await apiPatch('/api/admin/users/' + user.id, { status }, adminUserSchema);
+			items = items.map((item) => (item.id === updated.id ? updated : item));
+			notice = status === 'banned' ? copy.admin.users.banned : copy.admin.users.unbanned;
+		} catch (cause) {
+			error = copy.admin.users.statusFailed + describe(cause);
+			await load(true);
+		} finally {
+			busyId = '';
+			banOpen = false;
+			banTarget = null;
+		}
+	}
 </script>
 
 <div>
@@ -97,6 +119,7 @@
 				<tr>
 					<th class="px-4 py-2 font-medium">{copy.admin.users.displayName}</th>
 					<th class="px-4 py-2 font-medium">{copy.admin.users.role}</th>
+					<th class="px-4 py-2 font-medium">{copy.admin.users.status}</th>
 					<th class="px-4 py-2 font-medium">{copy.admin.users.createdAt}</th>
 				</tr>
 			</thead>
@@ -118,6 +141,37 @@
 								<option value="admin">{copy.admin.role.admin}</option>
 							</select>
 						</td>
+						<td class="px-4 py-3 align-top">
+							<div class="flex items-center gap-2">
+								<span class="text-xs">
+									{copy.admin.userStatus[user.status as keyof typeof copy.admin.userStatus] ?? user.status}
+								</span>
+								{#if user.status === 'banned'}
+									<Button
+										variant="outline"
+										class="h-8 px-3 text-xs"
+										type="button"
+										disabled={busyId === user.id}
+										onclick={() => setStatus(user, 'active')}
+									>
+										{copy.admin.users.unban}
+									</Button>
+								{:else}
+									<Button
+										variant="outline"
+										class="h-8 px-3 text-xs"
+										type="button"
+										disabled={busyId === user.id}
+										onclick={() => {
+											banTarget = user;
+											banOpen = true;
+										}}
+									>
+										{copy.admin.users.ban}
+									</Button>
+								{/if}
+							</div>
+						</td>
 						<td class="px-4 py-3 align-top text-xs text-fg-3">{formatTime(user.created_at)}</td>
 					</tr>
 				{/each}
@@ -132,3 +186,12 @@
 		</div>
 	{/if}
 {/if}
+
+<Modal bind:open={banOpen} title={copy.admin.users.ban} description={copy.admin.users.banConfirm}>
+	<div class="flex justify-end gap-2">
+		<Button variant="outline" type="button" onclick={() => (banOpen = false)}>{copy.admin.cancel}</Button>
+		<Button type="button" onclick={() => banTarget && setStatus(banTarget, 'banned')}>
+			{copy.admin.confirm}
+		</Button>
+	</div>
+</Modal>

@@ -26,6 +26,7 @@ pub async fn create_user(
         id: UserId::new(),
         display_name: display_name.to_string(),
         role,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: now,
         updated_at: now,
     };

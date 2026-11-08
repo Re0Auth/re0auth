@@ -75,6 +75,10 @@ pub enum AuditAction {
     UserRoleChanged,
     /// 授权码被重放，其家族已撤销
     AuthCodeReuseDetected,
+    /// An admin banned a user; every admission point must refuse them.
+    UserBanned,
+    /// An admin lifted a ban.
+    UserUnbanned,
 }
 
 impl AuditAction {
@@ -106,6 +110,8 @@ impl AuditAction {
             Self::ClientUpdated => "client_updated",
             Self::ClientSecretRotated => "client_secret_rotated",
             Self::UserRoleChanged => "user_role_changed",
+            Self::UserBanned => "user_banned",
+            Self::UserUnbanned => "user_unbanned",
         }
     }
 
@@ -135,6 +141,8 @@ impl AuditAction {
             "client_updated" => Self::ClientUpdated,
             "client_secret_rotated" => Self::ClientSecretRotated,
             "user_role_changed" => Self::UserRoleChanged,
+            "user_banned" => Self::UserBanned,
+            "user_unbanned" => Self::UserUnbanned,
             _ => return None,
         })
     }

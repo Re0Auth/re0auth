@@ -315,6 +315,7 @@ pub async fn binding_contract<S: Storage>(store: &S) {
         id: UserId::new(),
         display_name: "contract-user-2".to_string(),
         role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
         created_at: 1_500,
         updated_at: 1_500,
     };

@@ -213,6 +213,7 @@ where
             id: user_id,
             display_name: "Edge".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         })
@@ -1497,6 +1498,7 @@ async fn bindings_list_shows_only_the_callers_own() {
             id: stranger,
             display_name: "Stranger".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: app.clock.now(),
             updated_at: app.clock.now(),
         })
@@ -1575,6 +1577,7 @@ async fn revoking_a_binding_requires_csrf_and_ownership() {
             id: stranger,
             display_name: "Stranger".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: app.clock.now(),
             updated_at: app.clock.now(),
         })

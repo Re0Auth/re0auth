@@ -79,6 +79,7 @@ async fn setup() -> TestApp {
             id: user_id,
             display_name: "Alice".to_string(),
             role: UserRole::User,
+            status: re0auth_api::ports::UserStatus::Active,
             created_at: now,
             updated_at: now,
         })

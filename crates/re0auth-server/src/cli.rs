@@ -7,7 +7,7 @@ use uuid::Uuid;
 use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
-use re0auth_api::ports::{ClientStatus, Storage, UserRole};
+use re0auth_api::ports::{ClientStatus, Storage, UserRole, UserStatus};
 use re0auth_api::{ClientId, Clock, UserId};
 use re0auth_app::admin;
 use re0auth_app::admin_service::AdminService;
@@ -90,6 +90,19 @@ pub enum AdminCommand {
         user_id: Uuid,
         #[arg(long)]
         role: String,
+        /// User id recorded as the actor of the audit fact.
+        #[arg(long)]
+        actor: Uuid,
+    },
+    /// Ban or unban an account (B15).
+    ///
+    /// Same guards as the HTTP endpoint: no self-ban, never the last admin.
+    #[command(name = "set-status")]
+    SetStatus {
+        #[arg(long)]
+        user_id: Uuid,
+        #[arg(long)]
+        status: String,
         /// User id recorded as the actor of the audit fact.
         #[arg(long)]
         actor: Uuid,
@@ -225,6 +238,19 @@ pub async fn run(cfg: &Config, command: AdminCommand) -> anyhow::Result<()> {
             println!("client_secret={}", rotated.secret);
             println!("client_secret_is_shown_once=true");
         }
+        AdminCommand::SetStatus {
+            user_id,
+            status,
+            actor,
+        } => {
+            let status = parse_status(&status)?;
+            let updated = admin_service(cfg, &store)?
+                .set_user_status(UserId(actor), UserId(user_id), status, None)
+                .await
+                .context("set user status")?;
+            println!("user_id={}", updated.id);
+            println!("status={}", updated.status);
+        }
         AdminCommand::SetRole {
             user_id,
             role,
@@ -356,6 +382,11 @@ fn parse_role(raw: &str) -> anyhow::Result<UserRole> {
         "admin" => Ok(UserRole::Admin),
         other => bail!("unknown role {other:?}; expected user or admin"),
     }
+}
+
+fn parse_status(raw: &str) -> anyhow::Result<UserStatus> {
+    UserStatus::parse(raw)
+        .ok_or_else(|| anyhow::anyhow!("unknown status {raw:?}; expected active or banned"))
 }
 
 fn parse_client_status(raw: &str) -> anyhow::Result<ClientStatus> {
