@@ -20,6 +20,7 @@ use re0auth_api::ports::{
     Binding, BindingStatus, Client, ClientStatus, Consent, Storage, User, UserRole,
 };
 use re0auth_api::secret::SecretSealer;
+use re0auth_api::view::{FieldMapping, JsonPath, ViewSpec};
 use re0auth_api::{BindingId, ClientId, Clock, ConsentId, SecretString, UserId};
 use re0auth_app::auth::AuthService;
 use re0auth_app::circuit::{CircuitPolicy, CircuitTracker};
@@ -124,6 +125,32 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
                 .expect("spec")
                 .with_scope(SCOPE)
                 .expect("scope"),
+            // A single-object view: renames upstream fields (ADR-0049).
+            ResourceSpec::new("profile", "/v1/profile/{subject}")
+                .expect("spec")
+                .with_scope(SCOPE)
+                .expect("scope")
+                .with_view(ViewSpec {
+                    data_path: JsonPath::parse("$.data").expect("path"),
+                    items_path: None,
+                    fields: vec![FieldMapping {
+                        name: "player".to_string(),
+                        path: JsonPath::parse("$.user.id").expect("path"),
+                    }],
+                }),
+            // A list view: the only shape that accepts limit/cursor.
+            ResourceSpec::new("records", "/v1/records/{subject}")
+                .expect("spec")
+                .with_scope(SCOPE)
+                .expect("scope")
+                .with_view(ViewSpec {
+                    data_path: JsonPath::parse("$").expect("path"),
+                    items_path: Some(JsonPath::parse("$.data.items").expect("path")),
+                    fields: vec![FieldMapping {
+                        name: "id".to_string(),
+                        path: JsonPath::parse("$.id").expect("path"),
+                    }],
+                }),
         ],
     });
 
@@ -309,7 +336,12 @@ async fn successful_fetch_reaches_the_connector_with_the_binding_subject() {
         "body: {}",
         String::from_utf8_lossy(&body)
     );
-    assert_eq!(body, br#"{"rks":15.2}"#);
+    // The normalized lane answers with the envelope (ADR-0049).
+    let envelope: serde_json::Value = serde_json::from_slice(&body).expect("envelope is JSON");
+    assert_eq!(envelope["data"], serde_json::json!({"rks": 15.2}));
+    assert_eq!(envelope["upstream"], "probe");
+    assert_eq!(envelope["endpoint"], "scores");
+    assert_eq!(envelope["stability"], "declared");
 
     let calls = fixture.connector.calls();
     assert_eq!(calls.len(), 1);
@@ -428,4 +460,142 @@ async fn an_old_access_token_version_is_rejected_before_the_upstream() {
         0,
         "an old token must not reach the upstream"
     );
+}
+
+// ---- normalized views and pagination (ADR-0049) --------------------------
+
+#[tokio::test]
+async fn a_single_view_renames_fields_inside_the_envelope() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "profile",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"data":{"user":{"id":"player-1"},"extra":1}}"#.to_vec(),
+        }),
+    );
+    let token = access_token(&fixture, SCOPE);
+    let (status, body) = get(&fixture, "/api/v1/upstreams/probe/profile", Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let envelope: serde_json::Value = serde_json::from_slice(&body).expect("envelope");
+    assert_eq!(envelope["data"], serde_json::json!({"player": "player-1"}));
+    assert_eq!(envelope["upstream"], "probe");
+    assert_eq!(envelope["endpoint"], "profile");
+    assert_eq!(envelope["stability"], "declared");
+}
+
+#[tokio::test]
+async fn a_list_view_paginates_with_an_opaque_cursor() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "records",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"data":{"items":[{"id":"a"},{"id":"b"},{"id":"c"},{"id":"d"},{"id":"e"}]}}"#
+                .to_vec(),
+        }),
+    );
+    let token = access_token(&fixture, SCOPE);
+
+    let (status, body) = get(
+        &fixture,
+        "/api/v1/upstreams/probe/records?limit=2",
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let first: serde_json::Value = serde_json::from_slice(&body).expect("envelope");
+    assert_eq!(
+        first["data"]["items"],
+        serde_json::json!([{"id": "a"}, {"id": "b"}])
+    );
+    let cursor = first["data"]["next_cursor"]
+        .as_str()
+        .expect("more pages")
+        .to_string();
+
+    let path = format!("/api/v1/upstreams/probe/records?limit=2&cursor={cursor}");
+    let (status, body) = get(&fixture, &path, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let second: serde_json::Value = serde_json::from_slice(&body).expect("envelope");
+    assert_eq!(
+        second["data"]["items"],
+        serde_json::json!([{"id": "c"}, {"id": "d"}])
+    );
+    let cursor = second["data"]["next_cursor"]
+        .as_str()
+        .expect("more pages")
+        .to_string();
+
+    let path = format!("/api/v1/upstreams/probe/records?limit=2&cursor={cursor}");
+    let (status, body) = get(&fixture, &path, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let last: serde_json::Value = serde_json::from_slice(&body).expect("envelope");
+    assert_eq!(last["data"]["items"], serde_json::json!([{"id": "e"}]));
+    assert!(
+        last["data"]["next_cursor"].is_null(),
+        "the last page has no cursor"
+    );
+}
+
+#[tokio::test]
+async fn pagination_belongs_only_to_list_views() {
+    let fixture = fixture().await;
+    let token = access_token(&fixture, SCOPE);
+    let (status, body) = get(
+        &fixture,
+        "/api/v1/upstreams/probe/profile?limit=2",
+        Some(&token),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let error: serde_json::Value = serde_json::from_slice(&body).expect("problem body");
+    assert_eq!(error["code"], "invalid_request");
+    assert!(
+        fixture.connector.calls().is_empty(),
+        "a bad page must not cost an upstream call"
+    );
+}
+
+#[tokio::test]
+async fn an_out_of_range_limit_is_a_client_error() {
+    let fixture = fixture().await;
+    let token = access_token(&fixture, SCOPE);
+    for limit in ["0", "101", "abc"] {
+        let path = format!("/api/v1/upstreams/probe/records?limit={limit}");
+        let (status, body) = get(&fixture, &path, Some(&token)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "limit {limit}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_missing_view_path_is_upstream_contract_changed() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "profile",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"data":{"user":{}}}"#.to_vec(),
+        }),
+    );
+    let token = access_token(&fixture, SCOPE);
+    let (status, body) = get(&fixture, "/api/v1/upstreams/probe/profile", Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let error: serde_json::Value = serde_json::from_slice(&body).expect("problem body");
+    assert_eq!(error["code"], "upstream_contract_changed");
 }

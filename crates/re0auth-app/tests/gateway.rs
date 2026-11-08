@@ -9,7 +9,7 @@ use re0auth_api::ports::{Binding, BindingStatus, Storage, TelemetrySink, User, U
 use re0auth_api::secret::SecretSealer;
 use re0auth_api::{BindingId, Clock, ConnectorId, Re0Error, SecretString, UserId};
 use re0auth_app::circuit::{CircuitPolicy, CircuitTracker};
-use re0auth_app::gateway::{GatewayError, GatewayRequest, GatewayService};
+use re0auth_app::gateway::{GatewayError, GatewayRequest, GatewayService, Pagination};
 use re0auth_contract::{ConnectorFixture, MemoryStore, MockConnector, MockSealer};
 
 struct FixedClock(std::sync::Mutex<i64>);
@@ -147,6 +147,7 @@ fn request<'a>(
         resource,
         raw: false,
         correlation_id: None,
+        pagination: Pagination::default(),
     }
 }
 
@@ -571,7 +572,14 @@ async fn success_returns_the_payload_and_uses_the_sealed_credential() {
         .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
         .await
         .expect("fetch");
-    assert_eq!(response.body, body);
+    // The normalized lane answers with the envelope (ADR-0049), not the raw body.
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&response.body).expect("envelope is JSON");
+    assert_eq!(envelope["data"], serde_json::json!({"score": 42}));
+    assert_eq!(envelope["upstream"], "phigros");
+    assert_eq!(envelope["endpoint"], "scores");
+    assert_eq!(envelope["stability"], "declared");
+    assert_eq!(response.content_type, "application/json");
     assert_eq!(
         app.connector.calls(),
         vec![re0auth_api::connector::ResourceRequest::new(
@@ -699,6 +707,7 @@ fn raw_request<'a>(
         resource: "scores",
         raw: true,
         correlation_id: None,
+        pagination: Pagination::default(),
     }
 }
 
@@ -799,6 +808,7 @@ async fn the_non_raw_path_never_consults_the_client_record() {
             resource: "scores",
             raw: false,
             correlation_id: None,
+            pagination: Pagination::default(),
         })
         .await
         .expect("non-raw fetch must not need a client record");
@@ -810,17 +820,26 @@ async fn the_non_raw_path_never_consults_the_client_record() {
 ///
 /// Uses the harness's own clock so the entry is fresh in the same time frame the
 /// gateway sees; a wall clock would make "fresh" depend on when the test runs.
-async fn primed_cache(app: &Harness, body: &[u8]) -> Arc<dyn re0auth_api::cache::Cache> {
+/// Seeds the cache with the shape the gateway now writes: `{fetched_at, data}`.
+async fn primed_cache(
+    app: &Harness,
+    data: serde_json::Value,
+) -> Arc<dyn re0auth_api::cache::Cache> {
     let cache = re0auth_contract::ClockedCache::new(
         re0auth_contract::MemoryCache::new(),
         app.clock.clone() as Arc<dyn Clock>,
     );
+    let body = serde_json::to_vec(&serde_json::json!({
+        "fetched_at": app.clock.now(),
+        "data": data,
+    }))
+    .expect("cache body");
     cache
         .put(
             &re0auth_api::cache::key(&app.binding.id, "phigros", "scores"),
             &re0auth_api::cache::CachedResponse {
                 content_type: "application/json".to_string(),
-                body: body.to_vec(),
+                body,
                 stale: false,
             },
             std::time::Duration::from_secs(300),
@@ -834,7 +853,7 @@ async fn a_fresh_entry_is_served_without_calling_the_upstream() {
     // The baseline: the cache works at all. Without this, the refusal tests
     // below would pass merely because caching is broken.
     let app = harness().await;
-    let cache = primed_cache(&app, br#"{"cached":true}"#).await;
+    let cache = primed_cache(&app, serde_json::json!({"cached": true})).await;
     let app = Harness {
         service: GatewayService::new(
             app.store.clone(),
@@ -854,7 +873,14 @@ async fn a_fresh_entry_is_served_without_calling_the_upstream() {
         .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
         .await
         .expect("cached fetch");
-    assert_eq!(payload.body, br#"{"cached":true}"#);
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&payload.body).expect("envelope is JSON");
+    assert_eq!(envelope["data"], serde_json::json!({"cached": true}));
+    assert_eq!(
+        envelope["fetched_at"].as_i64(),
+        Some(1000),
+        "a cache hit must keep the original fetch time"
+    );
     assert!(
         app.connector.calls().is_empty(),
         "a fresh cache hit must not reach the upstream"
@@ -869,7 +895,7 @@ async fn a_fresh_entry_is_served_without_calling_the_upstream() {
 #[tokio::test]
 async fn a_caller_without_the_scope_never_receives_a_cached_payload() {
     let app = harness().await;
-    let cache = primed_cache(&app, br#"{"cached":"for-someone-else"}"#).await;
+    let cache = primed_cache(&app, serde_json::json!({"cached": "for-someone-else"})).await;
     let app = Harness {
         service: GatewayService::new(
             app.store.clone(),
@@ -901,7 +927,7 @@ async fn a_caller_without_the_scope_never_receives_a_cached_payload() {
 #[tokio::test]
 async fn a_revoked_binding_never_receives_a_cached_payload() {
     let app = harness().await;
-    let cache = primed_cache(&app, br#"{"cached":"revoked-user"}"#).await;
+    let cache = primed_cache(&app, serde_json::json!({"cached": "revoked-user"})).await;
     // Revoke the binding in the store, leaving the cache untouched: this
     // simulates a reader that raced ahead of the sweep.
     app.store
@@ -938,7 +964,7 @@ async fn a_revoked_binding_never_receives_a_cached_payload() {
 #[tokio::test]
 async fn a_raw_request_is_never_served_from_the_cache() {
     let app = harness().await;
-    let cache = primed_cache(&app, br#"{"cached":true}"#).await;
+    let cache = primed_cache(&app, serde_json::json!({"cached": true})).await;
     let plain = client(&app, true).await;
     let app = Harness {
         service: GatewayService::new(

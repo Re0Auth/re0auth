@@ -1,16 +1,21 @@
 //! Data-plane gateway routes.
 
-use axum::extract::{Path, State};
+use std::collections::HashMap;
+
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use re0auth_api::rate::Lane;
-use re0auth_app::gateway::GatewayRequest;
+use re0auth_app::gateway::{GatewayRequest, Pagination};
 use re0auth_app::oauth::OAuthError;
 
 use crate::parsers::bearer_token;
 use crate::rate::charge;
 use crate::request_id;
-use crate::{ApiError, AppState, Shape, error_response, gateway_error, no_store, oauth_error};
+use crate::{
+    ApiError, AppState, Shape, error_response, gateway_error, invalid_request, no_store,
+    oauth_error,
+};
 
 /// Data-plane fetch: `GET /api/v1/upstreams/{connector}/{resource}`.
 ///
@@ -20,9 +25,10 @@ use crate::{ApiError, AppState, Shape, error_response, gateway_error, no_store, 
 pub(crate) async fn fetch_upstream(
     State(state): State<AppState>,
     Path((connector, resource)): Path<(String, String)>,
+    Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    fetch(state, connector, resource, headers, false).await
+    fetch(state, connector, resource, headers, false, &params).await
 }
 
 /// Raw view: `GET /api/v1/raw/{connector}/{resource}`.
@@ -32,9 +38,26 @@ pub(crate) async fn fetch_upstream(
 pub(crate) async fn fetch_raw(
     State(state): State<AppState>,
     Path((connector, resource)): Path<(String, String)>,
+    Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    fetch(state, connector, resource, headers, true).await
+    fetch(state, connector, resource, headers, true, &params).await
+}
+
+/// `limit` 与 `cursor` 是网关自己的分页参数（ADR-0049），其余查询参数仍然原样
+/// 透传给上游——透传模式下上游参数是调用方和上游之间的事。
+fn pagination(params: &HashMap<String, String>) -> Result<Pagination, ApiError> {
+    let limit = match params.get("limit") {
+        None => None,
+        Some(raw) => Some(
+            raw.parse::<u32>()
+                .map_err(|_| invalid_request("limit must be a number", Shape::Problem))?,
+        ),
+    };
+    Ok(Pagination {
+        limit,
+        cursor: params.get("cursor").cloned(),
+    })
 }
 
 async fn fetch(
@@ -43,6 +66,7 @@ async fn fetch(
     resource: String,
     headers: HeaderMap,
     raw: bool,
+    params: &HashMap<String, String>,
 ) -> Result<Response, ApiError> {
     let Some(gateway) = state.gateway.clone() else {
         return Err(error_response(
@@ -86,6 +110,7 @@ async fn fetch(
             resource: &resource,
             raw,
             correlation_id: request_id::of(&headers),
+            pagination: pagination(params)?,
         })
         .await
         .map_err(gateway_error)?;

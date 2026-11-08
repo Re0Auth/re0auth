@@ -5,6 +5,11 @@ use re0auth_api::audit::{AccessSource, AccessTelemetry, AuditAction, SecurityFac
 
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::Serialize;
+use serde_json::Value;
+
 use re0auth_api::cache::Cache;
 use re0auth_api::connector::{
     BindingAction, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, FaultClass,
@@ -12,6 +17,7 @@ use re0auth_api::connector::{
 };
 use re0auth_api::ports::{Binding, BindingStatus, NoTelemetry, Storage, TelemetrySink};
 use re0auth_api::secret::SecretSealer;
+use re0auth_api::view::{ViewOutput, ViewSpec};
 use re0auth_api::{AuditId, ClientId, Clock, ConnectorId, Re0Error, UserId};
 use re0auth_domain::gateway::{self, InvalidResource, ResourceField};
 use uuid::Uuid;
@@ -32,6 +38,15 @@ pub struct GatewayRequest<'a> {
     pub raw: bool,
     /// The HTTP `X-Request-Id`, recorded on any audit row this call produces.
     pub correlation_id: Option<&'a str>,
+    /// `limit`/`cursor` from the query string. Only list views accept them.
+    pub pagination: Pagination,
+}
+
+/// Query-string pagination, before it is checked against the resource's view.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Pagination {
+    pub limit: Option<u32>,
+    pub cursor: Option<String>,
 }
 
 impl GatewayRequest<'_> {
@@ -63,6 +78,9 @@ pub enum GatewayError {
     BindingInactive,
     #[error("binding has been revoked")]
     BindingRevoked,
+    /// The upstream JSON does not satisfy the declared view (ADR-0049).
+    #[error("upstream response does not match the declared view")]
+    ContractChanged,
     #[error("connector not registered")]
     ConnectorNotFound,
     #[error("resource not registered on this connector")]
@@ -78,6 +96,95 @@ pub enum GatewayError {
     Upstream(#[from] UpstreamError),
     #[error("internal error")]
     Internal,
+}
+
+/// One page of a list view, carried inside the envelope's `data`.
+#[derive(Serialize)]
+struct PageBody {
+    items: Vec<Value>,
+    next_cursor: Option<String>,
+}
+
+/// The B8 envelope (ADR-0049). Six fields, no more.
+#[derive(Serialize)]
+struct Envelope<'a> {
+    upstream: &'a str,
+    endpoint: &'a str,
+    fetched_at: i64,
+    request_id: Option<&'a str>,
+    stability: &'static str,
+    data: Value,
+}
+
+/// What the cache stores for a normalized resource.
+///
+/// `fetched_at` travels with the data so a cache hit can keep telling the truth
+/// about when the upstream was actually read.
+#[derive(Serialize, serde::Deserialize)]
+struct CachedView {
+    fetched_at: i64,
+    data: Value,
+}
+
+const DEFAULT_PAGE_LIMIT: u32 = 20;
+const MAX_PAGE_LIMIT: u32 = 100;
+
+impl CachedView {
+    /// Parses the upstream body and applies the declared view.
+    fn from_body(
+        body: &[u8],
+        view: Option<&ViewSpec>,
+        fetched_at: i64,
+    ) -> Result<Self, GatewayError> {
+        let value: Value =
+            serde_json::from_slice(body).map_err(|_| GatewayError::ContractChanged)?;
+        let data = match view {
+            None => value,
+            Some(view) => match view
+                .apply(&value)
+                .map_err(|_| GatewayError::ContractChanged)?
+            {
+                ViewOutput::Single(value) => value,
+                ViewOutput::Items(items) => Value::Array(items),
+            },
+        };
+        Ok(Self { fetched_at, data })
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, GatewayError> {
+        serde_json::to_vec(self).map_err(|_| GatewayError::Internal)
+    }
+
+    fn decode(body: &[u8]) -> Result<Self, GatewayError> {
+        serde_json::from_slice(body).map_err(|_| GatewayError::Internal)
+    }
+}
+
+fn page_body(pagination: &Pagination, items: Vec<Value>) -> Result<PageBody, GatewayError> {
+    let limit = usize::try_from(pagination.limit.unwrap_or(DEFAULT_PAGE_LIMIT))
+        .map_err(|_| GatewayError::Internal)?;
+    let offset = match &pagination.cursor {
+        None => 0,
+        Some(raw) => decode_cursor(raw)?,
+    };
+    let start = offset.min(items.len());
+    let end = start.saturating_add(limit).min(items.len());
+    let next_cursor = (end < items.len()).then(|| encode_cursor(end));
+    Ok(PageBody {
+        items: items[start..end].to_vec(),
+        next_cursor,
+    })
+}
+
+fn encode_cursor(offset: usize) -> String {
+    URL_SAFE_NO_PAD.encode(offset.to_string())
+}
+
+fn decode_cursor(raw: &str) -> Result<usize, GatewayError> {
+    let invalid = || GatewayError::InvalidRequest("cursor is invalid");
+    let bytes = URL_SAFE_NO_PAD.decode(raw).map_err(|_| invalid())?;
+    let text = String::from_utf8(bytes).map_err(|_| invalid())?;
+    text.parse().map_err(|_| invalid())
 }
 
 impl GatewayError {
@@ -100,6 +207,7 @@ impl GatewayError {
             Self::BindingNeedsReauth => "upstream_needs_reauth",
             Self::BindingInactive => "access_denied",
             Self::BindingRevoked => "binding_revoked",
+            Self::ContractChanged => "upstream_contract_changed",
             Self::ConnectorNotFound => "unknown_connector",
             Self::UnknownResource => "endpoint_not_found",
             Self::RawNotAllowed => "raw_not_allowed",
@@ -257,6 +365,26 @@ impl GatewayService {
             self.authorize_raw(&request, &endpoint.name).await?;
         }
 
+        // Pagination belongs to the view, not to the upstream. Checking it here
+        // keeps a malformed page from ever costing an upstream call.
+        let list_view = spec
+            .view
+            .as_ref()
+            .is_some_and(|view| view.items_path.is_some());
+        let wants_page = request.pagination.limit.is_some() || request.pagination.cursor.is_some();
+        if wants_page && (request.raw || !list_view) {
+            return Err(GatewayError::InvalidRequest(
+                "pagination is only available for list resources",
+            ));
+        }
+        if let Some(limit) = request.pagination.limit
+            && !(1..=MAX_PAGE_LIMIT).contains(&limit)
+        {
+            return Err(GatewayError::InvalidRequest(
+                "limit must be between 1 and 100",
+            ));
+        }
+
         // `bindings.upstream_id` stores the connector's name, not its derived
         // id: the name is what the operator configured and what the portal
         // shows, and it survives a change to the id derivation.
@@ -294,14 +422,12 @@ impl GatewayService {
         if !request.raw
             && let Some(cached) = self.cache.get(&cache_key).await
         {
+            let snapshot = CachedView::decode(&cached.body)?;
             // A cache hit is still a read of this user's data, so it belongs in
             // the access ledger; `latency_ms = 0` marks that no upstream call
             // was made.
             self.record_access(&request, &endpoint, AccessSource::Cache, 0);
-            return Ok(UpstreamPayload {
-                content_type: cached.content_type,
-                body: cached.body,
-            });
+            return self.normalized(&request, &endpoint, list_view, snapshot);
         }
 
         let sealed = self
@@ -349,26 +475,35 @@ impl GatewayService {
                 }
                 self.circuit.settle(&connector_key, Outcome::Success, now);
                 self.circuit.settle(&binding_key, Outcome::Success, now);
+                if request.raw {
+                    // Recorded only on a served read: a failure is an error, not
+                    // a read, and inventing a ledger row for it would blur the two.
+                    let latency_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    self.record_access(&request, &endpoint, AccessSource::Upstream, latency_ms);
+                    return Ok(payload);
+                }
+                // The upstream itself answered fine, so the success is settled
+                // above; a view mismatch is business-class and never feeds the
+                // breaker (ADR-0049).
+                let snapshot = CachedView::from_body(&payload.body, spec.view.as_ref(), now)?;
+                let encoded = snapshot.encode()?;
                 // Only a complete response is cached. A truncated one is
                 // rejected above, so reaching here means the body is whole.
-                if !request.raw {
-                    self.cache
-                        .put(
-                            &cache_key,
-                            &re0auth_api::cache::CachedResponse {
-                                content_type: payload.content_type.clone(),
-                                body: payload.body.clone(),
-                                stale: false,
-                            },
-                            self.cache_ttl,
-                        )
-                        .await;
-                }
-                // Recorded only on a served read: a failure is an error, not a
-                // read, and inventing a ledger row for it would blur the two.
+                self.cache
+                    .put(
+                        &cache_key,
+                        &re0auth_api::cache::CachedResponse {
+                            content_type: "application/json".to_string(),
+                            body: encoded,
+                            stale: false,
+                        },
+                        self.cache_ttl,
+                    )
+                    .await;
                 let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 self.record_access(&request, &endpoint, AccessSource::Upstream, latency_ms);
-                Ok(payload)
+                self.normalized(&request, &endpoint, list_view, snapshot)
             }
             Err(error) => {
                 self.apply_failure(
@@ -383,6 +518,40 @@ impl GatewayService {
                 Err(error.into())
             }
         }
+    }
+
+    /// Builds the normalized envelope from a snapshot (ADR-0049).
+    fn normalized(
+        &self,
+        request: &GatewayRequest<'_>,
+        endpoint: &ConnectorEndpoint,
+        list_view: bool,
+        snapshot: CachedView,
+    ) -> Result<UpstreamPayload, GatewayError> {
+        let data = if list_view {
+            let items = snapshot
+                .data
+                .as_array()
+                .cloned()
+                .ok_or(GatewayError::Internal)?;
+            let page = page_body(&request.pagination, items)?;
+            serde_json::to_value(page).map_err(|_| GatewayError::Internal)?
+        } else {
+            snapshot.data
+        };
+        let envelope = Envelope {
+            upstream: &endpoint.name,
+            endpoint: request.resource,
+            fetched_at: snapshot.fetched_at,
+            request_id: request.correlation_id,
+            stability: "declared",
+            data,
+        };
+        let body = serde_json::to_vec(&envelope).map_err(|_| GatewayError::Internal)?;
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body,
+        })
     }
 
     /// INV-RAW-01: two independent gates, both required.

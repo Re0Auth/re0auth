@@ -41,6 +41,8 @@ pub(crate) fn gateway_error(error: GatewayError) -> ApiError {
         // work drains will succeed.
         GatewayError::Upstream(UpstreamError::Overloaded) => StatusCode::SERVICE_UNAVAILABLE,
         GatewayError::Upstream(_) | GatewayError::Internal => StatusCode::BAD_GATEWAY,
+        // The upstream answered, but not in the shape the operator declared.
+        GatewayError::ContractChanged => StatusCode::BAD_GATEWAY,
         // `GatewayError` is `#[non_exhaustive]`; unknown variants are server-side.
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };

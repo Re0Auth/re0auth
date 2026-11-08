@@ -208,6 +208,24 @@ inbound_body_bytes = 1048576
 # api_user_id = "{subject}"
 # credential = "{credential}"
 #
+# 归一化视图（ADR-0049）：/api/v1/upstreams/* 的响应包进信封，data 的形状
+# 由这里声明；不写 view 时 data 就是上游 JSON 原样。路径只支持 $.a.b 与 $.a[0].b。
+# [connectors.resources.view]
+# data_path = "$.data"
+# [connectors.resources.view.fields]
+# player_id = "$.user.id"
+# score = "$.score"
+#
+# 列表资源声明 items_path；只有它会接受 limit / cursor（默认 20，上限 100）：
+# [[connectors.resources]]
+# name = "records"
+# path = "/v1/records/{subject}"
+# scope = "phigros.records.read"
+# [connectors.resources.view]
+# items_path = "$.data.items"
+# [connectors.resources.view.fields]
+# id = "$.id"
+#
 # 可选：让用户在本实例上绑定这个上游（INV-BIND-03）。
 # 不写这一段，绑定路由对这个 connector 返回 404——它仍可服务
 # 在别处创建的绑定，但用户没法在本实例发起新的绑定。
