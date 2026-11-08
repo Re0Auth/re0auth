@@ -132,6 +132,11 @@ impl BindingRepo for MemoryStore {
             .cloned())
     }
 
+    async fn get(&self, id: &BindingId) -> RepoResult<Option<Binding>> {
+        let inner = self.lock();
+        Ok(inner.bindings.get(id).cloned())
+    }
+
     async fn list_by_user(&self, user: &UserId) -> RepoResult<Vec<Binding>> {
         let inner = self.lock();
         let mut bindings: Vec<_> = inner

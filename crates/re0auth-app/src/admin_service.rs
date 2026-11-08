@@ -22,6 +22,7 @@ use re0auth_api::secret::ClientSecretHasher;
 use re0auth_api::{BindingId, ClientId, Clock, ConnectorId, Random, Unix, UserId};
 
 use crate::admin::{self, CLIENT_SECRET_BYTES, NewClient};
+use crate::binding::BindingService;
 
 const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 200;
@@ -162,6 +163,9 @@ pub struct AdminService {
     hasher: Arc<dyn ClientSecretHasher>,
     /// For INV-CACHE-02. Absent means no gateway cache is wired.
     cache: Arc<dyn Cache>,
+    /// The binding surface, when this deployment has connectors. Absent means a
+    /// revoke has no upstream to tell, and the local row is the whole operation.
+    bindings: Option<Arc<BindingService>>,
 }
 
 impl AdminService {
@@ -178,12 +182,20 @@ impl AdminService {
             random,
             hasher,
             cache: Arc::new(NoCache),
+            bindings: None,
         }
     }
 
     #[must_use]
     pub fn with_cache(mut self, cache: Arc<dyn Cache>) -> Self {
         self.cache = cache;
+        self
+    }
+
+    /// Wires the binding surface so an admin revoke also tells the upstream.
+    #[must_use]
+    pub fn with_bindings(mut self, bindings: Arc<BindingService>) -> Self {
+        self.bindings = Some(bindings);
         self
     }
 
@@ -552,13 +564,27 @@ impl AdminService {
         ))
     }
 
-    /// The admin killswitch: revokes any binding, not only the caller's own.
+    /// Revokes one binding on behalf of an admin, then tells the upstream.
+    ///
+    /// The same direction as the user-facing unbind (F-6): the local row goes
+    /// first and the upstream is notified best effort, because an upstream that
+    /// is down must not hold the account hostage. The credential is captured
+    /// before the commit, since the transaction deletes it.
     pub async fn revoke_binding(
         &self,
         actor: UserId,
         id: BindingId,
         correlation_id: Option<&str>,
     ) -> Result<(), AdminError> {
+        let pending = match (
+            self.bindings.as_ref(),
+            self.storage.bindings().get(&id).await?,
+        ) {
+            (Some(bindings), Some(binding)) => {
+                bindings.prepare_revocation(binding.user_id, Some(id)).await
+            }
+            _ => Vec::new(),
+        };
         let now = self.clock.now();
         let fact = SecurityFact::new(
             AuditAction::BindingRevoked,
@@ -574,6 +600,9 @@ impl AdminService {
                 self.cache
                     .invalidate(&re0auth_api::cache::binding_prefix(&id))
                     .await;
+                if let Some(bindings) = self.bindings.as_ref() {
+                    bindings.notify_upstreams(pending).await;
+                }
                 Ok(())
             }
             Err(RepoError::NotFound) => Err(AdminError::NotFound),

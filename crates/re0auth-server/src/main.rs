@@ -723,18 +723,9 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         // 慢客户端不能无限期占着连接；超时返回 408。
         .with_request_timeout(std::time::Duration::from_secs(cfg.timeouts.request_secs));
 
-    // B1: the admin surface shares the storage, clock and hasher with the rest
-    // of the server, and gets the same cache so a killswitch revoke can
-    // invalidate what the gateway might serve (INV-CACHE-02).
-    state = state.with_admin(Arc::new(
-        re0auth_app::admin_service::AdminService::new(
-            store.clone(),
-            clock.clone(),
-            random.clone(),
-            Arc::new(client_secret_hasher(&cfg)?),
-        )
-        .with_cache(Arc::clone(&cache)),
-    ));
+    // The admin surface is built after the data plane (see below) because an
+    // admin revoke now tells the upstream, which needs the binding surface.
+    let admin_cache = Arc::clone(&cache);
 
     // Built before the gateway so both halves exist even when no connector is
     // configured: a deployment with no producer simply drains an empty queue.
@@ -771,6 +762,23 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     } else {
         tracing::info!("gateway disabled: no connectors configured");
     }
+
+    // B1: the admin surface shares the storage, clock and hasher with the rest of
+    // the server, and gets the same cache so a killswitch revoke can invalidate
+    // what the gateway might serve (INV-CACHE-02). The binding surface is passed
+    // too, so a single admin revoke notifies the upstream like the user path
+    // does instead of leaving a live credential behind with no local record.
+    let mut admin = re0auth_app::admin_service::AdminService::new(
+        store.clone(),
+        clock.clone(),
+        random.clone(),
+        Arc::new(client_secret_hasher(&cfg)?),
+    )
+    .with_cache(admin_cache);
+    if let Some(binding) = state.binding.clone() {
+        admin = admin.with_bindings(binding);
+    }
+    state = state.with_admin(Arc::new(admin));
 
     let listener = tokio::net::TcpListener::bind(&cfg.server.bind).await?;
     tracing::info!(

@@ -1207,6 +1207,12 @@ pub trait BindingRepo: Send + Sync {
         now: Unix,
     ) -> RepoResult<Binding>;
     async fn find(&self, user: &UserId, upstream: &str) -> RepoResult<Option<Binding>>;
+    /// Looks one binding up by id, across users.
+    ///
+    /// The admin surface addresses bindings by id and holds no user, and reading
+    /// the row before revoking it is the only way to learn its owner: without it
+    /// an admin revoke could not tell the upstream that the credential is gone.
+    async fn get(&self, id: &BindingId) -> RepoResult<Option<Binding>>;
     async fn list_by_user(&self, user: &UserId) -> RepoResult<Vec<Binding>>;
     async fn mark_needs_reauth(
         &self,

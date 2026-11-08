@@ -138,6 +138,19 @@ impl BindingRepo for SqliteStore {
         row.as_ref().map(row_to_binding).transpose()
     }
 
+    async fn get(&self, id: &BindingId) -> RepoResult<Option<Binding>> {
+        let row = sqlx::query(
+            "SELECT id, user_id, upstream_id, upstream_user_id, status, created_at, \
+             updated_at, last_refreshed_at, last_error_code \
+             FROM bindings WHERE id = ?",
+        )
+        .bind(id.0.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+        row.as_ref().map(row_to_binding).transpose()
+    }
+
     async fn list_by_user(&self, user: &UserId) -> RepoResult<Vec<Binding>> {
         let rows = sqlx::query(
             "SELECT id, user_id, upstream_id, upstream_user_id, status, created_at, \

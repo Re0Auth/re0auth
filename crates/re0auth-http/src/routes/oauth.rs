@@ -10,8 +10,7 @@ use re0auth_app::auth::AuthError;
 use re0auth_app::oauth::{
     AuthorizeOutcome, AuthorizeRequest, ConsentDecision, OAuthError, parse_scope,
 };
-use serde::Deserialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
 
 use crate::parsers::{bearer_token, client_credentials, parse_client_id, session_cookie};
@@ -20,65 +19,114 @@ use crate::request_id;
 use crate::routes::session::{login_redirect, require_csrf, session_context_from_headers};
 use crate::{
     ApiError, AppState, Shape, auth_error, invalid_request, no_store, oauth_error,
-    unsupported_grant_type,
+    problem_response, unsupported_grant_type,
 };
+
+/// The OIDC discovery document.
+///
+/// A struct rather than a `json!` literal: the OpenAPI schema has to come from
+/// the type that serialises the response, and a hand-built object has no type
+/// to derive one from.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DiscoveryDocument {
+    issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
+    userinfo_endpoint: String,
+    jwks_uri: String,
+    response_types_supported: Vec<String>,
+    grant_types_supported: Vec<String>,
+    device_authorization_endpoint: String,
+    revocation_endpoint: String,
+    revocation_endpoint_auth_methods_supported: Vec<String>,
+    code_challenge_methods_supported: Vec<String>,
+    token_endpoint_auth_methods_supported: Vec<String>,
+    subject_types_supported: Vec<String>,
+    id_token_signing_alg_values_supported: Vec<String>,
+    scopes_supported: Vec<String>,
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
 
 #[utoipa::path(
     get,
     path = "/.well-known/openid-configuration",
     tag = "protocol",
-    responses((status = 200, body = serde_json::Value, description = "The OIDC discovery document."))
+    responses((status = 200, body = DiscoveryDocument))
 )]
 pub(crate) async fn discovery(State(state): State<AppState>) -> impl IntoResponse {
     let issuer = state.oauth.issuer();
+    let document = DiscoveryDocument {
+        issuer: issuer.to_string(),
+        authorization_endpoint: format!("{issuer}/oauth/authorize"),
+        token_endpoint: format!("{issuer}/oauth/token"),
+        userinfo_endpoint: format!("{issuer}/userinfo"),
+        jwks_uri: format!("{issuer}/jwks.json"),
+        response_types_supported: strings(&["code"]),
+        grant_types_supported: strings(&[
+            "authorization_code",
+            "refresh_token",
+            "urn:ietf:params:oauth:grant-type:device_code",
+        ]),
+        device_authorization_endpoint: format!("{issuer}/oauth/device_authorization"),
+        revocation_endpoint: format!("{issuer}/oauth/revoke"),
+        revocation_endpoint_auth_methods_supported: strings(&[
+            "client_secret_basic",
+            "client_secret_post",
+            "none",
+        ]),
+        code_challenge_methods_supported: strings(&["S256"]),
+        token_endpoint_auth_methods_supported: strings(&[
+            "client_secret_basic",
+            "client_secret_post",
+            "none",
+        ]),
+        subject_types_supported: strings(&["public"]),
+        id_token_signing_alg_values_supported: strings(&["RS256"]),
+        scopes_supported: strings(SUPPORTED_SCOPES),
+    };
     (
         [(header::CACHE_CONTROL, "public, max-age=3600")],
-        Json(json!({
-            "issuer": issuer,
-            "authorization_endpoint": format!("{issuer}/oauth/authorize"),
-            "token_endpoint": format!("{issuer}/oauth/token"),
-            "userinfo_endpoint": format!("{issuer}/userinfo"),
-            "jwks_uri": format!("{issuer}/jwks.json"),
-            "response_types_supported": ["code"],
-            "grant_types_supported": [
-                "authorization_code",
-                "refresh_token",
-                "urn:ietf:params:oauth:grant-type:device_code"
-            ],
-            "device_authorization_endpoint": format!("{issuer}/oauth/device_authorization"),
-            "revocation_endpoint": format!("{issuer}/oauth/revoke"),
-            "revocation_endpoint_auth_methods_supported": [
-                "client_secret_basic",
-                "client_secret_post",
-                "none"
-            ],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": [
-                "client_secret_basic",
-                "client_secret_post",
-                "none"
-            ],
-            "subject_types_supported": ["public"],
-            "id_token_signing_alg_values_supported": ["RS256"],
-            "scopes_supported": SUPPORTED_SCOPES,
-        })),
+        Json(document),
     )
+}
+
+/// The JWK set, as the signer produced it.
+///
+/// The key entries are passed through verbatim: their fields belong to RFC 7517, and
+/// re-deriving them here would be a second copy of that contract. The document
+/// is parsed into this type rather than forwarded blind, so the response cannot
+/// drift away from the shape the OpenAPI document promises.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub(crate) struct JwksDocument {
+    keys: Vec<serde_json::Value>,
 }
 
 #[utoipa::path(
     get,
     path = "/jwks.json",
     tag = "protocol",
-    responses((status = 200, body = serde_json::Value, description = "The RS256 signing keys as a JWK set."))
+    responses((status = 200, body = JwksDocument))
 )]
-pub(crate) async fn jwks(State(state): State<AppState>) -> impl IntoResponse {
-    (
+pub(crate) async fn jwks(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let raw = state.oauth.jwks();
+    let document: JwksDocument = serde_json::from_str(&raw).map_err(|_| {
+        problem_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "the signing keys could not be read",
+        )
+    })?;
+    Ok((
         [
             (header::CONTENT_TYPE, "application/json"),
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
-        state.oauth.jwks(),
+        Json(document),
     )
+        .into_response())
 }
 
 #[derive(Debug, Deserialize)]

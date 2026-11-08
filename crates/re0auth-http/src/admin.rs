@@ -622,7 +622,7 @@ pub(crate) async fn list_bindings(
         ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
     ),
     responses(
-        (status = 204, description = "Revoked locally. Unlike the user-facing route this does not notify the upstream."),
+        (status = 204, description = "Revoked. The upstream is told afterwards, best effort, exactly like the user-facing unbind."),
         (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
         (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
         (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),

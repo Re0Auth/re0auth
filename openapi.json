@@ -685,10 +685,11 @@
         "operationId": "discovery",
         "responses": {
           "200": {
-            "description": "The OIDC discovery document.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryDocument"
+                }
               }
             }
           }
@@ -703,10 +704,11 @@
         "operationId": "jwks",
         "responses": {
           "200": {
-            "description": "The RS256 signing keys as a JWK set.",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/JwksDocument"
+                }
               }
             }
           }
@@ -2161,7 +2163,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Revoked locally. Unlike the user-facing route this does not notify the upstream."
+            "description": "Revoked. The upstream is told afterwards, best effort, exactly like the user-facing unbind."
           },
           "400": {
             "content": {
@@ -2973,6 +2975,98 @@
           }
         }
       },
+      "DiscoveryDocument": {
+        "type": "object",
+        "description": "The OIDC discovery document.\n\nA struct rather than a `json!` literal: the OpenAPI schema has to come from\nthe type that serialises the response, and a hand-built object has no type\nto derive one from.",
+        "required": [
+          "issuer",
+          "authorization_endpoint",
+          "token_endpoint",
+          "userinfo_endpoint",
+          "jwks_uri",
+          "response_types_supported",
+          "grant_types_supported",
+          "device_authorization_endpoint",
+          "revocation_endpoint",
+          "revocation_endpoint_auth_methods_supported",
+          "code_challenge_methods_supported",
+          "token_endpoint_auth_methods_supported",
+          "subject_types_supported",
+          "id_token_signing_alg_values_supported",
+          "scopes_supported"
+        ],
+        "properties": {
+          "authorization_endpoint": {
+            "type": "string"
+          },
+          "code_challenge_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "device_authorization_endpoint": {
+            "type": "string"
+          },
+          "grant_types_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id_token_signing_alg_values_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "jwks_uri": {
+            "type": "string"
+          },
+          "response_types_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "revocation_endpoint": {
+            "type": "string"
+          },
+          "revocation_endpoint_auth_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "subject_types_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "token_endpoint": {
+            "type": "string"
+          },
+          "token_endpoint_auth_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "userinfo_endpoint": {
+            "type": "string"
+          }
+        }
+      },
       "Envelope": {
         "type": "object",
         "description": "The B8 envelope (ADR-0049). Six fields, no more.",
@@ -3023,6 +3117,19 @@
           },
           "upstream": {
             "type": "string"
+          }
+        }
+      },
+      "JwksDocument": {
+        "type": "object",
+        "description": "The JWK set, as the signer produced it.\n\nThe key entries are passed through verbatim: their fields belong to RFC 7517, and\nre-deriving them here would be a second copy of that contract. The document\nis parsed into this type rather than forwarded blind, so the response cannot\ndrift away from the shape the OpenAPI document promises.",
+        "required": [
+          "keys"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {}
           }
         }
       },

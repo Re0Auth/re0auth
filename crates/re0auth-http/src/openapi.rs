@@ -75,6 +75,8 @@ use crate::{admin, binding_routes};
         binding_routes::BeginView,
         binding_routes::BindableUpstreamsView,
         oauth::ConsentBody,
+        oauth::DiscoveryDocument,
+        oauth::JwksDocument,
         oauth::DeviceAuthorizationForm,
         oauth::TokenForm,
         oauth::RevokeForm,

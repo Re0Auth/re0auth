@@ -27,6 +27,20 @@ pub async fn binding_contract<S: Storage>(store: &S) {
             .expect("find binding"),
         Some(first.clone())
     );
+    assert_eq!(
+        store.bindings().get(&first.id).await.expect("get binding"),
+        Some(first.clone()),
+        "a binding is reachable by id, which is how the admin surface addresses it"
+    );
+    assert_eq!(
+        store
+            .bindings()
+            .get(&BindingId::new())
+            .await
+            .expect("get unknown binding"),
+        None,
+        "an unknown id is None, not an error"
+    );
 
     let replacement = Binding {
         id: BindingId::new(),
