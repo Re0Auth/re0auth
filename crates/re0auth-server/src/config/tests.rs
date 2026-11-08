@@ -753,3 +753,53 @@ fn provider_display_name_defaults_to_its_selector_name() {
     provider.display_name = "  GitHub  ".to_string();
     assert_eq!(provider.effective_display_name(), "GitHub");
 }
+
+fn resource_with_view(view: Option<ViewConfig>) -> ResourceConfig {
+    ResourceConfig {
+        name: "scores".to_string(),
+        path: "/v1/scores/{subject}".to_string(),
+        scope: None,
+        method: None,
+        idempotent: None,
+        body: None,
+        view,
+    }
+}
+
+#[test]
+fn a_resource_view_parses_into_a_spec() {
+    let resource = resource_with_view(Some(ViewConfig {
+        data_path: Some("$.data".to_string()),
+        items_path: None,
+        fields: Some(std::collections::BTreeMap::from([(
+            "score".to_string(),
+            "$.score".to_string(),
+        )])),
+    }));
+    let spec = resource.to_spec().expect("viewed resource");
+    let view = spec.view.expect("view is attached");
+    assert_eq!(view.fields.len(), 1);
+    assert!(view.items_path.is_none());
+}
+
+#[test]
+fn data_and_items_paths_are_mutually_exclusive() {
+    let resource = resource_with_view(Some(ViewConfig {
+        data_path: Some("$.data".to_string()),
+        items_path: Some("$.data.items".to_string()),
+        fields: None,
+    }));
+    let error = resource.to_spec().expect_err("conflicting roots");
+    assert!(error.to_string().contains("mutually exclusive"), "{error}");
+}
+
+#[test]
+fn an_invalid_view_path_is_rejected_at_load() {
+    let resource = resource_with_view(Some(ViewConfig {
+        data_path: Some("$.data.".to_string()),
+        items_path: None,
+        fields: None,
+    }));
+    let error = resource.to_spec().expect_err("bad path");
+    assert!(error.to_string().contains("invalid view path"), "{error}");
+}
