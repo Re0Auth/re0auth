@@ -301,6 +301,10 @@ fn map_transport_error(error: &anyhow::Error) -> UpstreamError {
         // the breaker and let a permanently-misconfigured resource trip the whole
         // connector for unrelated callers (ADR-0025).
         400 | 422 => UpstreamError::Rejected,
+        // 500 is a broken upstream, not a transient one: retrying it just
+        // multiplies the load that broke it. It still counts as an internal
+        // fault, so the breaker can open on a real outage.
+        500 => UpstreamError::Internal,
         _ => UpstreamError::Unavailable,
     }
 }
@@ -573,9 +577,10 @@ mod tests {
                 retry_after_secs: None
             }
         );
+        // 500 is a broken upstream, not a transient one (F-4).
         assert_eq!(
             map_transport_error(&transport(500)),
-            UpstreamError::Unavailable
+            UpstreamError::Internal
         );
     }
 
@@ -605,6 +610,19 @@ mod tests {
             let mapped = map_transport_error(&transport(status));
             assert_eq!(mapped, UpstreamError::Rejected, "status {status}");
             assert_eq!(mapped.fault_class(), FaultClass::Business);
+        }
+    }
+
+    #[test]
+    fn transport_failures_are_the_only_retryable_class() {
+        // The gateway retries exactly Unavailable. 502/503/504 are transient;
+        // everything else is a judgement the retry loop must not second-guess.
+        for status in [502, 503, 504] {
+            assert_eq!(
+                map_transport_error(&transport(status)),
+                UpstreamError::Unavailable,
+                "status {status}"
+            );
         }
     }
 

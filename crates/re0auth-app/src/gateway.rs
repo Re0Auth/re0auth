@@ -128,6 +128,30 @@ struct CachedView {
 
 const DEFAULT_PAGE_LIMIT: u32 = 20;
 const MAX_PAGE_LIMIT: u32 = 100;
+const MAX_ATTEMPTS: u32 = 3;
+const RETRY_BASE_MS: u64 = 100;
+
+/// Only transport failures are worth a second attempt.
+///
+/// Every business outcome (401/403/404/400/422) is permanent for this request,
+/// and a 500 was mapped to Internal before reaching here.
+fn retryable(error: &UpstreamError) -> bool {
+    matches!(error, UpstreamError::Unavailable)
+}
+
+/// Exponential backoff with jitter.
+///
+/// The jitter exists so instances that failed together do not retry together.
+/// It carries no business meaning, so it deliberately does not go through the
+/// clock port.
+fn retry_delay(attempt: u32) -> std::time::Duration {
+    let base = RETRY_BASE_MS << (attempt - 1).min(4);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::from(elapsed.subsec_nanos()))
+        .unwrap_or(0);
+    std::time::Duration::from_millis(base + nanos % (base + 1))
+}
 
 impl CachedView {
     /// Parses the upstream body and applies the declared view.
@@ -460,8 +484,7 @@ impl GatewayService {
         let resource = ResourceRequest::new(request.resource, subject);
         let started = std::time::Instant::now();
         match self
-            .broker
-            .fetch_raw_data(&endpoint, &sub_token, &resource)
+            .fetch_with_retry(&endpoint, &sub_token, &resource, spec.idempotent)
             .await
         {
             Ok(payload) => {
@@ -516,6 +539,32 @@ impl GatewayService {
                 )
                 .await?;
                 Err(error.into())
+            }
+        }
+    }
+
+    /// Retries an idempotent read on transport failures (F-4).
+    ///
+    /// Bounded at three attempts with exponential backoff plus jitter. Only
+    /// idempotent resources are retried, and only for transport class failures:
+    /// a 500 has already been mapped to Internal upstream of this point, because
+    /// retrying a broken server multiplies the load that broke it.
+    async fn fetch_with_retry(
+        &self,
+        endpoint: &ConnectorEndpoint,
+        token: &re0auth_api::SecretString,
+        resource: &ResourceRequest,
+        idempotent: bool,
+    ) -> Result<UpstreamPayload, UpstreamError> {
+        let mut attempt = 1;
+        loop {
+            match self.broker.fetch_raw_data(endpoint, token, resource).await {
+                Ok(payload) => return Ok(payload),
+                Err(error) if idempotent && attempt < MAX_ATTEMPTS && retryable(&error) => {
+                    tokio::time::sleep(retry_delay(attempt)).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
             }
         }
     }

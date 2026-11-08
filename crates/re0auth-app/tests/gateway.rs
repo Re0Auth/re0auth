@@ -1,9 +1,12 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use async_trait::async_trait;
 use re0auth_api::audit::{AccessSource, AccessTelemetry};
 use re0auth_api::cache::Cache;
 use re0auth_api::connector::{
-    ConnectorEndpoint, EgressPolicy, FaultClass, ResourceSpec, UpstreamError, UpstreamPayload,
+    BodyField, BodyValue, ConnectorBroker, ConnectorEndpoint, EgressPolicy, FaultClass,
+    ResourceMethod, ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
 };
 use re0auth_api::ports::{Binding, BindingStatus, Storage, TelemetrySink, User, UserRole};
 use re0auth_api::secret::SecretSealer;
@@ -423,8 +426,10 @@ async fn rate_limit_is_internal_and_opens_the_breaker() {
 async fn half_open_admits_one_probe_then_closes_on_success() {
     let app = harness().await;
     // Threshold 2, cooldown 60s, per the harness policy.
+    // A 500 (Internal) still counts against the breaker but is not retried,
+    // so the call count below measures breaker behaviour only.
     app.connector
-        .set_response("scores", Err(UpstreamError::Unavailable));
+        .set_response("scores", Err(UpstreamError::Internal));
     let granted = scopes();
     for _ in 0..2 {
         let _ = app
@@ -1036,4 +1041,146 @@ async fn a_served_read_is_recorded_as_access_telemetry() {
     assert_eq!(event.resource, "scores");
     assert_eq!(event.actor_user_id, Some(app.user.id));
     assert_eq!(event.source, AccessSource::Upstream);
+}
+
+// ---- retry policy (F-4) --------------------------------------------------
+
+/// Fails the first N calls with a transport error, then answers normally.
+struct FlakyBroker {
+    failures: usize,
+    internal: bool,
+    calls: AtomicUsize,
+}
+
+impl FlakyBroker {
+    fn new(failures: usize) -> Self {
+        Self {
+            failures,
+            internal: false,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn internal() -> Self {
+        Self {
+            failures: usize::MAX,
+            internal: true,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl ConnectorBroker for FlakyBroker {
+    async fn fetch_raw_data(
+        &self,
+        _endpoint: &ConnectorEndpoint,
+        _token: &SecretString,
+        _resource: &ResourceRequest,
+    ) -> Result<UpstreamPayload, UpstreamError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if call <= self.failures {
+            return Err(if self.internal {
+                UpstreamError::Internal
+            } else {
+                UpstreamError::Unavailable
+            });
+        }
+        Ok(payload(br#"{"score":1}"#))
+    }
+}
+
+fn service_with_broker(app: &Harness, broker: Arc<dyn ConnectorBroker>) -> GatewayService {
+    GatewayService::new(
+        app.store.clone(),
+        app.connector.clone(),
+        broker,
+        Arc::new(MockSealer::new()),
+        app.clock.clone(),
+        Arc::new(CircuitTracker::new(CircuitPolicy::default())),
+        1024,
+    )
+}
+
+#[tokio::test]
+async fn an_idempotent_read_is_retried_and_then_succeeds() {
+    let app = harness().await;
+    let broker = Arc::new(FlakyBroker::new(1));
+    let service = service_with_broker(&app, broker.clone());
+    let granted = scopes();
+    service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect("the second attempt succeeds");
+    assert_eq!(broker.calls(), 2, "one retry, not a retry storm");
+}
+
+#[tokio::test]
+async fn a_persistent_transport_failure_stops_after_three_attempts() {
+    let app = harness().await;
+    let broker = Arc::new(FlakyBroker::new(usize::MAX));
+    let service = service_with_broker(&app, broker.clone());
+    let granted = scopes();
+    let error = service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect_err("still failing");
+    assert!(
+        matches!(error, GatewayError::Upstream(UpstreamError::Unavailable)),
+        "{error:?}"
+    );
+    assert_eq!(broker.calls(), 3, "bounded attempts");
+}
+
+#[tokio::test]
+async fn an_upstream_500_is_not_retried() {
+    // 500 is a broken upstream, not a transient one; retrying multiplies the
+    // load that broke it.
+    let app = harness().await;
+    let broker = Arc::new(FlakyBroker::internal());
+    let service = service_with_broker(&app, broker.clone());
+    let granted = scopes();
+    let error = service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect_err("500 fails");
+    assert!(
+        matches!(error, GatewayError::Upstream(UpstreamError::Internal)),
+        "{error:?}"
+    );
+    assert_eq!(broker.calls(), 1, "no retry for a non-transient failure");
+}
+
+#[tokio::test]
+async fn a_non_idempotent_resource_is_never_retried() {
+    let app = harness().await;
+    let mut endpoint = app.endpoint.clone();
+    endpoint.resources.push(
+        ResourceSpec::new("write", "/v1/write/{subject}")
+            .expect("spec")
+            .with_scope("scores.read")
+            .expect("scope")
+            .with_transport(
+                ResourceMethod::Post,
+                vec![BodyField {
+                    name: "probe".to_string(),
+                    value: BodyValue::Constant("1".to_string()),
+                }],
+                false,
+            )
+            .expect("transport"),
+    );
+    app.connector.register(endpoint);
+    let broker = Arc::new(FlakyBroker::new(1));
+    let service = service_with_broker(&app, broker.clone());
+    let granted = scopes();
+    service
+        .fetch(request(app.user.id, app.connector_id, &granted, "write"))
+        .await
+        .expect_err("a POST that may have taken effect must not be replayed");
+    assert_eq!(broker.calls(), 1);
 }
