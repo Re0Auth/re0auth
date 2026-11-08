@@ -146,6 +146,70 @@ pub struct ResourceConfig {
     /// placeholders `{subject}` / `{credential}`. Only valid with `method = "post"`.
     #[serde(default)]
     pub body: Option<std::collections::BTreeMap<String, String>>,
+    /// Declarative view for the normalized endpoint (ADR-0049). Absent means the
+    /// envelope carries the upstream JSON unchanged.
+    #[serde(default)]
+    pub view: Option<ViewConfig>,
+}
+
+/// `[connectors.resources.view]`: how the normalized endpoint shapes one resource.
+#[derive(Debug, Deserialize, Default)]
+pub struct ViewConfig {
+    /// Data root for non-list resources; defaults to `$`.
+    #[serde(default)]
+    pub data_path: Option<String>,
+    /// Array position for list resources. Mutually exclusive with `data_path`.
+    #[serde(default)]
+    pub items_path: Option<String>,
+    /// Output field name → path relative to the data root or to each item.
+    #[serde(default)]
+    pub fields: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl ViewConfig {
+    fn to_spec(&self, resource: &str) -> anyhow::Result<re0auth_api::view::ViewSpec> {
+        use re0auth_api::view::{FieldMapping, JsonPath, ViewSpec};
+
+        if self.data_path.is_some() && self.items_path.is_some() {
+            anyhow::bail!("resource {resource}: data_path and items_path are mutually exclusive");
+        }
+        let path = |raw: &str| {
+            JsonPath::parse(raw).map_err(|error| {
+                anyhow::anyhow!("resource {resource}: invalid view path {raw:?}: {error}")
+            })
+        };
+        let data_path = match &self.data_path {
+            Some(raw) => path(raw)?,
+            None => path("$")?,
+        };
+        let items_path = match &self.items_path {
+            Some(raw) => Some(path(raw)?),
+            None => None,
+        };
+        let fields = self
+            .fields
+            .as_ref()
+            .map(|map| {
+                map.iter()
+                    .map(|(name, raw)| {
+                        if name.trim().is_empty() {
+                            anyhow::bail!("resource {resource}: view field name is empty");
+                        }
+                        Ok(FieldMapping {
+                            name: name.clone(),
+                            path: path(raw)?,
+                        })
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        Ok(ViewSpec {
+            data_path,
+            items_path,
+            fields,
+        })
+    }
 }
 
 impl ResourceConfig {
@@ -186,6 +250,10 @@ impl ResourceConfig {
         let spec = spec
             .with_transport(method, body, idempotent)
             .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?;
+        let spec = match &self.view {
+            Some(view) => spec.with_view(view.to_spec(&self.name)?),
+            None => spec,
+        };
         match &self.scope {
             Some(scope) => spec
                 .with_scope(scope.clone())

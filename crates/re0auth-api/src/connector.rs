@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 
+use crate::view::ViewSpec;
 use crate::{ConnectorId, Re0Result, SecretString};
 
 /// One resource the connector exposes, and the path template that reaches it.
@@ -33,6 +34,9 @@ pub struct ResourceSpec {
     /// `false`. Default is `true` only because `ResourceMethod::Get` is the
     /// default; `with_transport` requires the author to state it.
     pub idempotent: bool,
+    /// Declarative view for the normalized endpoint (ADR-0049). `None` means
+    /// the envelope carries the upstream JSON unchanged.
+    pub view: Option<ViewSpec>,
 }
 
 /// The HTTP method a resource is read with.
@@ -131,7 +135,15 @@ impl ResourceSpec {
             method: ResourceMethod::Get,
             body: Vec::new(),
             idempotent: true,
+            view: None,
         })
+    }
+
+    /// Attaches the declarative view used by the normalized endpoint.
+    #[must_use]
+    pub fn with_view(mut self, view: ViewSpec) -> Self {
+        self.view = Some(view);
+        self
     }
 
     /// Overrides the derived scope. Rejects malformed scopes so a typo cannot

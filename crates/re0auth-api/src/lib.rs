@@ -17,6 +17,7 @@ pub mod rate;
 pub mod redirect_uri;
 pub mod schedule;
 pub mod secret;
+pub mod view;
 
 pub use secrecy::SecretString;
 
