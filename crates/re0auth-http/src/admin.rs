@@ -167,6 +167,23 @@ fn check_redirect_uris(values: &[String]) -> Result<(), ApiError> {
 
 // ---- Clients -------------------------------------------------------------
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/clients",
+    tag = "admin",
+    security(("session" = [])),
+    params(
+        ("cursor" = Option<String>, Query, description = "Last id of the previous page."),
+        ("limit" = Option<u32>, Query)
+    ),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::Page<re0auth_app::admin_service::AdminClientView>),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn list_clients(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -183,7 +200,7 @@ pub(crate) async fn list_clients(
     Ok(no_store(Json(page).into_response()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct CreateClientBody {
     name: String,
     #[serde(default)]
@@ -198,6 +215,21 @@ pub(crate) struct CreateClientBody {
     status: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/admin/clients",
+    tag = "admin",
+    security(("session" = [])),
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    request_body = CreateClientBody,
+    responses(
+        (status = 201, body = re0auth_app::admin_service::CreatedClientView, description = "The secret is returned here exactly once."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn create_client(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -238,6 +270,20 @@ pub(crate) async fn create_client(
     Ok(no_store(response))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/clients/{id}",
+    tag = "admin",
+    security(("session" = [])),
+    params(("id" = String, Path, description = "The client id.")),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::AdminClientView),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn get_client(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -252,7 +298,7 @@ pub(crate) async fn get_client(
     Ok(no_store(Json(view).into_response()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct UpdateClientBody {
     #[serde(default)]
     name: Option<String>,
@@ -268,6 +314,25 @@ pub(crate) struct UpdateClientBody {
     expected_updated_at: Option<i64>,
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/admin/clients/{id}",
+    tag = "admin",
+    security(("session" = [])),
+    params(
+        ("id" = String, Path, description = "The client id."),
+        ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
+    ),
+    request_body = UpdateClientBody,
+    responses(
+        (status = 200, body = re0auth_app::admin_service::AdminClientView),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+        (status = 409, body = crate::ProblemBody, content_type = "application/problem+json", description = "expected_updated_at did not match.")
+    )
+)]
 pub(crate) async fn update_client(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -304,6 +369,23 @@ pub(crate) async fn update_client(
     Ok(no_store(Json(view).into_response()))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/admin/clients/{id}/rotate-secret",
+    tag = "admin",
+    security(("session" = [])),
+    params(
+        ("id" = String, Path, description = "The client id."),
+        ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
+    ),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::RotatedSecretView, description = "The new secret, returned exactly once."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn rotate_client_secret(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -321,6 +403,23 @@ pub(crate) async fn rotate_client_secret(
 
 // ---- Users ---------------------------------------------------------------
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/users",
+    tag = "admin",
+    security(("session" = [])),
+    params(
+        ("cursor" = Option<String>, Query, description = "Last id of the previous page."),
+        ("limit" = Option<u32>, Query)
+    ),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::Page<re0auth_app::admin_service::AdminUserView>),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn list_users(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -337,7 +436,7 @@ pub(crate) async fn list_users(
     Ok(no_store(Json(page).into_response()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct UpdateUserBody {
     /// At least one of \`role\` / \`status\` must be present.
     #[serde(default)]
@@ -346,6 +445,25 @@ pub(crate) struct UpdateUserBody {
     status: Option<String>,
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/admin/users/{id}",
+    tag = "admin",
+    security(("session" = [])),
+    params(
+        ("id" = String, Path, description = "The user id."),
+        ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
+    ),
+    request_body = UpdateUserBody,
+    responses(
+        (status = 200, body = re0auth_app::admin_service::AdminUserView),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+        (status = 409, body = crate::ProblemBody, content_type = "application/problem+json", description = "Self-demotion, banning the last admin, or self-ban.")
+    )
+)]
 pub(crate) async fn update_user(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -387,6 +505,19 @@ pub(crate) async fn update_user(
 
 // ---- Connectors (read-only) ----------------------------------------------
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/connectors",
+    tag = "admin",
+    security(("session" = [])),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::Page<re0auth_app::admin_service::AdminConnectorView>, description = "Read-only: configuration is the source of truth."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn list_connectors(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -405,6 +536,20 @@ pub(crate) async fn list_connectors(
     Ok(no_store(Json(page).into_response()))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/connectors/{id}",
+    tag = "admin",
+    security(("session" = [])),
+    params(("id" = String, Path, description = "The connector id.")),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::AdminConnectorView),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn get_connector(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -421,6 +566,26 @@ pub(crate) async fn get_connector(
 
 // ---- Bindings ------------------------------------------------------------
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/bindings",
+    tag = "admin",
+    security(("session" = [])),
+    params(
+        ("user" = Option<String>, Query, description = "Only this user's bindings."),
+        ("connector" = Option<String>, Query, description = "Only this upstream."),
+        ("status" = Option<String>, Query, description = "pending, active, needs_reauth or revoked."),
+        ("cursor" = Option<String>, Query, description = "Last id of the previous page."),
+        ("limit" = Option<u32>, Query)
+    ),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::Page<re0auth_app::admin_service::AdminBindingView>),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn list_bindings(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -447,6 +612,24 @@ pub(crate) async fn list_bindings(
 }
 
 /// The admin killswitch: revokes any binding, and the fact names the admin.
+#[utoipa::path(
+    delete,
+    path = "/api/admin/bindings/{id}",
+    tag = "admin",
+    security(("session" = [])),
+    params(
+        ("id" = String, Path, description = "The binding id."),
+        ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
+    ),
+    responses(
+        (status = 204, description = "Revoked locally. Unlike the user-facing route this does not notify the upstream."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn revoke_binding(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -464,6 +647,29 @@ pub(crate) async fn revoke_binding(
 
 // ---- Audit ---------------------------------------------------------------
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/audit",
+    tag = "admin",
+    security(("session" = [])),
+    params(
+        ("actor" = Option<String>, Query, description = "Only facts whose actor is this user."),
+        ("client" = Option<String>, Query, description = "Only facts about this client."),
+        ("action" = Option<String>, Query, description = "One audit action name, e.g. user_banned."),
+        ("tier" = Option<String>, Query, description = "fact or telemetry."),
+        ("from" = Option<i64>, Query, description = "Earliest time, Unix seconds."),
+        ("to" = Option<i64>, Query, description = "Latest time, Unix seconds."),
+        ("cursor" = Option<String>, Query, description = "Last id of the previous page."),
+        ("limit" = Option<u32>, Query)
+    ),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::Page<re0auth_app::admin_service::AdminAuditView>),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+    )
+)]
 pub(crate) async fn list_audit(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -506,12 +712,28 @@ pub(crate) async fn list_audit(
 /// Same per-item cascade as the user-facing killswitch (F-6/B16): an upstream
 /// that refuses keeps its row and shows up in "failed" instead of silently
 /// disappearing from the local database.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct KillswitchBody {
     #[serde(default)]
     user: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/admin/killswitch",
+    tag = "admin",
+    security(("session" = [])),
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    request_body = KillswitchBody,
+    responses(
+        (status = 200, body = re0auth_app::auth::BindingRevocationSummary, description = "What was revoked, and what the upstream refused to confirm."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json", description = "Binding is not configured on this deployment.")
+    )
+)]
 pub(crate) async fn killswitch(
     State(state): State<AppState>,
     headers: HeaderMap,

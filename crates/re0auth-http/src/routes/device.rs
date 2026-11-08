@@ -27,6 +27,19 @@ pub(crate) struct DevicePageQuery {
     idp: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/device/start",
+    tag = "device",
+    params(
+        ("user_code" = String, Query, description = "The code shown on the device."),
+        ("idp" = Option<String>, Query, description = "Selects the provider on the device page.")
+    ),
+    responses(
+        (status = 302, description = "To the identity provider so the user can sign in before approving."),
+        (status = 429, description = "Too many attempts for this address or code; the page says so.", body = String, content_type = "text/html")
+    )
+)]
 pub(crate) async fn device_start(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -101,6 +114,15 @@ pub(crate) async fn device_start(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/device/qr.svg",
+    tag = "device",
+    params(("user_code" = String, Query, description = "The code to encode.")),
+    responses(
+        (status = 200, description = "An SVG QR code for the verification URI. An unknown code answers an HTML error page instead.", body = String, content_type = "image/svg+xml")
+    )
+)]
 pub(crate) async fn device_qr(
     State(state): State<AppState>,
     Query(query): Query<DevicePageQuery>,
@@ -146,11 +168,18 @@ pub(crate) fn qr_svg(text: &str) -> Result<String, qrcodegen::DataTooLong> {
     ))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct DeviceDecisionForm {
     ticket: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/device/approve",
+    tag = "device",
+    request_body(content = DeviceDecisionForm, content_type = "application/x-www-form-urlencoded"),
+    responses((status = 200, description = "The result page telling the user to return to their device.", body = String, content_type = "text/html"))
+)]
 pub(crate) async fn device_approve(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -159,6 +188,13 @@ pub(crate) async fn device_approve(
     decide_device(&state, &headers, form, ApprovalDecision::Approve).await
 }
 
+#[utoipa::path(
+    post,
+    path = "/device/deny",
+    tag = "device",
+    request_body(content = DeviceDecisionForm, content_type = "application/x-www-form-urlencoded"),
+    responses((status = 200, description = "The result page telling the user the request was denied.", body = String, content_type = "text/html"))
+)]
 pub(crate) async fn device_deny(
     State(state): State<AppState>,
     headers: HeaderMap,

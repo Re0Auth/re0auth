@@ -24,13 +24,19 @@ use crate::rate::charge_unauthenticated;
 use crate::request_id;
 use crate::{ApiError, AppState, Shape, auth_error, no_store};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct ProvidersResponse {
     providers: Vec<ProviderView>,
 }
 
 /// Public: the login page needs this before a session exists. It exposes only
 /// selector ids and display labels, never client ids or secrets.
+#[utoipa::path(
+    get,
+    path = "/api/auth/providers",
+    tag = "auth",
+    responses((status = 200, body = ProvidersResponse, description = "The providers the login page may offer."))
+)]
 pub(crate) async fn providers(State(state): State<AppState>) -> Json<ProvidersResponse> {
     Json(ProvidersResponse {
         providers: state.auth.providers(),
@@ -44,6 +50,19 @@ pub(crate) struct LoginQuery {
     idp: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/auth/login",
+    tag = "auth",
+    params(
+        ("return_to" = Option<String>, Query, description = "Where to land after login."),
+        ("idp" = Option<String>, Query, description = "Selects the provider at start; the callback ignores it.")
+    ),
+    responses(
+        (status = 302, description = "Redirect to the identity provider, or back to the selector."),
+        (status = 429, description = "Rate limited; the Retry-After header is preserved.", body = crate::OAuthErrorBody, content_type = "application/json")
+    )
+)]
 pub(crate) async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -102,6 +121,20 @@ pub(crate) struct CallbackQuery {
     error: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/auth/callback",
+    tag = "auth",
+    params(
+        ("code" = Option<String>, Query),
+        ("state" = Option<String>, Query, description = "Must match the login intent cookie (login CSRF)."),
+        ("error" = Option<String>, Query)
+    ),
+    responses(
+        (status = 302, description = "Session created; sets the session cookies."),
+        (status = 200, description = "Device approval page, when the login belonged to a device flow.", body = String, content_type = "text/html")
+    )
+)]
 pub(crate) async fn auth_callback(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -160,13 +193,13 @@ pub(crate) async fn auth_callback(
 /// `web/src/lib/api.ts`, and `api_contract` compares the two by serialising this
 /// type. A hand-built object cannot be compared to anything, so the drift it
 /// allowed was invisible.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MeView {
     pub user: MeUserView,
     pub csrf_token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MeUserView {
     pub id: String,
     pub display_name: String,
@@ -174,6 +207,16 @@ pub struct MeUserView {
     pub role: &'static str,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/me",
+    tag = "session",
+    security(("session" = [])),
+    responses(
+        (status = 200, body = MeView, description = "The caller, plus the CSRF token to echo in X-CSRF-Token."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json", description = "No session, or the CSRF check failed.")
+    )
+)]
 pub(crate) async fn me(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -195,6 +238,16 @@ pub(crate) async fn me(
     Ok(no_store(Json(view).into_response()))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/me/authorizations",
+    tag = "session",
+    security(("session" = [])),
+    responses(
+        (status = 200, body = Vec<re0auth_app::auth::AuthorizationView>),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn authorizations(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -208,6 +261,21 @@ pub(crate) async fn authorizations(
     Ok(no_store(Json(views).into_response()))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/me/authorizations/{client_id}",
+    tag = "session",
+    security(("session" = [])),
+    params(
+        ("client_id" = String, Path, description = "The client whose consent is withdrawn."),
+        ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
+    ),
+    responses(
+        (status = 204, description = "The consent is gone."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json", description = "The client id is not a UUID."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn revoke_authorization(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -226,6 +294,17 @@ pub(crate) async fn revoke_authorization(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/logout",
+    tag = "session",
+    security(("session" = [])),
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    responses(
+        (status = 204, description = "The session is gone and its cookies are cleared."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -241,6 +320,17 @@ pub(crate) async fn logout(
     Ok(response)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/logout-all",
+    tag = "session",
+    security(("session" = [])),
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    responses(
+        (status = 204, description = "Every session of the caller is revoked."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn logout_all(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -9,6 +9,7 @@ mod cookies;
 mod copy;
 mod error;
 mod limit_headers;
+pub mod openapi;
 mod pages;
 mod parsers;
 mod rate;
@@ -152,7 +153,7 @@ pub fn router(state: AppState) -> Router {
     let inbound_body_bytes = state.inbound_body_bytes;
     let request_timeout = state.request_timeout;
     Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(healthz))
         // INV-READY-01: readiness means "can serve requests", not "process is
         // up". The probe touches storage so an orchestrator stops routing to an
         // instance whose database is gone.
@@ -235,6 +236,27 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Liveness: the process answers at all. It touches nothing.
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "ops",
+    responses((status = 200, description = "The process is up.", body = String, content_type = "text/plain"))
+)]
+async fn healthz() -> &'static str {
+    "ok"
+}
+
+/// Readiness: storage answers, so an orchestrator can route traffic here.
+#[utoipa::path(
+    get,
+    path = "/readyz",
+    tag = "ops",
+    responses(
+        (status = 200, description = "Storage answers.", body = String, content_type = "text/plain"),
+        (status = 503, description = "Storage is gone; do not route to this instance.", body = String, content_type = "text/plain")
+    )
+)]
 async fn readyz(State(state): State<AppState>) -> (StatusCode, &'static str) {
     match state.oauth.check_storage().await {
         Ok(()) => (StatusCode::OK, "ready"),

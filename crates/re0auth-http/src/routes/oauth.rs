@@ -23,6 +23,12 @@ use crate::{
     unsupported_grant_type,
 };
 
+#[utoipa::path(
+    get,
+    path = "/.well-known/openid-configuration",
+    tag = "protocol",
+    responses((status = 200, body = serde_json::Value, description = "The OIDC discovery document."))
+)]
 pub(crate) async fn discovery(State(state): State<AppState>) -> impl IntoResponse {
     let issuer = state.oauth.issuer();
     (
@@ -59,6 +65,12 @@ pub(crate) async fn discovery(State(state): State<AppState>) -> impl IntoRespons
     )
 }
 
+#[utoipa::path(
+    get,
+    path = "/jwks.json",
+    tag = "protocol",
+    responses((status = 200, body = serde_json::Value, description = "The RS256 signing keys as a JWK set."))
+)]
 pub(crate) async fn jwks(State(state): State<AppState>) -> impl IntoResponse {
     (
         [
@@ -82,6 +94,26 @@ pub(crate) struct AuthorizeQuery {
     nonce: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/oauth/authorize",
+    tag = "protocol",
+    security(("session" = [])),
+    params(
+        ("response_type" = String, Query, description = "Must be code."),
+        ("client_id" = String, Query),
+        ("redirect_uri" = String, Query, description = "Must match one of the client's registered URIs."),
+        ("scope" = String, Query),
+        ("state" = Option<String>, Query),
+        ("code_challenge" = String, Query, description = "PKCE challenge; S256 only."),
+        ("code_challenge_method" = String, Query, description = "Must be S256."),
+        ("nonce" = Option<String>, Query)
+    ),
+    responses(
+        (status = 302, description = "To the client's redirect_uri with a code, or to the consent screen."),
+        (status = 400, body = crate::OAuthErrorBody, content_type = "application/json", description = "RFC 6749 flat error body.")
+    )
+)]
 pub(crate) async fn authorize(
     State(state): State<AppState>,
     Query(query): Query<AuthorizeQuery>,
@@ -152,11 +184,22 @@ pub(crate) async fn authorize(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PendingQuery {
     request: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/oauth/pending",
+    tag = "protocol",
+    params(("request" = String, Query, description = "The pending authorization request id.")),
+    responses(
+        (status = 200, body = re0auth_app::oauth::PendingConsentView),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn oauth_pending(
     State(state): State<AppState>,
     Query(query): Query<PendingQuery>,
@@ -175,12 +218,24 @@ pub(crate) async fn oauth_pending(
     Ok(no_store(Json(view).into_response()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct ConsentBody {
     request_id: String,
     decision: ConsentDecision,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/oauth/consent",
+    tag = "protocol",
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    request_body = ConsentBody,
+    responses(
+        (status = 200, body = re0auth_app::oauth::ConsentOutcome),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn oauth_consent(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -202,13 +257,24 @@ pub(crate) async fn oauth_consent(
     Ok(no_store(Json(outcome).into_response()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct DeviceAuthorizationForm {
     client_id: Option<String>,
     client_secret: Option<String>,
     scope: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/oauth/device_authorization",
+    tag = "protocol",
+    request_body(content = DeviceAuthorizationForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, body = re0auth_app::oauth::DeviceAuthorizationResponse),
+        (status = 400, body = crate::OAuthErrorBody, content_type = "application/json"),
+        (status = 429, body = crate::OAuthErrorBody, content_type = "application/json")
+    )
+)]
 pub(crate) async fn device_authorization(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -239,7 +305,7 @@ pub(crate) async fn device_authorization(
     Ok(no_store(Json(response).into_response()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct TokenForm {
     grant_type: Option<String>,
     client_id: Option<String>,
@@ -251,6 +317,17 @@ pub(crate) struct TokenForm {
     device_code: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/oauth/token",
+    tag = "protocol",
+    request_body(content = TokenForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, body = re0auth_app::oauth::TokenResponse),
+        (status = 400, body = crate::OAuthErrorBody, content_type = "application/json"),
+        (status = 401, body = crate::OAuthErrorBody, content_type = "application/json")
+    )
+)]
 pub(crate) async fn token(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -319,6 +396,16 @@ pub(crate) async fn token(
     Ok(no_store(Json(response).into_response()))
 }
 
+#[utoipa::path(
+    get,
+    path = "/userinfo",
+    tag = "protocol",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, body = re0auth_app::oauth::UserInfo),
+        (status = 401, body = crate::OAuthErrorBody, content_type = "application/json")
+    )
+)]
 pub(crate) async fn userinfo(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -340,7 +427,7 @@ pub(crate) async fn userinfo(
         .map_err(|error| oauth_error(error, Shape::Rfc6749))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct RevokeForm {
     token: Option<String>,
     client_id: Option<String>,
@@ -357,6 +444,16 @@ pub(crate) struct RevokeForm {
 /// this endpoint as an oracle for whether a token exists. A malformed request
 /// (missing `token`, bad `client_id`) still gets an error, because that is a
 /// client bug rather than a probe.
+#[utoipa::path(
+    post,
+    path = "/oauth/revoke",
+    tag = "protocol",
+    request_body(content = RevokeForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Always 200 for a well-formed request, even when the token was unknown: answering otherwise would make this endpoint an existence oracle."),
+        (status = 400, body = crate::OAuthErrorBody, content_type = "application/json")
+    )
+)]
 pub(crate) async fn revoke(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,

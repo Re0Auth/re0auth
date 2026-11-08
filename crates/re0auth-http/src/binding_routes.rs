@@ -27,7 +27,7 @@ use crate::{
 /// A POST rather than a GET with a query string: starting a flow writes a
 /// pending binding, so a link that any page can trigger is exactly the CSRF
 /// this route used to be unable to defend while it answered 302.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct BeginBody {
     upstream: String,
     #[serde(default)]
@@ -35,13 +35,13 @@ pub(crate) struct BeginBody {
 }
 
 /// Where the SPA should send the browser once the flow exists.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct BeginView {
     pub(crate) authorization_url: String,
 }
 
 /// The upstreams a user may start a flow for, as configured.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct BindableUpstreamsView {
     pub(crate) upstreams: Vec<String>,
 }
@@ -55,6 +55,19 @@ pub(crate) struct BindableUpstreamsView {
 /// CSRF-checked like every other state-changing route: without it an attacker
 /// could make a victim's browser start a binding flow the victim never asked
 /// for, and the callback would then attach whatever account the attacker chose.
+#[utoipa::path(
+    post,
+    path = "/api/me/bindings/begin",
+    tag = "bindings",
+    security(("session" = [])),
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    request_body = BeginBody,
+    responses(
+        (status = 200, body = BeginView, description = "Where to send the browser to authorize the upstream."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json", description = "Binding is not configured on this deployment.")
+    )
+)]
 pub(crate) async fn begin(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -88,6 +101,16 @@ pub(crate) async fn begin(
 ///
 /// Read-only, so no CSRF: the portal needs this to render a connect action at
 /// all, because a `ConnectorRegistry` resolves by id and cannot enumerate.
+#[utoipa::path(
+    get,
+    path = "/api/me/bindings/upstreams",
+    tag = "bindings",
+    security(("session" = [])),
+    responses(
+        (status = 200, body = BindableUpstreamsView, description = "Upstreams the deployment lets the caller bind."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn upstreams(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -110,6 +133,21 @@ pub(crate) async fn upstreams(
 /// browser navigation from the upstream, which cannot carry our header. What
 /// authenticates it is the one-shot state, which only the flow that started it
 /// could produce — and the user comes from that flow, never from this request.
+#[utoipa::path(
+    get,
+    path = "/api/me/bindings/callback",
+    tag = "bindings",
+    security(("session" = [])),
+    params(
+        ("state" = String, Query, description = "The one-shot state issued by /api/me/bindings/begin."),
+        ("code" = String, Query, description = "The upstream authorization code.")
+    ),
+    responses(
+        (status = 302, description = "The binding is stored; the browser returns to the account page."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn complete(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -136,6 +174,16 @@ pub(crate) async fn complete(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/me/bindings",
+    tag = "bindings",
+    security(("session" = [])),
+    responses(
+        (status = 200, body = Vec<re0auth_app::auth::BindingView>),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn bindings(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -149,6 +197,21 @@ pub(crate) async fn bindings(
     Ok(no_store(Json(views).into_response()))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/me/bindings/{id}",
+    tag = "bindings",
+    security(("session" = [])),
+    params(
+        ("id" = String, Path, description = "The binding to drop."),
+        ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
+    ),
+    responses(
+        (status = 204, description = "The binding is gone. The upstream is told afterwards, best effort."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn revoke_binding(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -183,6 +246,17 @@ pub(crate) async fn revoke_binding(
 }
 
 /// The binding killswitch: every binding the caller owns, in one transaction.
+#[utoipa::path(
+    delete,
+    path = "/api/me/bindings",
+    tag = "bindings",
+    security(("session" = [])),
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    responses(
+        (status = 200, body = re0auth_app::auth::BindingRevocationSummary, description = "What was revoked, and what the upstream refused to confirm."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn revoke_all_bindings(
     State(state): State<AppState>,
     headers: HeaderMap,

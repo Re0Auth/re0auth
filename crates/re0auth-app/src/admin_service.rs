@@ -41,13 +41,13 @@ pub enum AdminError {
 }
 
 /// A cursor page. `next_cursor` is the last id of a full page, or `None`.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminClientView {
     pub id: String,
     pub name: String,
@@ -62,20 +62,20 @@ pub struct AdminClientView {
 }
 
 /// The client and its freshly minted secret. The secret appears once.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct CreatedClientView {
     pub id: String,
     pub secret: Option<String>,
 }
 
 /// A rotated secret. Returned exactly once, never stored in the clear.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct RotatedSecretView {
     pub id: String,
     pub secret: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminUserView {
     pub id: String,
     pub display_name: String,
@@ -86,7 +86,7 @@ pub struct AdminUserView {
     pub updated_at: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminResourceView {
     pub name: String,
     pub path: String,
@@ -95,7 +95,7 @@ pub struct AdminResourceView {
     pub idempotent: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminConnectorView {
     pub id: String,
     pub name: String,
@@ -105,7 +105,7 @@ pub struct AdminConnectorView {
     pub resources: Vec<AdminResourceView>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminBindingView {
     pub id: String,
     pub user_id: String,
@@ -118,7 +118,7 @@ pub struct AdminBindingView {
     pub last_error_code: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminAuditView {
     pub id: String,
     pub occurred_at: i64,

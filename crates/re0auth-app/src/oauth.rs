@@ -68,7 +68,7 @@ pub enum OAuthError {
     Internal,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct TokenResponse {
     pub access_token: String,
     pub token_type: &'static str,
@@ -93,13 +93,13 @@ pub enum RevocationOutcome {
     NotOwned,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct UserInfo {
     pub sub: String,
     pub name: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct DeviceAuthorizationResponse {
     pub device_code: String,
     pub user_code: String,
@@ -125,7 +125,7 @@ pub enum AuthorizeOutcome {
     Consent { request_id: String },
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct PendingConsentView {
     pub request_id: String,
     pub client_id: String,
@@ -137,17 +137,29 @@ pub struct PendingConsentView {
     ///
     /// Advisory. The consent screen uses it to offer the missing step; the data
     /// plane re-checks the binding on every read regardless.
+    #[schema(value_type = Vec<MissingBindingShape>)]
     pub missing_bindings: Vec<MissingBinding>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+/// A schema twin of `re0auth_api::ports::MissingBinding`.
+///
+/// The port type lives in the published `re0auth-api` crate, which must not
+/// depend on utoipa, so the schema needs a local copy. The unit test below pins
+/// the two to the same serialised shape.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct MissingBindingShape {
+    upstream_id: String,
+    scopes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ConsentDecision {
     Approve,
     Deny,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct ConsentOutcome {
     pub redirect_to: String,
 }
@@ -1311,6 +1323,24 @@ fn map_repo(error: RepoError) -> OAuthError {
 
 #[cfg(test)]
 mod tests {
+    /// The schema twin must stay field-for-field equal to the port type it
+    /// stands in for; nothing else can catch the two drifting apart.
+    #[test]
+    fn missing_bindings_shape_matches_the_port() {
+        let port = MissingBinding {
+            upstream_id: "phihub".to_string(),
+            scopes: vec!["save_info".to_string()],
+        };
+        let shape = super::MissingBindingShape {
+            upstream_id: port.upstream_id.clone(),
+            scopes: port.scopes.clone(),
+        };
+        assert_eq!(
+            serde_json::to_value(&port).expect("the port serialises"),
+            serde_json::to_value(&shape).expect("the shape serialises"),
+        );
+    }
+
     use super::*;
 
     #[test]

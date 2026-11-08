@@ -366,10 +366,13 @@ pub(crate) fn error_response(status: StatusCode, code: &str, description: &str) 
     ApiError {
         status,
         headers: Box::default(),
-        body: Json(json!({
-            "error": code,
-            "error_description": description,
-        })),
+        body: Json(
+            serde_json::to_value(OAuthErrorBody {
+                error: code,
+                error_description: description,
+            })
+            .expect("an OAuth error body is a struct of two strings"),
+        ),
     }
 }
 
@@ -389,17 +392,26 @@ pub(crate) fn error_response(status: StatusCode, code: &str, description: &str) 
 /// string the error tables are keyed on. For `about:blank` the spec points clients
 /// at the HTTP status, so `title` is the canonical reason phrase and `detail`
 /// carries our explanation.
-pub(crate) fn problem_response(status: StatusCode, code: &str, detail: &str) -> ApiError {
-    #[derive(serde::Serialize)]
-    struct Problem<'a> {
-        #[serde(rename = "type")]
-        kind: &'static str,
-        title: &'a str,
-        status: u16,
-        detail: &'a str,
-        code: &'a str,
-    }
+/// The RFC 9457 body, named so the schema derives from the type that
+/// serialises the response rather than from a hand-written copy.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct ProblemBody<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    title: &'a str,
+    status: u16,
+    detail: &'a str,
+    code: &'a str,
+}
 
+/// The RFC 6749 section 5.2 body, named for the same reason as [`ProblemBody`].
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct OAuthErrorBody<'a> {
+    error: &'a str,
+    error_description: &'a str,
+}
+
+pub(crate) fn problem_response(status: StatusCode, code: &str, detail: &str) -> ApiError {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
@@ -409,7 +421,7 @@ pub(crate) fn problem_response(status: StatusCode, code: &str, detail: &str) -> 
         status,
         headers: Box::new(headers),
         body: Json(
-            serde_json::to_value(Problem {
+            serde_json::to_value(ProblemBody {
                 kind: "about:blank",
                 title: status.canonical_reason().unwrap_or("Error"),
                 status: status.as_u16(),

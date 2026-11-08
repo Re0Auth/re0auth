@@ -1,0 +1,3784 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Re0Auth",
+    "description": "OAuth 2.0 authorization server plus the music-data gateway it fronts. Two error shapes coexist: the OAuth protocol lanes answer the RFC 6749 flat form, everything else answers RFC 9457 problem details whose stable identifier is code.",
+    "license": {
+      "name": "AGPL-3.0-or-later",
+      "identifier": "AGPL-3.0-or-later"
+    },
+    "version": "0.1.9"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "Liveness: the process answers at all. It touches nothing.",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "The process is up.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "Readiness: storage answers, so an orchestrator can route traffic here.",
+        "operationId": "readyz",
+        "responses": {
+          "200": {
+            "description": "Storage answers.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage is gone; do not route to this instance.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/providers": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Public: the login page needs this before a session exists. It exposes only\nselector ids and display labels, never client ids or secrets.",
+        "operationId": "providers",
+        "responses": {
+          "200": {
+            "description": "The providers the login page may offer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvidersResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "login",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Where to land after login.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idp",
+            "in": "query",
+            "description": "Selects the provider at start; the callback ignores it.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the identity provider, or back to the selector."
+          },
+          "429": {
+            "description": "Rate limited; the Retry-After header is preserved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "auth_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Must match the login intent cookie (login CSRF).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Device approval page, when the login belonged to a device flow.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "302": {
+            "description": "Session created; sets the session cookies."
+          }
+        }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "description": "The caller, plus the CSRF token to echo in X-CSRF-Token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No session, or the CSRF check failed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/me/authorizations": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "operationId": "authorizations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuthorizationView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/me/authorizations/{client_id}": {
+      "delete": {
+        "tags": [
+          "session"
+        ],
+        "operationId": "revoke_authorization",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "description": "The client whose consent is withdrawn.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The consent is gone."
+          },
+          "400": {
+            "description": "The client id is not a UUID.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/logout": {
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "operationId": "logout",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The session is gone and its cookies are cleared."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/logout-all": {
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "operationId": "logout_all",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Every session of the caller is revoked."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/me/bindings/begin": {
+      "post": {
+        "tags": [
+          "bindings"
+        ],
+        "summary": "Creates a binding flow and returns where to send the browser.",
+        "description": "Answers JSON rather than a redirect so the caller can keep the CSRF header:\na top-level navigation cannot carry it, and a cross-origin follow is opaque\nto a script. The SPA reads the URL and navigates itself.\n\nCSRF-checked like every other state-changing route: without it an attacker\ncould make a victim's browser start a binding flow the victim never asked\nfor, and the callback would then attach whatever account the attacker chose.",
+        "operationId": "begin",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BeginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Where to send the browser to authorize the upstream.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BeginView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Binding is not configured on this deployment.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/me/bindings/upstreams": {
+      "get": {
+        "tags": [
+          "bindings"
+        ],
+        "summary": "Lists the upstreams a user may bind.",
+        "description": "Read-only, so no CSRF: the portal needs this to render a connect action at\nall, because a `ConnectorRegistry` resolves by id and cannot enumerate.",
+        "operationId": "upstreams",
+        "responses": {
+          "200": {
+            "description": "Upstreams the deployment lets the caller bind.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindableUpstreamsView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/me/bindings/callback": {
+      "get": {
+        "tags": [
+          "bindings"
+        ],
+        "summary": "Redeems the upstream callback.",
+        "description": "No CSRF check here, and that is deliberate: the request is a top-level\nbrowser navigation from the upstream, which cannot carry our header. What\nauthenticates it is the one-shot state, which only the flow that started it\ncould produce — and the user comes from that flow, never from this request.",
+        "operationId": "complete",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "description": "The one-shot state issued by /api/me/bindings/begin.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "description": "The upstream authorization code.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "The binding is stored; the browser returns to the account page."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/me/bindings": {
+      "get": {
+        "tags": [
+          "bindings"
+        ],
+        "operationId": "bindings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BindingView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "bindings"
+        ],
+        "summary": "The binding killswitch: every binding the caller owns, in one transaction.",
+        "operationId": "revoke_all_bindings",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What was revoked, and what the upstream refused to confirm.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingRevocationSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/me/bindings/{id}": {
+      "delete": {
+        "tags": [
+          "bindings"
+        ],
+        "operationId": "revoke_binding",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The binding to drop.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The binding is gone. The upstream is told afterwards, best effort."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/.well-known/openid-configuration": {
+      "get": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "discovery",
+        "responses": {
+          "200": {
+            "description": "The OIDC discovery document.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jwks.json": {
+      "get": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "jwks",
+        "responses": {
+          "200": {
+            "description": "The RS256 signing keys as a JWK set.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth/authorize": {
+      "get": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "authorize",
+        "parameters": [
+          {
+            "name": "response_type",
+            "in": "query",
+            "description": "Must be code.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "in": "query",
+            "description": "Must match one of the client's registered URIs.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge",
+            "in": "query",
+            "description": "PKCE challenge; S256 only.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge_method",
+            "in": "query",
+            "description": "Must be S256.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To the client's redirect_uri with a code, or to the consent screen."
+          },
+          "400": {
+            "description": "RFC 6749 flat error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/oauth/pending": {
+      "get": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "oauth_pending",
+        "parameters": [
+          {
+            "name": "request",
+            "in": "query",
+            "description": "The pending authorization request id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingConsentView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/oauth/consent": {
+      "post": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "oauth_consent",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsentOutcome"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth/device_authorization": {
+      "post": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "device_authorization",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceAuthorizationForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceAuthorizationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth/token": {
+      "post": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "token",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/userinfo": {
+      "get": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "userinfo",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/oauth/revoke": {
+      "post": {
+        "tags": [
+          "protocol"
+        ],
+        "summary": "RFC 7009 revocation endpoint.",
+        "description": "Answers `200` with an empty body whenever the request is well-formed, even if\nthe token is unknown or already revoked. Anything else would let a caller use\nthis endpoint as an oracle for whether a token exists. A malformed request\n(missing `token`, bad `client_id`) still gets an error, because that is a\nclient bug rather than a probe.",
+        "operationId": "revoke",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Always 200 for a well-formed request, even when the token was unknown: answering otherwise would make this endpoint an existence oracle."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/device/start": {
+      "get": {
+        "tags": [
+          "device"
+        ],
+        "operationId": "device_start",
+        "parameters": [
+          {
+            "name": "user_code",
+            "in": "query",
+            "description": "The code shown on the device.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idp",
+            "in": "query",
+            "description": "Selects the provider on the device page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To the identity provider so the user can sign in before approving."
+          },
+          "429": {
+            "description": "Too many attempts for this address or code; the page says so.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/device/qr.svg": {
+      "get": {
+        "tags": [
+          "device"
+        ],
+        "operationId": "device_qr",
+        "parameters": [
+          {
+            "name": "user_code",
+            "in": "query",
+            "description": "The code to encode.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An SVG QR code for the verification URI. An unknown code answers an HTML error page instead.",
+            "content": {
+              "image/svg+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/device/approve": {
+      "post": {
+        "tags": [
+          "device"
+        ],
+        "operationId": "device_approve",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceDecisionForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The result page telling the user to return to their device.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/device/deny": {
+      "post": {
+        "tags": [
+          "device"
+        ],
+        "operationId": "device_deny",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceDecisionForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The result page telling the user the request was denied.",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/upstreams/{connector}/{resource}": {
+      "get": {
+        "tags": [
+          "gateway"
+        ],
+        "summary": "Data-plane fetch: `GET /api/v1/upstreams/{connector}/{resource}`.",
+        "description": "The caller identifies itself with a Re0Auth access token. The connector and\nthe resource name are resolved against the registry; the upstream subject and\nthe required scope both come from server-side state, never from the request.",
+        "operationId": "fetch_upstream",
+        "parameters": [
+          {
+            "name": "connector",
+            "in": "path",
+            "description": "The configured connector id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource",
+            "in": "path",
+            "description": "A resource name declared in that connector's config.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size for list resources: default 20, max 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor taken from next_cursor.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The normalized envelope: upstream, endpoint, fetched_at, request_id, stability, data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "upstream_contract_changed, or the upstream could not be reached.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/raw/{connector}/{resource}": {
+      "get": {
+        "tags": [
+          "gateway"
+        ],
+        "summary": "Raw view: `GET /api/v1/raw/{connector}/{resource}`.",
+        "description": "Same pipeline as `fetch_upstream`, plus INV-RAW-01's two gates. The response\nbody is identical; what differs is who may ask for it.",
+        "operationId": "fetch_raw",
+        "parameters": [
+          {
+            "name": "connector",
+            "in": "path",
+            "description": "The configured connector id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource",
+            "in": "path",
+            "description": "A resource name declared in that connector's config.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The upstream bytes unchanged, under the upstream's own Content-Type. No envelope.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/admin/clients": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "list_clients",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Last id of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AdminClientView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "create_client",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateClientBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The secret is returned here exactly once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedClientView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/clients/{id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "get_client",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The client id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminClientView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "update_client",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The client id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateClientBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminClientView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "expected_updated_at did not match.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/clients/{id}/rotate-secret": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "rotate_client_secret",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The client id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The new secret, returned exactly once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotatedSecretView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "list_users",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Last id of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AdminUserView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/users/{id}": {
+      "patch": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "update_user",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The user id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Self-demotion, banning the last admin, or self-ban.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/connectors": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "list_connectors",
+        "responses": {
+          "200": {
+            "description": "Read-only: configuration is the source of truth.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AdminConnectorView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/connectors/{id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "get_connector",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The connector id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminConnectorView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/bindings": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "list_bindings",
+        "parameters": [
+          {
+            "name": "user",
+            "in": "query",
+            "description": "Only this user's bindings.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connector",
+            "in": "query",
+            "description": "Only this upstream.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "pending, active, needs_reauth or revoked.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Last id of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AdminBindingView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/bindings/{id}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "The admin killswitch: revokes any binding, and the fact names the admin.",
+        "operationId": "revoke_binding",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The binding id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked locally. Unlike the user-facing route this does not notify the upstream."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/killswitch": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "killswitch",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillswitchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was revoked, and what the upstream refused to confirm.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingRevocationSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Binding is not configured on this deployment.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/admin/audit": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "list_audit",
+        "parameters": [
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Only facts whose actor is this user.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "client",
+            "in": "query",
+            "description": "Only facts about this client.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "One audit action name, e.g. user_banned.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tier",
+            "in": "query",
+            "description": "fact or telemetry.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Earliest time, Unix seconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Latest time, Unix seconds.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Last id of the previous page.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AdminAuditView"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AdminAuditView": {
+        "type": "object",
+        "required": [
+          "id",
+          "occurred_at",
+          "action",
+          "target",
+          "outcome",
+          "severity",
+          "tier",
+          "detail"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "actor_user_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "severity": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "tier": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminBindingView": {
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "connector",
+          "upstream_user_id",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_refreshed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "upstream_user_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminClientView": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "redirect_uris",
+          "allowed_scopes",
+          "raw_access",
+          "status",
+          "has_secret",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "allowed_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "has_secret": {
+            "type": "boolean",
+            "description": "Whether a secret is set. The secret itself is never readable here."
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "raw_access": {
+            "type": "boolean"
+          },
+          "redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AdminConnectorView": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "base_url",
+          "allow_private_net",
+          "allow_link_local_metadata",
+          "resources"
+        ],
+        "properties": {
+          "allow_link_local_metadata": {
+            "type": "boolean"
+          },
+          "allow_private_net": {
+            "type": "boolean"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminResourceView"
+            }
+          }
+        }
+      },
+      "AdminResourceView": {
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "scope",
+          "method",
+          "idempotent"
+        ],
+        "properties": {
+          "idempotent": {
+            "type": "boolean"
+          },
+          "method": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserView": {
+        "type": "object",
+        "required": [
+          "id",
+          "display_name",
+          "role",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "Admission state (B15); the admin console shows and toggles it."
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AuthorizationView": {
+        "type": "object",
+        "required": [
+          "client_id",
+          "client_name",
+          "scopes",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "BeginBody": {
+        "type": "object",
+        "description": "The body of a binding start request.\n\nA POST rather than a GET with a query string: starting a flow writes a\npending binding, so a link that any page can trigger is exactly the CSRF\nthis route used to be unable to defend while it answered 302.",
+        "required": [
+          "upstream"
+        ],
+        "properties": {
+          "return_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "upstream": {
+            "type": "string"
+          }
+        }
+      },
+      "BeginView": {
+        "type": "object",
+        "description": "Where the SPA should send the browser once the flow exists.",
+        "required": [
+          "authorization_url"
+        ],
+        "properties": {
+          "authorization_url": {
+            "type": "string"
+          }
+        }
+      },
+      "BindableUpstreamsView": {
+        "type": "object",
+        "description": "The upstreams a user may start a flow for, as configured.",
+        "required": [
+          "upstreams"
+        ],
+        "properties": {
+          "upstreams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "BindingRevocationSummary": {
+        "type": "object",
+        "description": "The outcome of the binding killswitch.\n\nA summary rather than a bare count so that adding an upstream revocation\nstep later does not change the wire contract — but it carries no `failed`\nlist today, because the local store commits in one transaction and cannot\nproduce a partial success.",
+        "required": [
+          "revoked",
+          "failed"
+        ],
+        "properties": {
+          "failed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FailedRevocation"
+            },
+            "description": "Bindings the cascade left alone because the upstream would not confirm.\n\nA cascade keeps the credential when the upstream cannot be reached\n(F-6): the credential is the only way to retry, and deleting it would\nhide a token that is still alive upstream. The list makes that visible\ninstead of reporting a clean sweep."
+          },
+          "revoked": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "BindingView": {
+        "type": "object",
+        "description": "One upstream binding, as shown in the account portal.\n\nDeliberately excludes the sealed sub-credential: the portal needs to know\nthat a binding exists and whether it is usable, never what it can decrypt to.",
+        "required": [
+          "id",
+          "connector",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_error_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The upstream's own error code, e.g. `upstream_401`. Present only when the\nbinding needs the user to re-authorize."
+          },
+          "last_refreshed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ConsentBody": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ConsentDecision"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ConsentDecision": {
+        "type": "string",
+        "enum": [
+          "approve",
+          "deny"
+        ]
+      },
+      "ConsentOutcome": {
+        "type": "object",
+        "required": [
+          "redirect_to"
+        ],
+        "properties": {
+          "redirect_to": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateClientBody": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "allowed_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidential": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "raw_access": {
+            "type": "boolean"
+          },
+          "redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreatedClientView": {
+        "type": "object",
+        "description": "The client and its freshly minted secret. The secret appears once.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DeviceAuthorizationForm": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DeviceAuthorizationResponse": {
+        "type": "object",
+        "required": [
+          "device_code",
+          "user_code",
+          "verification_uri",
+          "verification_uri_complete",
+          "expires_in",
+          "interval"
+        ],
+        "properties": {
+          "device_code": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "interval": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "user_code": {
+            "type": "string"
+          },
+          "verification_uri": {
+            "type": "string"
+          },
+          "verification_uri_complete": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceDecisionForm": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Envelope": {
+        "type": "object",
+        "description": "The B8 envelope (ADR-0049). Six fields, no more.",
+        "required": [
+          "upstream",
+          "endpoint",
+          "fetched_at",
+          "stability",
+          "data"
+        ],
+        "properties": {
+          "data": {},
+          "endpoint": {
+            "type": "string"
+          },
+          "fetched_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stability": {
+            "type": "string"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        }
+      },
+      "FailedRevocation": {
+        "type": "object",
+        "description": "One binding a cascade could not revoke upstream.",
+        "required": [
+          "id",
+          "upstream",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        }
+      },
+      "KillswitchBody": {
+        "type": "object",
+        "description": "Admin killswitch: revokes every binding of one user, or the whole instance.\n\nSame per-item cascade as the user-facing killswitch (F-6/B16): an upstream\nthat refuses keeps its row and shows up in \"failed\" instead of silently\ndisappearing from the local database.",
+        "properties": {
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "MeUserView": {
+        "type": "object",
+        "required": [
+          "id",
+          "display_name",
+          "role"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "description": "仅供界面决定是否显示管理入口，鉴权仍由服务端判定"
+          }
+        }
+      },
+      "MeView": {
+        "type": "object",
+        "description": "The `/api/me` response body.\n\nA struct rather than a `json!` literal: the SPA mirrors this shape in\n`web/src/lib/api.ts`, and `api_contract` compares the two by serialising this\ntype. A hand-built object cannot be compared to anything, so the drift it\nallowed was invisible.",
+        "required": [
+          "user",
+          "csrf_token"
+        ],
+        "properties": {
+          "csrf_token": {
+            "type": "string"
+          },
+          "user": {
+            "$ref": "#/components/schemas/MeUserView"
+          }
+        }
+      },
+      "MissingBindingShape": {
+        "type": "object",
+        "description": "A schema twin of `re0auth_api::ports::MissingBinding`.\n\nThe port type lives in the published `re0auth-api` crate, which must not\ndepend on utoipa, so the schema needs a local copy. The unit test below pins\nthe two to the same serialised shape.",
+        "required": [
+          "upstream_id",
+          "scopes"
+        ],
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "upstream_id": {
+            "type": "string"
+          }
+        }
+      },
+      "OAuthErrorBody": {
+        "type": "object",
+        "description": "The RFC 6749 section 5.2 body, named for the same reason as [`ProblemBody`].",
+        "required": [
+          "error",
+          "error_description"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "error_description": {
+            "type": "string"
+          }
+        }
+      },
+      "PageBody": {
+        "type": "object",
+        "description": "One page of a list view, carried inside the envelope's `data`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {}
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Page_AdminAuditView": {
+        "type": "object",
+        "description": "A cursor page. `next_cursor` is the last id of a full page, or `None`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "occurred_at",
+                "action",
+                "target",
+                "outcome",
+                "severity",
+                "tier",
+                "detail"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "actor_user_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "client_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "occurred_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "outcome": {
+                  "type": "string"
+                },
+                "request_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "severity": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "tier": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Page_AdminBindingView": {
+        "type": "object",
+        "description": "A cursor page. `next_cursor` is the last id of a full page, or `None`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "user_id",
+                "connector",
+                "upstream_user_id",
+                "status",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "connector": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "last_error_code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "last_refreshed_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "upstream_user_id": {
+                  "type": "string"
+                },
+                "user_id": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Page_AdminClientView": {
+        "type": "object",
+        "description": "A cursor page. `next_cursor` is the last id of a full page, or `None`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "redirect_uris",
+                "allowed_scopes",
+                "raw_access",
+                "status",
+                "has_secret",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "allowed_scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "has_secret": {
+                  "type": "boolean",
+                  "description": "Whether a secret is set. The secret itself is never readable here."
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "raw_access": {
+                  "type": "boolean"
+                },
+                "redirect_uris": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "status": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Page_AdminConnectorView": {
+        "type": "object",
+        "description": "A cursor page. `next_cursor` is the last id of a full page, or `None`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "base_url",
+                "allow_private_net",
+                "allow_link_local_metadata",
+                "resources"
+              ],
+              "properties": {
+                "allow_link_local_metadata": {
+                  "type": "boolean"
+                },
+                "allow_private_net": {
+                  "type": "boolean"
+                },
+                "base_url": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "resources": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminResourceView"
+                  }
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Page_AdminUserView": {
+        "type": "object",
+        "description": "A cursor page. `next_cursor` is the last id of a full page, or `None`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "display_name",
+                "role",
+                "status",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "Admission state (B15); the admin console shows and toggles it."
+                },
+                "updated_at": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PendingConsentView": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "client_id",
+          "client_name",
+          "redirect_uri",
+          "scopes",
+          "expires_at",
+          "missing_bindings"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "expires_at": {
+            "$ref": "#/components/schemas/i64"
+          },
+          "missing_bindings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MissingBindingShape"
+            },
+            "description": "What the requested scopes need that the user has not connected yet.\n\nAdvisory. The consent screen uses it to offer the missing step; the data\nplane re-checks the binding on every read regardless."
+          },
+          "redirect_uri": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ProblemBody": {
+        "type": "object",
+        "description": "RFC 9457 problem details, for the lanes that are not the OAuth protocol.\n\nTwo shapes coexist because the standards disagree: RFC 6749 §5.2 fixes\n`error` / `error_description` for the token endpoint, while the gateway and\nsession lanes have no such constraint and can use the general format. Which one\napplies is decided by the lane, not by the error code — the `token` and\n`device_authorization` handlers answer RFC 6749 even for errors the gateway\nshares a spelling with.\n\n`type` is `about:blank`, which the spec allows when the problem is not further\nspecified. It is the honest value: we host no problem-type registry, so a URI\nunder our own domain would not resolve and would be a promise we cannot keep.\nThe identifier a client can actually branch on is `code`, which is the same\nstring the error tables are keyed on. For `about:blank` the spec points clients\nat the HTTP status, so `title` is the canonical reason phrase and `detail`\ncarries our explanation.\nThe RFC 9457 body, named so the schema derives from the type that\nserialises the response rather than from a hand-written copy.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
+      "ProviderView": {
+        "type": "object",
+        "description": "A provider as exposed to the login UI.",
+        "required": [
+          "name",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ProvidersResponse": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderView"
+            }
+          }
+        }
+      },
+      "RevokeForm": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_type_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 7009：未知提示须忽略并扩大检索"
+          }
+        }
+      },
+      "RotatedSecretView": {
+        "type": "object",
+        "description": "A rotated secret. Returned exactly once, never stored in the clear.",
+        "required": [
+          "id",
+          "secret"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          }
+        }
+      },
+      "TokenForm": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_verifier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "device_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grant_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redirect_uri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "required": [
+          "access_token",
+          "token_type",
+          "expires_in",
+          "scope"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refresh_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string"
+          }
+        }
+      },
+      "UpdateClientBody": {
+        "type": "object",
+        "properties": {
+          "allowed_scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_updated_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "raw_access": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "redirect_uris": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateUserBody": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "At least one of \\`role\\` / \\`status\\` must be present."
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UserInfo": {
+        "type": "object",
+        "required": [
+          "sub",
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sub": {
+            "type": "string"
+          }
+        }
+      },
+      "i64": {
+        "type": "integer",
+        "format": "int64"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      },
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "re0auth_session"
+      }
+    }
+  }
+}

@@ -69,6 +69,7 @@ tower-http = { version = "0.6", default-features = false, features = ["timeout"]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "env-filter", "std"] }
 url = "2"
+utoipa = { version = "6", default-features = false, features = ["macros", "axum_extras", "preserve_path_order"] }
 uuid = { version = "1", features = ["v5", "v7", "serde"] }
 webpki-roots = "1"
 zeroize = "1.8"

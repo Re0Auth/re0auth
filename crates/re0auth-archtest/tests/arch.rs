@@ -2372,3 +2372,72 @@ fn request_path_logs_are_absent_and_would_be_redacted() {
          interpolation, then update the expected count here."
     );
 }
+
+/// The OpenAPI document is generated from the handlers' own declarations, so it
+/// can only be complete if every served route carries one. That is the whole
+/// reason for generating it: a path list written in `openapi.rs` would drift the
+/// same way the hand-written appendix A did, just with a nicer format.
+#[test]
+fn the_openapi_document_matches_the_router() {
+    let source = fs::read_to_string(root().join("crates/re0auth-http/src/lib.rs"))
+        .expect("re0auth-http source");
+    let served = router_routes(&source);
+    assert!(
+        served.len() >= 20,
+        "only {} routes parsed from the router; the parser is broken",
+        served.len()
+    );
+
+    let document =
+        serde_json::to_value(re0auth_http::openapi::document()).expect("the document serialises");
+    let documented = openapi_operations(&document);
+    assert!(
+        documented.len() >= 20,
+        "only {} operations documented; the extractor is broken",
+        documented.len()
+    );
+
+    let missing: Vec<_> = served.difference(&documented).collect();
+    let extra: Vec<_> = documented.difference(&served).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "the OpenAPI document does not match `re0auth-http::router()`.\n\
+         served but undocumented: {missing:?}\n\
+         documented but not served: {extra:?}\n\
+         Add #[utoipa::path] to the handler and list it in `openapi.rs`."
+    );
+}
+
+/// A gate that silently misses an operation is worse than no gate.
+#[test]
+fn the_openapi_parser_sees_every_method() {
+    let document: serde_json::Value =
+        serde_json::from_str(r#"{"paths":{"/x":{"get":{},"delete":{}},"/y":{"post":{}}}}"#)
+            .expect("a synthetic document");
+    let operations = openapi_operations(&document);
+    let expected: BTreeSet<String> = ["DELETE /x", "GET /x", "POST /y"]
+        .into_iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(operations, expected);
+}
+
+fn openapi_operations(document: &serde_json::Value) -> BTreeSet<String> {
+    const METHODS: [&str; 8] = [
+        "get", "put", "post", "delete", "head", "options", "patch", "trace",
+    ];
+    let paths = document
+        .get("paths")
+        .and_then(serde_json::Value::as_object)
+        .expect("an OpenAPI document has paths");
+    let mut operations = BTreeSet::new();
+    for (path, item) in paths {
+        let item = item.as_object().expect("a path item is an object");
+        for method in METHODS {
+            if item.contains_key(method) {
+                operations.insert(format!("{} {}", method.to_uppercase(), path));
+            }
+        }
+    }
+    operations
+}

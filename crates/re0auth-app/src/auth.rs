@@ -108,7 +108,7 @@ pub struct DeviceInfo {
     pub scopes: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct AuthorizationView {
     pub client_id: String,
     pub client_name: String,
@@ -121,7 +121,7 @@ pub struct AuthorizationView {
 ///
 /// Deliberately excludes the sealed sub-credential: the portal needs to know
 /// that a binding exists and whether it is usable, never what it can decrypt to.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct BindingView {
     pub id: String,
     pub connector: String,
@@ -140,7 +140,7 @@ pub struct BindingView {
 /// step later does not change the wire contract — but it carries no `failed`
 /// list today, because the local store commits in one transaction and cannot
 /// produce a partial success.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct BindingRevocationSummary {
     pub revoked: u64,
     /// Bindings the cascade left alone because the upstream would not confirm.
@@ -153,7 +153,7 @@ pub struct BindingRevocationSummary {
 }
 
 /// One binding a cascade could not revoke upstream.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct FailedRevocation {
     pub id: String,
     pub upstream: String,
@@ -221,7 +221,7 @@ impl std::fmt::Debug for NamedIdp {
 }
 
 /// A provider as exposed to the login UI.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct ProviderView {
     pub name: String,
     pub display_name: String,

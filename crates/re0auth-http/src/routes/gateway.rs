@@ -22,6 +22,26 @@ use crate::{
 /// The caller identifies itself with a Re0Auth access token. The connector and
 /// the resource name are resolved against the registry; the upstream subject and
 /// the required scope both come from server-side state, never from the request.
+#[utoipa::path(
+    get,
+    path = "/api/v1/upstreams/{connector}/{resource}",
+    tag = "gateway",
+    security(("bearer" = [])),
+    params(
+        ("connector" = String, Path, description = "The configured connector id."),
+        ("resource" = String, Path, description = "A resource name declared in that connector's config."),
+        ("limit" = Option<u32>, Query, description = "Page size for list resources: default 20, max 100."),
+        ("cursor" = Option<String>, Query, description = "Opaque cursor taken from next_cursor.")
+    ),
+    responses(
+        (status = 200, body = re0auth_app::gateway::Envelope<'static>, description = "The normalized envelope: upstream, endpoint, fetched_at, request_id, stability, data."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 502, body = crate::ProblemBody, content_type = "application/problem+json", description = "upstream_contract_changed, or the upstream could not be reached.")
+    )
+)]
 pub(crate) async fn fetch_upstream(
     State(state): State<AppState>,
     Path((connector, resource)): Path<(String, String)>,
@@ -35,6 +55,21 @@ pub(crate) async fn fetch_upstream(
 ///
 /// Same pipeline as `fetch_upstream`, plus INV-RAW-01's two gates. The response
 /// body is identical; what differs is who may ask for it.
+#[utoipa::path(
+    get,
+    path = "/api/v1/raw/{connector}/{resource}",
+    tag = "gateway",
+    security(("bearer" = [])),
+    params(
+        ("connector" = String, Path, description = "The configured connector id."),
+        ("resource" = String, Path, description = "A resource name declared in that connector's config.")
+    ),
+    responses(
+        (status = 200, description = "The upstream bytes unchanged, under the upstream's own Content-Type. No envelope.", body = String, content_type = "application/octet-stream"),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
 pub(crate) async fn fetch_raw(
     State(state): State<AppState>,
     Path((connector, resource)): Path<(String, String)>,

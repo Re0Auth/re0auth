@@ -102,15 +102,15 @@ pub enum GatewayError {
 }
 
 /// One page of a list view, carried inside the envelope's `data`.
-#[derive(Serialize)]
-struct PageBody {
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PageBody {
     items: Vec<Value>,
     next_cursor: Option<String>,
 }
 
 /// The B8 envelope (ADR-0049). Six fields, no more.
-#[derive(Serialize)]
-struct Envelope<'a> {
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct Envelope<'a> {
     upstream: &'a str,
     endpoint: &'a str,
     fetched_at: i64,
