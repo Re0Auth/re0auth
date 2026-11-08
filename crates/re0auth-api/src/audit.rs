@@ -79,6 +79,12 @@ pub enum AuditAction {
     UserBanned,
     /// An admin lifted a ban.
     UserUnbanned,
+    /// A user deleted their own account.
+    ///
+    /// The actor is the deleted user; the foreign key turns it into NULL when the
+    /// row goes, so the trail keeps the target but loses the link to a person who
+    /// no longer exists. That is the intended reading of a deletion.
+    AccountDeleted,
 }
 
 impl AuditAction {
@@ -112,6 +118,7 @@ impl AuditAction {
             Self::UserRoleChanged => "user_role_changed",
             Self::UserBanned => "user_banned",
             Self::UserUnbanned => "user_unbanned",
+            Self::AccountDeleted => "account_deleted",
         }
     }
 
@@ -143,6 +150,7 @@ impl AuditAction {
             "user_role_changed" => Self::UserRoleChanged,
             "user_banned" => Self::UserBanned,
             "user_unbanned" => Self::UserUnbanned,
+            "account_deleted" => Self::AccountDeleted,
             _ => return None,
         })
     }

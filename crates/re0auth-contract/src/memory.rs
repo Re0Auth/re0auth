@@ -25,7 +25,8 @@ use re0auth_api::ports::{
 };
 use re0auth_api::secret::SealedSecret;
 use re0auth_api::{
-    BindingId, ClientId, ConnectorId, FamilyId, PendingAuthorizationId, SessionId, Unix, UserId,
+    BindingId, ClientId, ConnectorId, FamilyId, IdentityId, PendingAuthorizationId, SessionId,
+    Unix, UserId,
 };
 
 mod audit;
@@ -205,21 +206,36 @@ impl UserRepo for MemoryStore {
         Ok(identities)
     }
 
-    async fn unlink_identity(
-        &self,
-        user: &UserId,
-        issuer: &str,
-        subject: &str,
-    ) -> RepoResult<bool> {
+    async fn unlink_identity(&self, user: &UserId, id: &IdentityId) -> RepoResult<bool> {
         let mut inner = self.lock();
-        let key = (issuer.to_string(), subject.to_string());
-        match inner.identities.get(&key) {
-            Some(identity) if identity.user_id == *user => {
-                inner.identities.remove(&key);
-                Ok(true)
-            }
-            _ => Ok(false),
+        let key = inner
+            .identities
+            .iter()
+            .find(|(_, identity)| identity.id == *id)
+            .map(|(key, _)| key.clone());
+        let Some(key) = key else {
+            return Ok(false);
+        };
+        if inner
+            .identities
+            .get(&key)
+            .is_some_and(|identity| identity.user_id == *user)
+        {
+            inner.identities.remove(&key);
+            return Ok(true);
         }
+        Ok(false)
+    }
+
+    async fn delete_with_fact(&self, id: &UserId, fact: &SecurityFact) -> RepoResult<bool> {
+        {
+            let mut inner = self.lock();
+            if !inner.users.contains_key(id) {
+                return Ok(false);
+            }
+            Self::push_fact(&mut inner, fact);
+        }
+        UserRepo::delete(self, id).await
     }
 
     async fn delete(&self, id: &UserId) -> RepoResult<bool> {

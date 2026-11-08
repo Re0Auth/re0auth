@@ -75,14 +75,14 @@ pub async fn user_contract<S: Storage>(store: &S) {
 
     let detached = store
         .users()
-        .unlink_identity(&UserId::new(), "https://idp.example", "subject-1")
+        .unlink_identity(&UserId::new(), &identity.id)
         .await
         .expect("unlink from the wrong account");
     assert!(!detached, "an unlink is scoped to its owner");
     assert!(
         store
             .users()
-            .unlink_identity(&user.id, "https://idp.example", "subject-1")
+            .unlink_identity(&user.id, &identity.id)
             .await
             .expect("unlink identity")
     );
@@ -179,4 +179,27 @@ pub async fn user_contract<S: Storage>(store: &S) {
         None
     );
     assert!(!store.users().delete(&user.id).await.expect("delete again"));
+
+    // The production deletion writes its fact in the same transaction, and a
+    // missing row must not leave one behind.
+    let extra = super::user(now + 1);
+    store
+        .users()
+        .create(&extra)
+        .await
+        .expect("create extra user");
+    assert!(
+        store
+            .users()
+            .delete_with_fact(&extra.id, &fact(AuditAction::AccountDeleted, now, "user"))
+            .await
+            .expect("delete with fact")
+    );
+    assert!(
+        !store
+            .users()
+            .delete_with_fact(&extra.id, &fact(AuditAction::AccountDeleted, now, "user"))
+            .await
+            .expect("delete a missing row with fact")
+    );
 }

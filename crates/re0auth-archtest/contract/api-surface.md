@@ -65,6 +65,8 @@
 | `forbidden` | 403 | 已认证但不是管理员（管理 API）；与 401 `login_required` 严格区分 |
 | `conflict` | 409 | 管理写操作违反业务规则：自降级、降级最后一个管理员、乐观锁 `expected_updated_at` 不匹配 |
 | `server_error` | 500 | 会话/管理 API 的内部错误 |
+| `last_identity` | 409 | 解绑最后一个登录方式；账号会因此永久无法登录，改用注销账号 |
+| `bindings_not_revocable` | 409 | 注销账号时上游拒绝确认撤销，先重试再注销 |
 
 401 与 403 分开：401 表示 token 无效/过期（密码学上无法验证），403 表示 token 有效但权限不足。**混用会导致"重授权 → 仍然 403 → 再重授权"的死循环。**
 
@@ -110,6 +112,7 @@ GET    /userinfo
 GET    /api/oauth/pending
 POST   /api/oauth/consent
 GET    /api/me
+DELETE /api/me
 GET    /api/me/authorizations
 GET    /api/me/bindings
 DELETE /api/me/bindings
@@ -117,6 +120,7 @@ GET    /api/me/bindings/upstreams
 POST   /api/me/bindings/begin
 GET    /api/me/bindings/callback
 DELETE /api/me/bindings/{id}
+DELETE /api/me/identities/{id}
 DELETE /api/me/authorizations/{client_id}
 POST   /api/logout
 POST   /api/logout-all

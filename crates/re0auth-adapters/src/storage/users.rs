@@ -124,21 +124,32 @@ impl UserRepo for SqliteStore {
         rows.iter().map(row_to_identity).collect()
     }
 
-    async fn unlink_identity(
-        &self,
-        user: &UserId,
-        issuer: &str,
-        subject: &str,
-    ) -> RepoResult<bool> {
-        let result =
-            sqlx::query("DELETE FROM identities WHERE user_id = ? AND issuer = ? AND subject = ?")
-                .bind(user.0.to_string())
-                .bind(issuer)
-                .bind(subject)
-                .execute(&self.pool)
-                .await
-                .map_err(db_error)?;
+    async fn unlink_identity(&self, user: &UserId, id: &IdentityId) -> RepoResult<bool> {
+        let result = sqlx::query("DELETE FROM identities WHERE user_id = ? AND id = ?")
+            .bind(user.0.to_string())
+            .bind(id.0.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(db_error)?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn delete_with_fact(&self, id: &UserId, fact: &SecurityFact) -> RepoResult<bool> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        // The fact goes first: its actor points at the row about to disappear, and
+        // ON DELETE SET NULL is what turns that into no actor. Writing it after the
+        // delete would have no actor to record at all.
+        record_fact(&mut tx, fact).await?;
+        let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id.0.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        tx.commit().await.map_err(db_error)?;
+        Ok(true)
     }
 
     async fn find_by_identity(&self, issuer: &str, subject: &str) -> RepoResult<Option<User>> {

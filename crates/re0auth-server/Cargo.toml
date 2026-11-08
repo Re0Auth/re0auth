@@ -22,7 +22,7 @@ tracing-subscriber.workspace = true
 zeroize.workspace = true
 url.workspace = true
 uuid.workspace = true
-re0auth-api = { version = "0.13.0", path = "../re0auth-api" }
+re0auth-api = { version = "0.14.0", path = "../re0auth-api" }
 re0auth-app = { version = "0.1.0", path = "../re0auth-app" }
 re0auth-domain = { version = "0.1.0", path = "../re0auth-domain" }
 re0auth-adapters = { version = "0.1.0", path = "../re0auth-adapters" }

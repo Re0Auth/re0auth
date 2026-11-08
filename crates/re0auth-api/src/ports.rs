@@ -814,12 +814,18 @@ pub trait UserRepo: Send + Sync {
     async fn list_identities(&self, user: &UserId) -> RepoResult<Vec<Identity>>;
     /// Detaches one identity from one account, and reports whether a row went.
     ///
-    /// Scoped by `user` on purpose: the issuer and subject come from a request,
-    /// and a delete without the owner in the WHERE clause would let a caller
-    /// detach somebody else's login. Keeping at least one identity is the
-    /// caller's rule, not the port's — the port only deletes what it is told.
-    async fn unlink_identity(&self, user: &UserId, issuer: &str, subject: &str)
-    -> RepoResult<bool>;
+    /// Scoped by `user` on purpose: the id comes from a request, and a delete
+    /// without the owner in the WHERE clause would let a caller detach somebody
+    /// else's login. Keeping at least one identity is the caller's rule, not the
+    /// port's — the port only deletes what it is told.
+    async fn unlink_identity(&self, user: &UserId, id: &IdentityId) -> RepoResult<bool>;
+    /// Deletes an account and records the fact in the same transaction.
+    ///
+    /// [`Self::delete`] stays fact-free on purpose: the contract suite uses it as
+    /// test cleanup. This is the production entry point, and the fact has to
+    /// commit with the deletion — otherwise the trail would claim a deletion that
+    /// rolled back, or a deletion would happen with no record of it.
+    async fn delete_with_fact(&self, id: &UserId, fact: &SecurityFact) -> RepoResult<bool>;
     /// Deletes the user and all dependent rows; audit rows survive with a null
     /// actor (INV-FK-01).
     async fn delete(&self, id: &UserId) -> RepoResult<bool>;

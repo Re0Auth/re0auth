@@ -26,6 +26,8 @@ use crate::{admin, binding_routes};
         session::login,
         session::auth_callback,
         session::me,
+        session::delete_account,
+        session::detach_identity,
         session::authorizations,
         session::revoke_authorization,
         session::logout,

@@ -147,6 +147,11 @@ pub(crate) fn auth_error(error: AuthError) -> ApiError {
         AuthError::NotFound => {
             problem_response(StatusCode::NOT_FOUND, "not_found", "resource not found")
         }
+        AuthError::LastIdentity => problem_response(
+            StatusCode::CONFLICT,
+            "last_identity",
+            "an account must keep at least one identity",
+        ),
         AuthError::RateLimited => problem_response(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",

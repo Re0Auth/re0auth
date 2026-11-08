@@ -38,7 +38,8 @@ use routes::oauth::{
     userinfo,
 };
 use routes::session::{
-    auth_callback, authorizations, login, logout, logout_all, me, providers, revoke_authorization,
+    auth_callback, authorizations, delete_account, detach_identity, login, logout, logout_all, me,
+    providers, revoke_authorization,
 };
 use tower_http::timeout::TimeoutLayer;
 
@@ -170,8 +171,9 @@ pub fn router(state: AppState) -> Router {
         .route("/userinfo", get(userinfo))
         .route("/api/oauth/pending", get(oauth_pending))
         .route("/api/oauth/consent", post(oauth_consent))
-        .route("/api/me", get(me))
+        .route("/api/me", get(me).delete(delete_account))
         .route("/api/me/authorizations", get(authorizations))
+        .route("/api/me/identities/{id}", delete(detach_identity))
         .route(
             "/api/me/bindings",
             get(binding_routes::bindings).delete(binding_routes::revoke_all_bindings),

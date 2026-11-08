@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Json, Redirect, Response};
-use re0auth_api::ClientId;
+use re0auth_api::{ClientId, IdentityId};
 use re0auth_app::auth::{AuthError, LoginOutcome, ProviderView, SessionContext};
 use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
@@ -22,7 +22,7 @@ use crate::pages::{HtmlFailure, auth_error_html, device_approval_page};
 use crate::parsers::{csrf_cookie, csrf_header, session_cookie};
 use crate::rate::charge_unauthenticated;
 use crate::request_id;
-use crate::{ApiError, AppState, Shape, auth_error, no_store};
+use crate::{ApiError, AppState, Shape, auth_error, no_store, problem_response};
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct ProvidersResponse {
@@ -345,6 +345,85 @@ pub(crate) async fn logout_all(
     let mut response = StatusCode::NO_CONTENT.into_response();
     clear_session_cookies(&mut response, state.auth.secure_cookies());
     Ok(response)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/me",
+    tag = "session",
+    security(("session" = [])),
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    responses(
+        (status = 204, description = "The account and every row that hangs off it are gone. Upstream credentials were revoked first."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 409, body = crate::ProblemBody, content_type = "application/problem+json", description = "bindings_not_revocable: an upstream refused, so deleting now would leave a live credential behind.")
+    )
+)]
+pub(crate) async fn delete_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let context = session_context_from_headers(&state, &headers).await?;
+    require_csrf(&state, &context, &headers)?;
+    // F-6 cascade before the row goes: deleting locally first would leave a live
+    // upstream credential with no local record to retry from. A refusal aborts the
+    // deletion rather than papering over it.
+    if let Some(binding) = state.binding.as_ref() {
+        let summary = binding
+            .cascade_revoke(context.user.id, request_id::of(&headers))
+            .await
+            .map_err(auth_error)?;
+        if !summary.failed.is_empty() {
+            return Err(problem_response(
+                StatusCode::CONFLICT,
+                "bindings_not_revocable",
+                "some upstream credentials could not be revoked; retry before deleting the account",
+            ));
+        }
+    }
+    state
+        .auth
+        .delete_account(context.user.id, request_id::of(&headers))
+        .await
+        .map_err(auth_error)?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    clear_session_cookies(&mut response, state.auth.secure_cookies());
+    Ok(response)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/me/identities/{id}",
+    tag = "session",
+    security(("session" = [])),
+    params(
+        ("id" = String, Path, description = "The identity to detach."),
+        ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
+    ),
+    responses(
+        (status = 204, description = "The login method is no longer attached."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json", description = "Not a UUID."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json", description = "No such identity on this account."),
+        (status = 409, body = crate::ProblemBody, content_type = "application/problem+json", description = "last_identity: the account would become unreachable.")
+    )
+)]
+pub(crate) async fn detach_identity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let context = session_context_from_headers(&state, &headers).await?;
+    require_csrf(&state, &context, &headers)?;
+    let identity = Uuid::parse_str(&id)
+        .map(IdentityId)
+        .map_err(|_| auth_error(AuthError::InvalidRequest("invalid identity id")))?;
+    state
+        .auth
+        .detach_identity(context.user.id, identity)
+        .await
+        .map_err(auth_error)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 pub(crate) async fn session_context_from_headers(

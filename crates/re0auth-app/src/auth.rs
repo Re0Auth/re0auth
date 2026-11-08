@@ -62,6 +62,10 @@ pub enum AuthError {
     DeviceUnavailable,
     #[error("not found")]
     NotFound,
+    /// The account has one identity left; removing it would lock the account out
+    /// for good. Deleting the account is the operation that intent needs.
+    #[error("an account must keep at least one identity")]
+    LastIdentity,
     #[error("too many attempts")]
     RateLimited,
     #[error("internal error")]
@@ -583,6 +587,63 @@ impl AuthService {
             .sessions()
             .revoke_all(&user_id, self.clock.now())
             .await?)
+    }
+
+    /// Detaches one login method from an account.
+    ///
+    /// The last one cannot go: an account with zero identities can never be
+    /// entered again, so allowing it would be an irreversible self-lockout
+    /// dressed up as cleanup. Deleting the account is the operation for that.
+    pub async fn detach_identity(&self, user_id: UserId, identity: IdentityId) -> AuthResult<()> {
+        let identities = self.storage.users().list_identities(&user_id).await?;
+        if !identities.iter().any(|candidate| candidate.id == identity) {
+            return Err(AuthError::NotFound);
+        }
+        if identities.len() < 2 {
+            return Err(AuthError::LastIdentity);
+        }
+        if !self
+            .storage
+            .users()
+            .unlink_identity(&user_id, &identity)
+            .await?
+        {
+            return Err(AuthError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Deletes the account and everything hanging off it.
+    ///
+    /// The fact commits with the deletion (`UserRepo::delete_with_fact`); the
+    /// foreign key nulls its actor, so the trail keeps the target and loses the
+    /// link to a person who no longer exists.
+    ///
+    /// Revoking upstream credentials is **not** done here: that needs the binding
+    /// surface, and a live credential left behind because the local row vanished
+    /// is the exact failure F-6 exists to prevent. The caller cascades first and
+    /// aborts when an upstream refuses.
+    pub async fn delete_account(
+        &self,
+        user_id: UserId,
+        correlation_id: Option<&str>,
+    ) -> AuthResult<()> {
+        let fact = SecurityFact::new(
+            AuditAction::AccountDeleted,
+            self.clock.now(),
+            format!("user:{}", user_id.0),
+        )
+        .actor(user_id)
+        .with_request_id(correlation_id);
+        if !self
+            .storage
+            .users()
+            .delete_with_fact(&user_id, &fact)
+            .await?
+        {
+            return Err(AuthError::NotFound);
+        }
+        Ok(())
     }
 
     pub async fn list_authorizations(&self, user_id: UserId) -> AuthResult<Vec<AuthorizationView>> {

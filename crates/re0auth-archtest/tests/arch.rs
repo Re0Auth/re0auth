@@ -1127,11 +1127,14 @@ fn rust_files_stay_under_the_line_budget() {
 /// Files that define the strings returned to clients as `error` values.
 /// Keeping this list explicit is the point: a new error-code home has to be
 /// registered here, which forces the author to think about the API surface.
-const ERROR_CODE_SOURCES: [&str; 4] = [
+const ERROR_CODE_SOURCES: [&str; 5] = [
     "crates/re0auth-app/src/gateway.rs",
     "crates/re0auth-app/src/oauth.rs",
     "crates/re0auth-http/src/error.rs",
     "crates/re0auth-http/src/lib.rs",
+    // The session routes emit their own codes (an upstream refusing to confirm
+    // a revocation during account deletion), so they are a code home too.
+    "crates/re0auth-http/src/routes/session.rs",
 ];
 
 #[test]
