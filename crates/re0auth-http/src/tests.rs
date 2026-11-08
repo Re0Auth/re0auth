@@ -972,8 +972,15 @@ fn the_binding_shapes_match_the_spas_schemas() {
         json_keys(&upstreams)
     );
 
-    let summary = serde_json::to_value(re0auth_app::auth::BindingRevocationSummary { revoked: 2 })
-        .expect("serialise BindingRevocationSummary");
+    let summary = serde_json::to_value(re0auth_app::auth::BindingRevocationSummary {
+        revoked: 2,
+        failed: vec![re0auth_app::auth::FailedRevocation {
+            id: "binding".to_string(),
+            upstream: "phigros".to_string(),
+            reason: "upstream_unavailable",
+        }],
+    })
+    .expect("serialise BindingRevocationSummary");
     assert_eq!(
         spa_schema_fields(&api, "bindingRevocationSchema"),
         json_keys(&summary)

@@ -189,21 +189,22 @@ pub(crate) async fn revoke_all_bindings(
 ) -> Result<Response, ApiError> {
     let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
-    let pending = match state.binding.as_ref() {
-        Some(binding) => binding.prepare_revocation(context.user.id, None).await,
-        None => Vec::new(),
+    // F-6: the killswitch asks the upstream first and keeps the local row when
+    // the upstream will not confirm. Deleting first would destroy the only copy
+    // of a credential that is still alive upstream, with no way to retry.
+    let summary = match state.binding.as_ref() {
+        Some(binding) => binding
+            .cascade_revoke(context.user.id, request_id::of(&headers))
+            .await
+            .map_err(auth_error)?,
+        // No binding service means no connector to notify; the local sweep is
+        // the whole operation and cannot partially succeed.
+        None => state
+            .auth
+            .revoke_all_bindings(context.user.id, request_id::of(&headers))
+            .await
+            .map_err(auth_error)?,
     };
-    let summary = state
-        .auth
-        .revoke_all_bindings(context.user.id, request_id::of(&headers))
-        .await
-        .map_err(auth_error)?;
-    // One call per upstream, after the single local transaction committed. A
-    // failure here leaves the credential alive until it expires, which is the
-    // documented cost of not holding a second copy just to revoke it later.
-    if let Some(binding) = state.binding.as_ref() {
-        binding.notify_upstreams(pending).await;
-    }
     Ok(no_store(Json(summary).into_response()))
 }
 

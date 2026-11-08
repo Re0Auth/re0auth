@@ -92,8 +92,15 @@ export const bindableUpstreamsSchema = z.object({
 	upstreams: z.array(z.string())
 });
 
+export const failedRevocationSchema = z.object({
+	id: z.string(),
+	upstream: z.string(),
+	reason: z.string()
+});
+
 export const bindingRevocationSchema = z.object({
-	revoked: z.number().int().nonnegative()
+	revoked: z.number().int().nonnegative(),
+	failed: z.array(failedRevocationSchema)
 });
 
 // ---- 管理 API -----------------------------------------------------------

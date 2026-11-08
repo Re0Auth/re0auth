@@ -117,8 +117,13 @@
 		unbindingAll = true;
 		error = '';
 		try {
-			await apiDeleteJson('/api/me/bindings', bindingRevocationSchema);
-			bindings = [];
+			// F-6: the cascade keeps a binding locally when the upstream refuses,
+			// so the list is refetched instead of assumed empty.
+			const summary = await apiDeleteJson('/api/me/bindings', bindingRevocationSchema);
+			bindings = await apiGet('/api/me/bindings', bindingsSchema);
+			if (summary.failed.length > 0) {
+				error = copy.account.cascadePartial(summary.failed.length);
+			}
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
 				openLogin(currentLocation());

@@ -22,12 +22,13 @@ use re0auth_api::cache::{Cache, NoCache, binding_prefix};
 use re0auth_api::connector::{
     ConnectorAuth, ConnectorEndpoint, ConnectorRegistry, ExchangedCredential, UpstreamError,
 };
-use re0auth_api::ports::{Binding, BindingStatus, PendingBinding, Storage};
+use re0auth_api::ports::{Binding, BindingStatus, PendingBinding, RepoError, Storage};
 use re0auth_api::secret::SecretSealer;
 use re0auth_api::{BindingId, Clock, Random, Unix, UserId};
 use re0auth_domain::gateway;
 use re0auth_domain::pkce;
 
+use crate::auth::{AuthError, BindingRevocationSummary, FailedRevocation};
 use crate::gateway::connector_id_for_name;
 use crate::return_to;
 
@@ -395,6 +396,80 @@ impl BindingService {
             }
         }
         acknowledged
+    }
+
+    /// 级联撤销：先问上游，失败就保留本地（F-6）。
+    ///
+    /// 与 notify_upstreams 的方向相反：解绑以用户的请求为准，上游宕机不能
+    /// 把人质留在本地；而级联撤销一旦删掉本地行，就丢掉了唯一还能通知上游的
+    /// 凭据。逐条隔离，一条失败不影响其余条目。
+    pub async fn cascade_revoke(
+        &self,
+        user: UserId,
+        correlation_id: Option<&str>,
+    ) -> Result<BindingRevocationSummary, AuthError> {
+        let now = self.clock.now();
+        let mut revoked = 0u64;
+        let mut failed = Vec::new();
+        let bindings = self
+            .storage
+            .bindings()
+            .list_by_user(&user)
+            .await
+            .map_err(AuthError::Repo)?;
+        for binding in bindings {
+            if binding.status == BindingStatus::Revoked {
+                continue;
+            }
+            if self.upstream_refuses(&binding).await {
+                failed.push(FailedRevocation {
+                    id: binding.id.0.to_string(),
+                    upstream: binding.upstream_id.clone(),
+                    reason: "upstream_unavailable",
+                });
+                continue;
+            }
+            let fact = SecurityFact::new(
+                AuditAction::BindingRevoked,
+                now,
+                format!("binding:{}", binding.id.0),
+            )
+            .actor(user)
+            .with_request_id(correlation_id);
+            match self
+                .storage
+                .bindings()
+                .revoke(&binding.id, &fact, now)
+                .await
+            {
+                Ok(()) => {
+                    // INV-CACHE-02: 本地已生效，扫缓存不能被后面的错误跳过。
+                    self.cache.invalidate(&binding_prefix(&binding.id)).await;
+                    revoked += 1;
+                }
+                Err(RepoError::NotFound) => {}
+                Err(error) => return Err(AuthError::Repo(error)),
+            }
+        }
+        Ok(BindingRevocationSummary { revoked, failed })
+    }
+
+    /// True only when the upstream is reachable and refused the revocation.
+    ///
+    /// A missing connector or an unreadable credential is not a refusal: there
+    /// is nothing to notify, so the local revoke may proceed.
+    async fn upstream_refuses(&self, binding: &Binding) -> bool {
+        let Ok(Some(credential)) = self.capture_credential(&binding.id).await else {
+            return false;
+        };
+        match self.lookup(&binding.upstream_id).await {
+            Ok(endpoint) => self
+                .auth
+                .revoke_token(&endpoint, &credential)
+                .await
+                .is_err(),
+            Err(_) => false,
+        }
     }
 
     async fn capture_credential(

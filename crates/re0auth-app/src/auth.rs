@@ -140,6 +140,21 @@ pub struct BindingView {
 #[derive(Clone, Debug, Serialize)]
 pub struct BindingRevocationSummary {
     pub revoked: u64,
+    /// Bindings the cascade left alone because the upstream would not confirm.
+    ///
+    /// A cascade keeps the credential when the upstream cannot be reached
+    /// (F-6): the credential is the only way to retry, and deleting it would
+    /// hide a token that is still alive upstream. The list makes that visible
+    /// instead of reporting a clean sweep.
+    pub failed: Vec<FailedRevocation>,
+}
+
+/// One binding a cascade could not revoke upstream.
+#[derive(Clone, Debug, Serialize)]
+pub struct FailedRevocation {
+    pub id: String,
+    pub upstream: String,
+    pub reason: &'static str,
 }
 
 fn binding_status_str(status: BindingStatus) -> &'static str {
@@ -778,7 +793,10 @@ impl AuthService {
                 .invalidate(&re0auth_api::cache::binding_prefix(id))
                 .await;
         }
-        Ok(BindingRevocationSummary { revoked })
+        Ok(BindingRevocationSummary {
+            revoked,
+            failed: Vec::new(),
+        })
     }
 
     #[must_use]

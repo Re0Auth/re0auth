@@ -82,6 +82,8 @@ struct RecordingAuth {
     exchange_error: Option<&'static str>,
     /// Credentials the service asked the upstream to invalidate.
     revoked: std::sync::Mutex<Vec<String>>,
+    /// Simulates an upstream that cannot be reached during a cascade.
+    fail_revoke: bool,
 }
 
 impl RecordingAuth {
@@ -90,6 +92,16 @@ impl RecordingAuth {
             last_challenge: std::sync::Mutex::new(None),
             exchange_error: None,
             revoked: std::sync::Mutex::new(Vec::new()),
+            fail_revoke: false,
+        }
+    }
+
+    fn failing_revocation() -> Self {
+        Self {
+            last_challenge: std::sync::Mutex::new(None),
+            exchange_error: None,
+            revoked: std::sync::Mutex::new(Vec::new()),
+            fail_revoke: true,
         }
     }
 
@@ -98,6 +110,7 @@ impl RecordingAuth {
             last_challenge: std::sync::Mutex::new(None),
             exchange_error: Some("code expired"),
             revoked: std::sync::Mutex::new(Vec::new()),
+            fail_revoke: false,
         }
     }
 
@@ -147,6 +160,9 @@ impl ConnectorAuth for RecordingAuth {
         _endpoint: &ConnectorEndpoint,
         _credential: &SecretString,
     ) -> Result<(), UpstreamError> {
+        if self.fail_revoke {
+            return Err(UpstreamError::Unavailable);
+        }
         self.revoked.lock().expect("lock").push(String::new());
         Ok(())
     }
@@ -653,4 +669,56 @@ async fn a_revoked_binding_is_not_revoked_again() {
         service.prepare_revocation(user, None).await.is_empty(),
         "an already-revoked binding has no credential left to invalidate"
     );
+}
+
+#[tokio::test]
+async fn a_cascade_keeps_the_binding_when_the_upstream_refuses() {
+    let (store, service, user) = setup(RecordingAuth::failing_revocation()).await;
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let summary = service.cascade_revoke(user, None).await.expect("cascade");
+    assert_eq!(summary.revoked, 0);
+    assert_eq!(summary.failed.len(), 1);
+    assert_eq!(summary.failed[0].upstream, "phigros");
+    assert_eq!(summary.failed[0].reason, "upstream_unavailable");
+
+    let bindings = store.bindings().list_by_user(&user).await.expect("list");
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(
+        bindings[0].status,
+        BindingStatus::Active,
+        "the row and its credential must survive for a retry"
+    );
+    assert_eq!(
+        service.prepare_revocation(user, None).await.len(),
+        1,
+        "the credential is the only way to retry the upstream"
+    );
+}
+
+#[tokio::test]
+async fn a_cascade_revokes_locally_once_the_upstream_confirms() {
+    let (store, service, user) = setup(RecordingAuth::ok()).await;
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let summary = service.cascade_revoke(user, None).await.expect("cascade");
+    assert_eq!(summary.revoked, 1);
+    assert!(summary.failed.is_empty());
+
+    let bindings = store.bindings().list_by_user(&user).await.expect("list");
+    assert_eq!(bindings[0].status, BindingStatus::Revoked);
 }

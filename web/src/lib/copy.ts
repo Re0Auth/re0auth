@@ -126,6 +126,8 @@ export const copy = {
 		unbind: '解除',
 		unbindLabel: (connector: string) => `解除与 ${connector} 的绑定`,
 		unbindAll: '解除全部绑定',
+		cascadePartial: (count: number) =>
+			`${count} 个绑定未能在上游撤销，已保留以便重试。`,
 		notConnected: '尚未连接，连接后才能读取你在该服务的数据。',
 		connect: '连接',
 		connectLabel: (upstream: string) => `连接 ${upstream}`,
