@@ -799,8 +799,27 @@ pub struct Binding {
 pub trait UserRepo: Send + Sync {
     async fn create(&self, user: &User) -> RepoResult<()>;
     async fn get(&self, id: &UserId) -> RepoResult<Option<User>>;
+    /// Attaches an identity to an account that already exists.
+    ///
+    /// This is the attach primitive, not a login primitive: it neither creates a
+    /// user nor moves an identity. The unique constraint on `(issuer, subject)`
+    /// is what keeps one identity from belonging to two accounts, and a second
+    /// link of the same pair reports [`RepoError::Conflict`].
     async fn link_identity(&self, identity: &Identity) -> RepoResult<()>;
     async fn find_by_identity(&self, issuer: &str, subject: &str) -> RepoResult<Option<User>>;
+    /// Every identity attached to one account, oldest first.
+    ///
+    /// Ordered by `(created_at, id)` so the account page renders a stable list
+    /// and two identities created in the same second keep a fixed order.
+    async fn list_identities(&self, user: &UserId) -> RepoResult<Vec<Identity>>;
+    /// Detaches one identity from one account, and reports whether a row went.
+    ///
+    /// Scoped by `user` on purpose: the issuer and subject come from a request,
+    /// and a delete without the owner in the WHERE clause would let a caller
+    /// detach somebody else's login. Keeping at least one identity is the
+    /// caller's rule, not the port's — the port only deletes what it is told.
+    async fn unlink_identity(&self, user: &UserId, issuer: &str, subject: &str)
+    -> RepoResult<bool>;
     /// Deletes the user and all dependent rows; audit rows survive with a null
     /// actor (INV-FK-01).
     async fn delete(&self, id: &UserId) -> RepoResult<bool>;

@@ -9,6 +9,7 @@ pub mod connector;
 pub mod device_attempt;
 pub mod device_code;
 pub mod refresh_revoke;
+pub mod users;
 
 pub use approval_ticket::approval_ticket_contract;
 pub use binding::binding_contract;
@@ -16,6 +17,7 @@ pub use connector::connector_contract;
 pub use device_attempt::device_attempt_contract;
 pub use device_code::device_code_contract;
 pub use refresh_revoke::{revoke_all_for_client_contract, revoked_family_contract};
+pub use users::user_contract;
 
 use re0auth_api::audit::{
     AuditAction, AuditOutcome, AuditRecord, AuditTier, SecurityFact, Severity,
@@ -23,13 +25,13 @@ use re0auth_api::audit::{
 use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
     AuditFilter, AuthCode, Binding, BindingQuery, BindingStatus, Client, ClientStatus, Consent,
-    ConsumeAuthCode, DeviceCode, DeviceCodeState, Identity, LoginTransaction, PendingAuthorization,
+    ConsumeAuthCode, DeviceCode, DeviceCodeState, LoginTransaction, PendingAuthorization,
     PendingBinding, RefreshToken, RepoError, RotateOutcome, RotateRefreshToken, Session, Storage,
     User, UserRole,
 };
 use re0auth_api::secret::ClientSecretHash;
 use re0auth_api::{
-    AuditId, AuthCodeId, BindingId, ClientId, ConsentId, DeviceCodeId, FamilyId, IdentityId,
+    AuditId, AuthCodeId, BindingId, ClientId, ConsentId, DeviceCodeId, FamilyId,
     PendingAuthorizationId, RefreshTokenId, SessionId, Unix, UserId,
 };
 
@@ -153,121 +155,6 @@ pub(super) fn binding(user: UserId, id: BindingId, status: BindingStatus, now: U
         last_refreshed_at: None,
         last_error_code: None,
     }
-}
-
-pub async fn user_contract<S: Storage>(store: &S) {
-    let now = 1_000;
-    let user = user(now);
-    store.users().create(&user).await.expect("create user");
-    assert_eq!(
-        store.users().get(&user.id).await.expect("get user"),
-        Some(user.clone())
-    );
-    assert!(matches!(
-        store.users().create(&user).await,
-        Err(RepoError::Conflict(_))
-    ));
-
-    let identity = Identity {
-        id: IdentityId::new(),
-        user_id: user.id,
-        issuer: "https://idp.example".to_string(),
-        subject: "subject-1".to_string(),
-        created_at: now,
-    };
-    store
-        .users()
-        .link_identity(&identity)
-        .await
-        .expect("link identity");
-    assert_eq!(
-        store
-            .users()
-            .find_by_identity("https://idp.example", "subject-1")
-            .await
-            .expect("find identity"),
-        Some(user.clone())
-    );
-    assert!(matches!(
-        store.users().link_identity(&identity).await,
-        Err(RepoError::Conflict(_))
-    ));
-
-    let session = session(user.id, 1, now, 2_000, 5_000);
-    let code = auth_code(user.id, ClientId::new(), 2, 2_000);
-    let token = refresh(user.id, ClientId::new(), FamilyId::new(), 3, 5_000);
-    let link = binding(user.id, BindingId::new(), BindingStatus::Active, now);
-    store.sessions().create(&session).await.expect("session");
-    store
-        .auth_codes()
-        .insert(&code, &fact(AuditAction::AuthCodeIssued, now, "code"))
-        .await
-        .expect("auth code");
-    store
-        .refresh_tokens()
-        .insert(&token)
-        .await
-        .expect("refresh token");
-    store
-        .bindings()
-        .upsert(&link, &fact(AuditAction::BindingCreated, now, "binding"))
-        .await
-        .expect("binding");
-
-    assert!(store.users().delete(&user.id).await.expect("delete user"));
-    assert_eq!(
-        store.users().get(&user.id).await.expect("get deleted"),
-        None
-    );
-    assert_eq!(
-        store
-            .sessions()
-            .find_active(&session.id_hash, now)
-            .await
-            .expect("session after delete"),
-        None
-    );
-    assert!(matches!(
-        store
-            .auth_codes()
-            .consume(
-                ConsumeAuthCode {
-                    code_hash: &code.code_hash,
-                    client_id: code.client_id,
-                    redirect_uri: &code.redirect_uri,
-                    code_challenge: code.code_challenge.as_deref(),
-                    code_challenge_method: code.code_challenge_method.as_deref(),
-                    family_id: FamilyId::new(),
-                },
-                now,
-            )
-            .await,
-        Err(RepoError::NotFound)
-    ));
-    assert!(matches!(
-        store
-            .refresh_tokens()
-            .rotate(
-                RotateRefreshToken {
-                    old_hash: &token.token_hash,
-                    new: refresh(user.id, token.client_id, token.family_id, 4, 6_000),
-                },
-                &fact(AuditAction::RefreshTokenRotated, 1_000, "refresh"),
-                now,
-            )
-            .await
-            .expect("rotate after delete"),
-        RotateOutcome::NotFound
-    ));
-    assert_eq!(
-        store
-            .bindings()
-            .find(&user.id, "phigros")
-            .await
-            .expect("binding after delete"),
-        None
-    );
-    assert!(!store.users().delete(&user.id).await.expect("delete again"));
 }
 
 pub async fn session_contract<S: Storage>(store: &S) {

@@ -193,6 +193,35 @@ impl UserRepo for MemoryStore {
         Ok(inner.users.get(&identity.user_id).cloned())
     }
 
+    async fn list_identities(&self, user: &UserId) -> RepoResult<Vec<Identity>> {
+        let inner = self.lock();
+        let mut identities: Vec<Identity> = inner
+            .identities
+            .values()
+            .filter(|identity| identity.user_id == *user)
+            .cloned()
+            .collect();
+        identities.sort_by_key(|identity| (identity.created_at, identity.id.0));
+        Ok(identities)
+    }
+
+    async fn unlink_identity(
+        &self,
+        user: &UserId,
+        issuer: &str,
+        subject: &str,
+    ) -> RepoResult<bool> {
+        let mut inner = self.lock();
+        let key = (issuer.to_string(), subject.to_string());
+        match inner.identities.get(&key) {
+            Some(identity) if identity.user_id == *user => {
+                inner.identities.remove(&key);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     async fn delete(&self, id: &UserId) -> RepoResult<bool> {
         let mut inner = self.lock();
         if inner.users.remove(id).is_none() {
