@@ -175,3 +175,51 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn the_host_prefix_tracks_the_secure_flag(secure in any::<bool>()) {
+            prop_assert_eq!(session_cookie_name(secure).starts_with("__Host-"), secure);
+            prop_assert_eq!(csrf_cookie_name(secure).starts_with("__Host-"), secure);
+        }
+
+        #[test]
+        fn every_session_cookie_carries_the_same_attributes(
+            name in "[A-Za-z0-9_-]{1,20}",
+            value in "[A-Za-z0-9._~-]{0,40}",
+            max_age in 0i64..1_000_000,
+            secure in any::<bool>(),
+            http_only in any::<bool>(),
+        ) {
+            let cookie = session_set_cookie(&name, &value, max_age, secure, http_only);
+            prop_assert_eq!(cookie.path(), Some("/"));
+            prop_assert_eq!(cookie.http_only(), Some(http_only));
+            prop_assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+            prop_assert_eq!(cookie.secure(), Some(secure));
+            prop_assert_eq!(cookie.domain(), None);
+            prop_assert_eq!(
+                cookie.max_age(),
+                Some(cookie::time::Duration::seconds(max_age))
+            );
+        }
+
+        #[test]
+        fn the_login_intent_cookie_is_scoped_to_the_browser(
+            secure in any::<bool>(),
+            state in "[A-Za-z0-9_-]{0,64}",
+        ) {
+            let cookie = login_intent_cookie(secure, &state);
+            prop_assert_eq!(cookie.name().starts_with("__Host-"), secure);
+            prop_assert_eq!(cookie.path(), Some("/"));
+            prop_assert_eq!(cookie.http_only(), Some(true));
+            prop_assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+            prop_assert_eq!(cookie.secure(), Some(secure));
+            prop_assert_eq!(cookie.max_age(), Some(cookie::time::Duration::seconds(600)));
+        }
+    }
+}

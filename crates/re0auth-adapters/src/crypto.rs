@@ -529,6 +529,7 @@ impl TokenSigner for RsaTokenSigner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use re0auth_api::oauth::ConsentVersion;
 
     struct TempDir(PathBuf);
@@ -880,6 +881,46 @@ mod tests {
         // Lifecycle metadata is per-load, but the kid is not.
         assert_eq!(first_signer.record.created_at, 1_000);
         assert_eq!(second_signer.record.created_at, 2_000);
+    }
+
+    fn shared_signer() -> &'static RsaTokenSigner {
+        static SIGNER: std::sync::LazyLock<RsaTokenSigner> = std::sync::LazyLock::new(|| {
+            let dir = TempDir::new();
+            signer(&dir)
+        });
+        &SIGNER
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn a_flipped_signature_bit_is_always_rejected(
+            byte in any::<usize>(),
+            bit in 0u8..8,
+        ) {
+            let signer = shared_signer();
+            let token = signer.sign_access(&access_claims()).expect("sign");
+            let parts: Vec<&str> = token.split('.').collect();
+            prop_assert_eq!(parts.len(), 3);
+            let mut signature = URL_SAFE_NO_PAD.decode(parts[2]).expect("signature");
+            let index = byte % signature.len();
+            signature[index] ^= 1 << bit;
+            let tampered = format!(
+                "{}.{}.{}",
+                parts[0],
+                parts[1],
+                URL_SAFE_NO_PAD.encode(&signature)
+            );
+            prop_assert!(signer.verify_access(&tampered).is_err());
+        }
+
+        #[test]
+        fn arbitrary_tokens_are_rejected_without_panicking(
+            token in "[A-Za-z0-9_.-]{0,120}",
+        ) {
+            prop_assert!(shared_signer().verify_access(&token).is_err());
+        }
     }
 }
 

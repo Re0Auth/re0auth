@@ -942,6 +942,7 @@ fn envelope_raw(
 #[cfg(test)]
 mod p01_tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn p01_cached_bytes_round_trip_and_splice_into_valid_json() {
@@ -966,5 +967,62 @@ mod p01_tests {
         assert_eq!(value["upstream"], "phigros");
         assert_eq!(value["request_id"], "req-1");
         assert_eq!(value["data"]["score"], 42);
+    }
+
+    proptest! {
+        #[test]
+        fn p01_encoded_views_round_trip(
+            fetched_at in any::<i64>(),
+            data in proptest::collection::vec(any::<u8>(), 0..40),
+        ) {
+            let view = CachedView {
+                fetched_at,
+                data: data.clone(),
+            };
+            let decoded = CachedView::decode(&view.encode().expect("encode"))
+                .expect("decode");
+            prop_assert_eq!(decoded.fetched_at, fetched_at);
+            prop_assert_eq!(decoded.data, data);
+        }
+
+        #[test]
+        fn p01_bodies_shorter_than_the_header_are_rejected(
+            data in proptest::collection::vec(any::<u8>(), 0..8),
+        ) {
+            prop_assert!(CachedView::decode(&data).is_err());
+        }
+
+        #[test]
+        fn p01_the_envelope_escapes_every_metadata_field(
+            upstream in "\\PC{0,30}",
+            endpoint in "\\PC{0,30}",
+            request_id in proptest::option::of("\\PC{0,30}"),
+            fetched_at in any::<i64>(),
+            values in proptest::collection::vec(any::<i64>(), 0..4),
+        ) {
+            let count = values.len();
+            let data = serde_json::to_vec(&serde_json::json!({
+                "values": values,
+                "note": endpoint,
+            }))
+            .expect("data");
+            let body = envelope_raw(
+                &upstream,
+                &endpoint,
+                fetched_at,
+                request_id.as_deref(),
+                &data,
+            )
+            .expect("envelope");
+            let parsed: Value = serde_json::from_slice(&body).expect("valid JSON");
+            prop_assert_eq!(parsed["upstream"].as_str(), Some(upstream.as_str()));
+            prop_assert_eq!(parsed["endpoint"].as_str(), Some(endpoint.as_str()));
+            prop_assert_eq!(parsed["request_id"].as_str(), request_id.as_deref());
+            prop_assert_eq!(parsed["fetched_at"].as_i64(), Some(fetched_at));
+            prop_assert_eq!(
+                parsed["data"]["values"].as_array().map(Vec::len),
+                Some(count)
+            );
+        }
     }
 }

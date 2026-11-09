@@ -176,3 +176,137 @@ fn has_malformed_escape(value: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use re0auth_api::redirect_uri::{self, RedirectUriError};
+
+    fn form_value() -> impl Strategy<Value = (String, String)> {
+        proptest::collection::vec((any::<bool>(), 0x20u8..0x7f), 0..16).prop_map(|parts| {
+            let mut raw = String::new();
+            let mut decoded = String::new();
+            for (force_percent, byte) in parts {
+                let character = char::from(byte);
+                let plain =
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_' | '~');
+                if force_percent || !plain {
+                    raw.push('%');
+                    raw.push_str(&format!("{byte:02X}"));
+                } else {
+                    raw.push(character);
+                }
+                decoded.push(character);
+            }
+            (raw, decoded)
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn form_decode_round_trips_percent_encoded_ascii((raw, expected) in form_value()) {
+            prop_assert_eq!(form_decode(&raw).ok(), Some(expected));
+        }
+
+        #[test]
+        fn a_malformed_percent_escape_is_refused(
+            prefix in "[a-z]{0,8}",
+            bad in "[^0-9A-Fa-f]",
+            suffix in "[a-z]{0,8}",
+        ) {
+            let raw = format!("{prefix}%{bad}{suffix}");
+            prop_assert!(has_malformed_escape(&raw));
+            prop_assert!(form_decode(&raw).is_err());
+        }
+
+        #[test]
+        fn a_truncated_percent_escape_is_refused(prefix in "[a-z]{0,8}") {
+            let raw = format!("{prefix}%A");
+            prop_assert!(has_malformed_escape(&raw));
+            prop_assert!(form_decode(&raw).is_err());
+        }
+
+        #[test]
+        fn client_id_accepts_exactly_uuid_strings(value in "\\PC{0,50}") {
+            let expected = Uuid::parse_str(&value).ok();
+            match parse_client_id(Some(&value)) {
+                Ok(id) => prop_assert_eq!(Some(id.0), expected),
+                Err(_) => prop_assert!(expected.is_none()),
+            }
+        }
+
+        #[test]
+        fn a_non_empty_cookie_round_trips(value in "[A-Za-z0-9._~-]{1,40}") {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::COOKIE, format!("session={value}").parse().unwrap());
+            prop_assert_eq!(cookie_value(&headers, "session"), Some(value));
+        }
+
+        #[test]
+        fn an_empty_cookie_is_absent(_seed in any::<u8>()) {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::COOKIE, "session=".parse().unwrap());
+            prop_assert_eq!(cookie_value(&headers, "session"), None);
+        }
+
+        #[test]
+        fn https_redirects_without_a_fragment_are_accepted(
+            host in "[a-z][a-z0-9-]{2,20}",
+            path in "/[A-Za-z0-9._~/-]{0,40}",
+            query in "[a-z0-9=&]{0,20}",
+        ) {
+            let suffix = if query.is_empty() { String::new() } else { format!("?{query}") };
+            let value = format!("https://{host}.example{path}{suffix}");
+            prop_assert_eq!(redirect_uri::validate(&value), Ok(()));
+        }
+
+        #[test]
+        fn a_fragment_always_turns_an_accepted_redirect_into_fragment_error(
+            host in "[a-z][a-z0-9-]{2,20}",
+            path in "/[A-Za-z0-9._~/-]{0,40}",
+            fragment in "[A-Za-z0-9._~-]{1,20}",
+        ) {
+            let value = format!("https://{host}.example{path}#{fragment}");
+            prop_assert_eq!(
+                redirect_uri::validate(&value),
+                Err(RedirectUriError::Fragment)
+            );
+        }
+
+        #[test]
+        fn userinfo_always_turns_an_accepted_redirect_into_credentials_error(
+            host in "[a-z][a-z0-9-]{2,20}",
+            user in "[a-z]{1,12}",
+            password in "[a-z]{1,12}",
+        ) {
+            let value = format!("https://{user}:{password}@{host}.example/callback");
+            prop_assert_eq!(
+                redirect_uri::validate(&value),
+                Err(RedirectUriError::Credentials)
+            );
+        }
+
+        #[test]
+        fn plain_http_off_loopback_is_always_insecure(host in "[a-z][a-z0-9-]{2,20}") {
+            let value = format!("http://{host}.example/callback");
+            prop_assert_eq!(
+                redirect_uri::validate(&value),
+                Err(RedirectUriError::Insecure)
+            );
+        }
+
+        #[test]
+        fn an_accepted_redirect_never_carries_a_fragment_or_credentials(
+            raw in "[\\PC]{0,80}",
+        ) {
+            if redirect_uri::validate(&raw).is_ok() {
+                let url = url::Url::parse(&raw).expect("accepted implies parseable");
+                prop_assert!(url.fragment().is_none());
+                prop_assert!(url.username().is_empty());
+                prop_assert!(url.password().is_none());
+                prop_assert!(matches!(url.scheme(), "https" | "http"));
+            }
+        }
+    }
+}

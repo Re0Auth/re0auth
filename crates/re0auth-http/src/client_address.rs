@@ -318,3 +318,93 @@ mod tests {
         assert!(!host.contains("192.0.2.8".parse().expect("ip")));
     }
 }
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn any_ip() -> impl Strategy<Value = IpAddr> {
+        prop_oneof![
+            any::<u32>().prop_map(|value| IpAddr::V4(value.into())),
+            any::<u128>().prop_map(|value| IpAddr::V6(value.into())),
+        ]
+    }
+
+    fn headers(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", value.parse().expect("value"));
+        headers
+    }
+
+    proptest! {
+        #[test]
+        fn a_parsed_range_contains_its_own_address(address in any_ip(), prefix in any::<u8>()) {
+            let prefix = match address {
+                IpAddr::V4(_) => prefix % 33,
+                IpAddr::V6(_) => prefix % 129,
+            };
+            let range = ProxyRange::parse(&format!("{address}/{prefix}")).expect("range");
+            prop_assert!(range.contains(address));
+            prop_assert_eq!(range.prefix_len(), prefix);
+        }
+
+        #[test]
+        fn an_untrusted_peer_never_consults_forwarded_for(
+            peer in any_ip(),
+            text in "[0-9a-fA-F:., ]{0,40}",
+        ) {
+            let trusted = [ProxyRange::parse("10.0.0.0/8").expect("range")];
+            prop_assume!(!trusted[0].contains(peer));
+            prop_assert_eq!(resolve(peer, &headers(&text), &trusted), peer.to_string());
+        }
+
+        #[test]
+        fn a_trusted_peer_uses_the_right_most_hop(first in any::<u32>(), second in any::<u32>()) {
+            let first = IpAddr::V4(first.into());
+            let second = IpAddr::V4(second.into());
+            prop_assume!(!second.is_unspecified() && !second.is_loopback());
+            let trusted = [ProxyRange::parse("10.0.0.0/8").expect("range")];
+            prop_assert_eq!(
+                resolve(
+                    "10.0.0.5".parse().expect("peer"),
+                    &headers(&format!("{first}, {second}")),
+                    &trusted
+                ),
+                second.to_string()
+            );
+        }
+
+        #[test]
+        fn an_unspecified_hop_falls_back_to_the_peer(_seed in any::<u8>()) {
+            let trusted = [ProxyRange::parse("10.0.0.0/8").expect("range")];
+            prop_assert_eq!(
+                resolve(
+                    "10.0.0.5".parse().expect("peer"),
+                    &headers("0.0.0.0"),
+                    &trusted
+                ),
+                "10.0.0.5"
+            );
+        }
+
+        #[test]
+        fn same_family_containment_matches_ipnet(
+            range_address in any_ip(),
+            peer in any_ip(),
+            prefix in any::<u8>(),
+        ) {
+            let prefix = match range_address {
+                IpAddr::V4(_) => prefix % 33,
+                IpAddr::V6(_) => prefix % 129,
+            };
+            let net = ipnet::IpNet::new(range_address, prefix).expect("net");
+            prop_assume!(matches!(
+                (net, peer),
+                (ipnet::IpNet::V4(_), IpAddr::V4(_)) | (ipnet::IpNet::V6(_), IpAddr::V6(_))
+            ));
+            let range = ProxyRange::parse(&net.to_string()).expect("range");
+            prop_assert_eq!(range.contains(peer), net.contains(&peer));
+        }
+    }
+}
