@@ -149,6 +149,28 @@ impl UserRepo for MemoryStore {
         Ok(())
     }
 
+    async fn set_status_and_revoke_sessions(
+        &self,
+        id: &UserId,
+        status: UserStatus,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        let mut inner = self.lock();
+        let Some(user) = inner.users.get_mut(id) else {
+            return Err(RepoError::NotFound);
+        };
+        user.status = status;
+        user.updated_at = now;
+        Self::push_fact(&mut inner, fact);
+        for session in inner.sessions.values_mut() {
+            if session.user_id == *id && session.revoked_at.is_none() {
+                session.revoked_at = Some(now);
+            }
+        }
+        Ok(())
+    }
+
     async fn count_admins(&self) -> RepoResult<u64> {
         let inner = self.lock();
         Ok(inner

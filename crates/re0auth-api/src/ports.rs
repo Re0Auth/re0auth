@@ -839,6 +839,15 @@ pub trait UserRepo: Send + Sync {
         fact: &SecurityFact,
         now: Unix,
     ) -> RepoResult<()>;
+    /// Bans the account and revokes every session in the same transaction
+    /// (B15). Used when a ban must take effect as one decision, not two writes.
+    async fn set_status_and_revoke_sessions(
+        &self,
+        id: &UserId,
+        status: UserStatus,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()>;
     /// How many admins exist, for the "cannot demote the last admin" guard.
     async fn count_admins(&self) -> RepoResult<u64>;
 }

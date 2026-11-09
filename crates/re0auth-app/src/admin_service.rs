@@ -435,16 +435,19 @@ impl AdminService {
         let fact = SecurityFact::new(action, now, format!("user:{}", target.0))
             .actor(actor)
             .with_request_id(correlation_id);
-        self.storage
-            .users()
-            .set_status(&target, status, &fact, now)
-            .await?;
         if status == UserStatus::Banned {
-            // Sessions die with the ban; the per-request status check is the
-            // second gate, not the only one.
-            self.storage.sessions().revoke_all(&target, now).await?;
+            // Status and session revocation are one decision, not two writes.
+            self.storage
+                .users()
+                .set_status_and_revoke_sessions(&target, status, &fact, now)
+                .await?;
             // A refresh token or an unused code must not survive the ban either.
             self.revoke_grants_for_ban(target, actor, now, correlation_id)
+                .await?;
+        } else {
+            self.storage
+                .users()
+                .set_status(&target, status, &fact, now)
                 .await?;
         }
         Ok(AdminUserView {

@@ -5,7 +5,8 @@
 
 use re0auth_api::audit::AuditAction;
 use re0auth_api::ports::{
-    BindingStatus, ConsumeAuthCode, Identity, RepoError, RotateOutcome, RotateRefreshToken, Storage,
+    BindingStatus, ConsumeAuthCode, Identity, RepoError, RotateOutcome, RotateRefreshToken,
+    Storage, UserStatus,
 };
 use re0auth_api::{BindingId, ClientId, FamilyId, IdentityId, UserId};
 
@@ -178,6 +179,32 @@ pub async fn user_contract<S: Storage>(store: &S) {
     assert!(
         store.users().get(&user.id).await.expect("get").is_some(),
         "a refused delete must keep the row"
+    );
+
+    let banned_session = super::session(user.id, 0x99, now, 2_000, 5_000);
+    store
+        .sessions()
+        .create(&banned_session)
+        .await
+        .expect("session");
+    store
+        .users()
+        .set_status_and_revoke_sessions(
+            &user.id,
+            UserStatus::Banned,
+            &fact(AuditAction::UserBanned, now, "user"),
+            now,
+        )
+        .await
+        .expect("ban");
+    assert_eq!(
+        store
+            .sessions()
+            .find_active(&banned_session.id_hash, now)
+            .await
+            .expect("find after ban"),
+        None,
+        "the ban must revoke the session in the same transaction"
     );
 
     assert!(store.users().delete(&user.id).await.expect("delete user"));

@@ -261,6 +261,35 @@ impl UserRepo for SqliteStore {
         Ok(())
     }
 
+    async fn set_status_and_revoke_sessions(
+        &self,
+        id: &UserId,
+        status: UserStatus,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let result = sqlx::query("UPDATE users SET status = ?, updated_at = ? WHERE id = ?")
+            .bind(user_status_to_str(status))
+            .bind(now)
+            .bind(id.0.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::NotFound);
+        }
+        record_fact(&mut tx, fact).await?;
+        sqlx::query("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
+            .bind(now)
+            .bind(id.0.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(())
+    }
+
     async fn count_admins(&self) -> RepoResult<u64> {
         let row = sqlx::query("SELECT COUNT(*) AS n FROM users WHERE role = ?")
             .bind(role_to_str(UserRole::Admin))
