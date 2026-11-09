@@ -683,6 +683,7 @@ impl OAuthService {
                 created_at: now,
                 expires_at: now + ttl,
                 consumed_at: None,
+                family_id: None,
             };
             match self.storage.device_codes().insert(&code).await {
                 Ok(()) => {
@@ -720,11 +721,14 @@ impl OAuthService {
         self.authenticate_client(client_id, client_secret).await?;
         let now = self.clock.now();
         let hash = hash_secret(device_code);
+        // The family is only persisted if this poll consumes an approved code;
+        // the token response then uses this same id.
+        let family = FamilyId::new();
 
         let outcome = self
             .storage
             .device_codes()
-            .poll(&hash, now, client_id)
+            .poll(&hash, now, client_id, &family)
             .await
             .map_err(map_repo)?;
         match outcome {
@@ -747,7 +751,7 @@ impl OAuthService {
                 let refresh = RefreshToken {
                     id: RefreshTokenId::new(),
                     token_hash: refresh_hash,
-                    family_id: FamilyId::new(),
+                    family_id: family,
                     client_id,
                     user_id,
                     scopes: scopes.clone(),
@@ -776,7 +780,11 @@ impl OAuthService {
             }
             DevicePoll::Denied => Err(OAuthError::AccessDenied),
             DevicePoll::Expired => Err(OAuthError::ExpiredToken),
-            DevicePoll::Consumed => Err(OAuthError::InvalidGrant("device code already consumed")),
+            DevicePoll::Consumed { family } => {
+                self.revoke_replayed_device_code(family, client_id, now)
+                    .await?;
+                Err(OAuthError::InvalidGrant("device code already consumed"))
+            }
             DevicePoll::NotFound => Err(OAuthError::InvalidGrant("unknown device code")),
         }
     }
@@ -860,6 +868,32 @@ impl OAuthService {
             &refresh.family_id,
         )
         .await
+    }
+
+    /// 重放已消费的设备码时，撤销它签发过的家族。
+    async fn revoke_replayed_device_code(
+        &self,
+        family: Option<FamilyId>,
+        client_id: ClientId,
+        now: Unix,
+    ) -> Result<(), OAuthError> {
+        let Some(family) = family else {
+            // Codes consumed before the family column existed have nothing to
+            // revoke; their tokens expire normally.
+            return Ok(());
+        };
+        let fact = SecurityFact::new(
+            AuditAction::DeviceCodeReuseDetected,
+            now,
+            format!("family:{}", family.0),
+        )
+        .client(client_id);
+        self.storage
+            .refresh_tokens()
+            .revoke_family(&family, &fact, now)
+            .await
+            .map_err(map_repo)?;
+        Ok(())
     }
 
     /// 重放已兑换的码时，撤销它签发过的家族

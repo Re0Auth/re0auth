@@ -1,6 +1,7 @@
 //! Device authorization contract (RFC 8628).
 
 use super::{client, device_code, fact, user};
+use re0auth_api::FamilyId;
 use re0auth_api::audit::AuditAction;
 use re0auth_api::ports::{DeviceCodeState, DevicePoll, RepoError, Storage};
 
@@ -66,7 +67,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_000, client.id)
+            .poll(&code.device_code_hash, 1_000, client.id, &FamilyId::new())
             .await
             .expect("first poll"),
         DevicePoll::Pending
@@ -77,7 +78,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_001, stranger.id)
+            .poll(&code.device_code_hash, 1_001, stranger.id, &FamilyId::new())
             .await
             .expect("foreign poll"),
         DevicePoll::ClientMismatch
@@ -96,7 +97,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_002, client.id)
+            .poll(&code.device_code_hash, 1_002, client.id, &FamilyId::new())
             .await
             .expect("fast poll"),
         DevicePoll::SlowDown { interval_secs: 10 }
@@ -104,7 +105,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_012, client.id)
+            .poll(&code.device_code_hash, 1_012, client.id, &FamilyId::new())
             .await
             .expect("poll after slow down"),
         DevicePoll::Pending
@@ -115,10 +116,11 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
         .approve(&code.user_code_hash, user.id, 1_013)
         .await
         .expect("approve");
+    let consumed_family = FamilyId::new();
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_014, client.id)
+            .poll(&code.device_code_hash, 1_014, client.id, &consumed_family)
             .await
             .expect("approved poll"),
         DevicePoll::Approved {
@@ -130,10 +132,12 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_015, client.id)
+            .poll(&code.device_code_hash, 1_015, client.id, &FamilyId::new())
             .await
             .expect("second poll"),
-        DevicePoll::Consumed
+        DevicePoll::Consumed {
+            family: Some(consumed_family),
+        }
     );
 
     // 只拒绝该用户在该 client 下的已批准设备码
@@ -185,7 +189,12 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&revocable.device_code_hash, 1_020, client.id)
+            .poll(
+                &revocable.device_code_hash,
+                1_020,
+                client.id,
+                &FamilyId::new()
+            )
             .await
             .expect("revoked poll"),
         DevicePoll::Denied
@@ -237,7 +246,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&denied.device_code_hash, 1_002, client.id)
+            .poll(&denied.device_code_hash, 1_002, client.id, &FamilyId::new())
             .await
             .expect("denied poll"),
         DevicePoll::Denied
@@ -252,7 +261,12 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&expired.device_code_hash, 1_000, client.id)
+            .poll(
+                &expired.device_code_hash,
+                1_000,
+                client.id,
+                &FamilyId::new()
+            )
             .await
             .expect("expired poll"),
         DevicePoll::Expired
@@ -260,7 +274,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&[0xff; 32], 1_000, client.id)
+            .poll(&[0xff; 32], 1_000, client.id, &FamilyId::new())
             .await
             .expect("missing poll"),
         DevicePoll::NotFound

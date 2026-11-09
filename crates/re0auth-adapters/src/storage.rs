@@ -305,6 +305,11 @@ fn row_to_device_code(row: &SqliteRow) -> RepoResult<DeviceCode> {
         created_at: row.try_get("created_at").map_err(db_error)?,
         expires_at: row.try_get("expires_at").map_err(db_error)?,
         consumed_at: row.try_get("consumed_at").map_err(db_error)?,
+        family_id: row
+            .try_get::<Option<String>, _>("family_id")
+            .map_err(db_error)?
+            .map(|value| parse_uuid(&value).map(FamilyId))
+            .transpose()?,
     })
 }
 

@@ -651,6 +651,7 @@ impl DeviceCodeRepo for MemoryStore {
         device_code_hash: &[u8],
         now: Unix,
         client_id: ClientId,
+        family_id: &FamilyId,
     ) -> RepoResult<DevicePoll> {
         let mut inner = self.lock();
         let Some(code) = inner.device_codes.get_mut(device_code_hash) else {
@@ -662,7 +663,9 @@ impl DeviceCodeRepo for MemoryStore {
         }
 
         if code.state.status() == DeviceCodeStatus::Consumed {
-            return Ok(DevicePoll::Consumed);
+            return Ok(DevicePoll::Consumed {
+                family: code.family_id,
+            });
         }
         if code.state.status() == DeviceCodeStatus::Denied {
             return Ok(DevicePoll::Denied);
@@ -679,6 +682,7 @@ impl DeviceCodeRepo for MemoryStore {
             code.state = DeviceCodeState::Consumed { approver: user_id };
             code.consumed_at = Some(now);
             code.last_polled_at = Some(now);
+            code.family_id = Some(*family_id);
             return Ok(DevicePoll::Approved {
                 client_id: code.client_id,
                 user_id,

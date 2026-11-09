@@ -126,6 +126,7 @@ pub(super) fn device_code(user_code_hash: u8, client: ClientId, expires: Unix) -
         created_at: 1_000,
         expires_at: expires,
         consumed_at: None,
+        family_id: None,
     }
 }
 

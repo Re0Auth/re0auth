@@ -344,6 +344,7 @@ mod redaction_tests {
             created_at: 1,
             expires_at: 2,
             consumed_at: None,
+            family_id: None,
         };
         assert_redacted(&format!("{code:?}"), &canary_string());
     }
@@ -565,6 +566,9 @@ pub struct DeviceCode {
     pub created_at: Unix,
     pub expires_at: Unix,
     pub consumed_at: Option<Unix>,
+    /// The refresh family issued when this code was consumed. Written in the
+    /// same UPDATE that marks the code consumed, so a replay can revoke it.
+    pub family_id: Option<FamilyId>,
 }
 
 impl std::fmt::Debug for DeviceCode {
@@ -600,7 +604,10 @@ pub enum DevicePoll {
     },
     Denied,
     Expired,
-    Consumed,
+    Consumed {
+        /// Present when the code was consumed after this column existed.
+        family: Option<FamilyId>,
+    },
     NotFound,
     /// The code exists but belongs to a different client. Returned before any
     /// polling state is written.
@@ -1057,6 +1064,7 @@ pub trait DeviceCodeRepo: Send + Sync {
         device_code_hash: &[u8],
         now: Unix,
         client_id: ClientId,
+        family_id: &FamilyId,
     ) -> RepoResult<DevicePoll>;
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64>;
 }

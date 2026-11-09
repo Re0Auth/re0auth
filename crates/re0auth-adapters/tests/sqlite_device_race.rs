@@ -7,7 +7,7 @@ use re0auth_api::audit::{AuditAction, SecurityFact};
 use re0auth_api::ports::{
     Client, ClientStatus, DeviceCode, DeviceCodeState, DevicePoll, Storage, User, UserRole,
 };
-use re0auth_api::{ClientId, DeviceCodeId, UserId};
+use re0auth_api::{ClientId, DeviceCodeId, FamilyId, UserId};
 use tokio::sync::Barrier;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -59,6 +59,7 @@ async fn concurrent_device_polls_consume_once() {
         created_at: 1_000,
         expires_at: 10_000,
         consumed_at: None,
+        family_id: None,
     };
     store
         .device_codes()
@@ -80,7 +81,10 @@ async fn concurrent_device_polls_consume_once() {
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
-            store.device_codes().poll(&hash, 1_001, client_id).await
+            store
+                .device_codes()
+                .poll(&hash, 1_001, client_id, &FamilyId::new())
+                .await
         }));
     }
 
@@ -89,7 +93,7 @@ async fn concurrent_device_polls_consume_once() {
     for task in tasks {
         match task.await.expect("join") {
             Ok(DevicePoll::Approved { .. }) => approved += 1,
-            Ok(DevicePoll::Consumed) => consumed += 1,
+            Ok(DevicePoll::Consumed { .. }) => consumed += 1,
             Ok(other) => panic!("unexpected poll outcome: {other:?}"),
             Err(error) => panic!("poll must not fail: {error:?}"),
         }

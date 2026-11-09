@@ -10,10 +10,12 @@ use re0auth_api::ports::{
     DeviceCode, DeviceCodeRepo, DeviceCodeState, DeviceCodeStatus, DevicePoll, RepoError,
     RepoResult,
 };
-use re0auth_api::{ClientId, Unix, UserId};
+use re0auth_api::{ClientId, FamilyId, Unix, UserId};
 use sqlx::Row;
 
-use super::{SqliteStore, db_error, device_status_to_str, row_to_device_code, scopes_json};
+use super::{
+    SqliteStore, db_error, device_status_to_str, parse_uuid, row_to_device_code, scopes_json,
+};
 
 /// Names the unique constraint an insert violated.
 ///
@@ -50,8 +52,8 @@ impl DeviceCodeRepo for SqliteStore {
             "INSERT INTO device_codes \
              (id, device_code_hash, user_code_hash, client_id, scopes, status, user_id, \
               interval_secs, last_polled_at, poll_count, user_code_misses, created_at, \
-              expires_at, consumed_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              expires_at, consumed_at, family_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(code.id.0.to_string())
         .bind(&code.device_code_hash)
@@ -67,6 +69,7 @@ impl DeviceCodeRepo for SqliteStore {
         .bind(code.created_at)
         .bind(code.expires_at)
         .bind(code.consumed_at)
+        .bind(code.family_id.map(|family| family.0.to_string()))
         .execute(&self.pool)
         .await;
 
@@ -80,7 +83,7 @@ impl DeviceCodeRepo for SqliteStore {
         let row = sqlx::query(
             "SELECT id, device_code_hash, user_code_hash, client_id, scopes, status, user_id, \
              interval_secs, last_polled_at, poll_count, user_code_misses, created_at, expires_at, \
-             consumed_at FROM device_codes WHERE device_code_hash = ?",
+             consumed_at, family_id FROM device_codes WHERE device_code_hash = ?",
         )
         .bind(hash)
         .fetch_optional(&self.pool)
@@ -93,7 +96,7 @@ impl DeviceCodeRepo for SqliteStore {
         let row = sqlx::query(
             "SELECT id, device_code_hash, user_code_hash, client_id, scopes, status, user_id, \
              interval_secs, last_polled_at, poll_count, user_code_misses, created_at, expires_at, \
-             consumed_at FROM device_codes WHERE user_code_hash = ?",
+             consumed_at, family_id FROM device_codes WHERE user_code_hash = ?",
         )
         .bind(hash)
         .fetch_optional(&self.pool)
@@ -186,6 +189,7 @@ impl DeviceCodeRepo for SqliteStore {
         device_code_hash: &[u8],
         now: Unix,
         client_id: ClientId,
+        family_id: &FamilyId,
     ) -> RepoResult<DevicePoll> {
         // Common case: a pending code polled after its advertised interval.
         // One atomic statement covers the whole decision plus the counter bump,
@@ -217,7 +221,7 @@ impl DeviceCodeRepo for SqliteStore {
         let row = sqlx::query(
             "SELECT id, device_code_hash, user_code_hash, client_id, scopes, status, user_id, \
              interval_secs, last_polled_at, poll_count, user_code_misses, created_at, expires_at, \
-             consumed_at FROM device_codes WHERE device_code_hash = ?",
+             consumed_at, family_id FROM device_codes WHERE device_code_hash = ?",
         )
         .bind(device_code_hash)
         .fetch_optional(&mut *tx)
@@ -235,7 +239,9 @@ impl DeviceCodeRepo for SqliteStore {
         }
 
         if code.state.status() == DeviceCodeStatus::Consumed {
-            return Ok(DevicePoll::Consumed);
+            return Ok(DevicePoll::Consumed {
+                family: code.family_id,
+            });
         }
         if code.state.status() == DeviceCodeStatus::Denied {
             return Ok(DevicePoll::Denied);
@@ -252,23 +258,38 @@ impl DeviceCodeRepo for SqliteStore {
         if let DeviceCodeState::Approved { approver: user_id } = code.state {
             let result = sqlx::query(
                 "UPDATE device_codes SET status = 'consumed', consumed_at = ?, \
-                 last_polled_at = ? WHERE device_code_hash = ? AND status = 'approved'",
+                 last_polled_at = ?, family_id = ? \
+                 WHERE device_code_hash = ? AND status = 'approved'",
             )
             .bind(now)
             .bind(now)
+            .bind(family_id.0.to_string())
             .bind(device_code_hash)
             .execute(&mut *tx)
             .await
             .map_err(db_error)?;
-            tx.commit().await.map_err(db_error)?;
             if result.rows_affected() == 1 {
+                tx.commit().await.map_err(db_error)?;
                 return Ok(DevicePoll::Approved {
                     client_id: code.client_id,
                     user_id,
                     scopes: code.scopes,
                 });
             }
-            return Ok(DevicePoll::Consumed);
+            // A concurrent poll consumed it; return the family it recorded so
+            // the loser can revoke it (RFC 6749 §4.1.2 semantics).
+            let family =
+                sqlx::query("SELECT family_id FROM device_codes WHERE device_code_hash = ?")
+                    .bind(device_code_hash)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db_error)?
+                    .try_get::<Option<String>, _>("family_id")
+                    .map_err(db_error)?
+                    .map(|value| parse_uuid(&value).map(FamilyId))
+                    .transpose()?;
+            tx.commit().await.map_err(db_error)?;
+            return Ok(DevicePoll::Consumed { family });
         }
 
         if let Some(last) = code.last_polled_at

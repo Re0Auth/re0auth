@@ -75,6 +75,8 @@ pub enum AuditAction {
     UserRoleChanged,
     /// 授权码被重放，其家族已撤销
     AuthCodeReuseDetected,
+    /// 设备码被重放，其家族已撤销
+    DeviceCodeReuseDetected,
     /// An admin banned a user; every admission point must refuse them.
     UserBanned,
     /// An admin lifted a ban.
@@ -100,6 +102,7 @@ impl AuditAction {
             Self::RefreshTokenRotated => "refresh_token_rotated",
             Self::RefreshTokenReuseDetected => "refresh_token_reuse_detected",
             Self::AuthCodeReuseDetected => "auth_code_reuse_detected",
+            Self::DeviceCodeReuseDetected => "device_code_reuse_detected",
             Self::RefreshTokenRevoked => "refresh_token_revoked",
             Self::ConsentGranted => "consent_granted",
             Self::ConsentRevoked => "consent_revoked",
@@ -132,6 +135,7 @@ impl AuditAction {
             "refresh_token_rotated" => Self::RefreshTokenRotated,
             "refresh_token_reuse_detected" => Self::RefreshTokenReuseDetected,
             "auth_code_reuse_detected" => Self::AuthCodeReuseDetected,
+            "device_code_reuse_detected" => Self::DeviceCodeReuseDetected,
             "refresh_token_revoked" => Self::RefreshTokenRevoked,
             "consent_granted" => Self::ConsentGranted,
             "consent_revoked" => Self::ConsentRevoked,

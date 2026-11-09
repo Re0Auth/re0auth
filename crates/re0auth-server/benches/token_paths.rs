@@ -162,6 +162,7 @@ async fn seed_device_code(store: &SqliteStore, client: ClientId) {
         created_at: NOW,
         expires_at: NOW + 10_000_000,
         consumed_at: None,
+        family_id: None,
     };
     store
         .device_codes()

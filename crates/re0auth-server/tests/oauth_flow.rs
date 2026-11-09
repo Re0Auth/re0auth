@@ -1460,3 +1460,29 @@ async fn banning_revokes_the_refresh_family_and_consent() {
         .expect("find consent");
     assert!(consent.is_none(), "the consent must be revoked by the ban");
 }
+
+/// RFC 6749 §4.1.2 semantics for the device flow: a consumed code replayed by
+/// another poller revokes the family the first exchange issued.
+#[tokio::test]
+async fn replaying_a_device_code_revokes_the_family_it_issued() {
+    let app = setup().await;
+    let authorization = start_device(&app).await;
+    let user_code = authorization["user_code"].as_str().expect("user code");
+    let device_code = authorization["device_code"].as_str().expect("device code");
+    admin::approve_device(&app.store, &SystemClock, user_code, app.user_id)
+        .await
+        .expect("approve device");
+
+    let first = poll_device(&app, device_code).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let tokens = body_json(first).await;
+    let refresh = tokens["refresh_token"].as_str().expect("refresh token");
+
+    let replay = poll_device(&app, device_code).await;
+    assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(replay).await["error"], "invalid_grant");
+
+    let refreshed = refresh_tokens(&app, refresh).await;
+    assert_eq!(refreshed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(refreshed).await["error"], "invalid_grant");
+}
