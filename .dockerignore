@@ -12,6 +12,7 @@ conformance/results
 /data
 /config.toml
 /config.*.toml
+!config.docker.toml
 /secrets
 *.bat
 /tmp
