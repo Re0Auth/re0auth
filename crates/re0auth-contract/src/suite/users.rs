@@ -143,6 +143,19 @@ pub async fn user_contract<S: Storage>(store: &S) {
         .await
         .expect("binding");
 
+    // The app-level delete refuses while a live binding remains: deleting now
+    // would drop the only credential that can still be revoked upstream.
+    let guarded = store
+        .users()
+        .delete_with_fact(&user.id, &fact(AuditAction::AccountDeleted, now, "user"))
+        .await
+        .expect("guarded delete");
+    assert!(!guarded, "a live binding must block delete_with_fact");
+    assert!(
+        store.users().get(&user.id).await.expect("get").is_some(),
+        "a refused delete must keep the row"
+    );
+
     assert!(store.users().delete(&user.id).await.expect("delete user"));
     assert_eq!(
         store.users().get(&user.id).await.expect("get deleted"),

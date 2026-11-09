@@ -1507,3 +1507,54 @@ async fn a_foreign_client_cannot_revoke_another_clients_family_by_replaying_its_
     let refreshed = refresh_tokens(&app, refresh).await;
     assert_eq!(refreshed.status(), StatusCode::OK);
 }
+
+/// Deleting an account must not silently drop a live upstream credential when
+/// no revocation service is wired (F-6 / INV-ATTACH-05).
+#[tokio::test]
+async fn deleting_an_account_with_a_live_binding_is_refused() {
+    let app = setup().await;
+    let now = SystemClock.now();
+    app.store
+        .bindings()
+        .upsert(
+            &re0auth_api::ports::Binding {
+                id: re0auth_api::BindingId::new(),
+                user_id: app.user_id,
+                upstream_id: "phigros".to_string(),
+                upstream_user_id: "upstream-user".to_string(),
+                status: re0auth_api::ports::BindingStatus::Active,
+                created_at: now,
+                updated_at: now,
+                last_refreshed_at: None,
+                last_error_code: None,
+            },
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::BindingCreated,
+                now,
+                "binding",
+            ),
+        )
+        .await
+        .expect("binding");
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::DELETE)
+                .uri("/api/me")
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
+                .header("x-csrf-token", "csrf")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("delete account");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = body_json(response).await;
+    assert_eq!(body["code"], "bindings_not_revocable");
+}

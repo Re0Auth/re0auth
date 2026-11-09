@@ -147,11 +147,15 @@ impl UserRepo for SqliteStore {
         // ON DELETE SET NULL is what turns that into no actor. Writing it after the
         // delete would have no actor to record at all.
         record_fact(&mut tx, fact).await?;
-        let result = sqlx::query("DELETE FROM users WHERE id = ?")
-            .bind(id.0.to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
+        let result = sqlx::query(
+            "DELETE FROM users WHERE id = ? AND NOT EXISTS (\
+             SELECT 1 FROM bindings WHERE user_id = ? AND status != 'revoked')",
+        )
+        .bind(id.0.to_string())
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
         if result.rows_affected() == 0 {
             return Ok(false);
         }

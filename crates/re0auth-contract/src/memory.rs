@@ -15,13 +15,13 @@ use re0auth_api::connector::ResourceSpec;
 use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
     AccessTokenRepo, ApprovalDecision, ApprovalTicket, ApprovalTicketRepo, AuditRepo, AuthCode,
-    AuthCodeRepo, AuthGrant, Binding, BindingRepo, Client, ClientRepo, ConnectorRecord,
-    ConnectorRepo, Consent, ConsentRepo, ConsumeAuthCode, DeviceAttemptRepo, DeviceCode,
-    DeviceCodeRepo, DeviceCodeState, DeviceCodeStatus, DevicePoll, Identity, LoginTransaction,
-    LoginTransactionRepo, PendingAuthorization, PendingAuthorizationRepo, PendingBinding,
-    PendingBindingRepo, RefreshToken, RefreshTokenRepo, RepoError, RepoResult, RotateOutcome,
-    RotateRefreshToken, Session, SessionRepo, SigningKeyRecord, SigningKeyRepo, Storage, User,
-    UserRepo, UserRole, UserStatus,
+    AuthCodeRepo, AuthGrant, Binding, BindingRepo, BindingStatus, Client, ClientRepo,
+    ConnectorRecord, ConnectorRepo, Consent, ConsentRepo, ConsumeAuthCode, DeviceAttemptRepo,
+    DeviceCode, DeviceCodeRepo, DeviceCodeState, DeviceCodeStatus, DevicePoll, Identity,
+    LoginTransaction, LoginTransactionRepo, PendingAuthorization, PendingAuthorizationRepo,
+    PendingBinding, PendingBindingRepo, RefreshToken, RefreshTokenRepo, RepoError, RepoResult,
+    RotateOutcome, RotateRefreshToken, Session, SessionRepo, SigningKeyRecord, SigningKeyRepo,
+    Storage, User, UserRepo, UserRole, UserStatus,
 };
 use re0auth_api::secret::SealedSecret;
 use re0auth_api::{
@@ -239,6 +239,15 @@ impl UserRepo for MemoryStore {
         {
             let mut inner = self.lock();
             if !inner.users.contains_key(id) {
+                return Ok(false);
+            }
+            // A binding that appeared after the cascade would be deleted without
+            // its upstream ever hearing about it.
+            if inner
+                .bindings
+                .values()
+                .any(|binding| binding.user_id == *id && binding.status != BindingStatus::Revoked)
+            {
                 return Ok(false);
             }
             Self::push_fact(&mut inner, fact);

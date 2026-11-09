@@ -398,6 +398,18 @@ pub(crate) async fn delete_account(
                 "some upstream credentials could not be revoked; retry before deleting the account",
             ));
         }
+    } else if state
+        .auth
+        .has_revocable_bindings(context.user.id)
+        .await
+        .map_err(auth_error)?
+    {
+        // A missing binding service is not evidence that nothing is bound.
+        return Err(problem_response(
+            StatusCode::CONFLICT,
+            "bindings_not_revocable",
+            "upstream revocation is not configured; refusing to delete a live credential",
+        ));
     }
     state
         .auth

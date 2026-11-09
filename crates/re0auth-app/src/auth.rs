@@ -66,6 +66,10 @@ pub enum AuthError {
     /// for good. Deleting the account is the operation that intent needs.
     #[error("an account must keep at least one identity")]
     LastIdentity,
+    /// A live upstream binding could not be revoked, so deleting now would
+    /// leave a credential nobody can retract.
+    #[error("upstream credentials could not be revoked")]
+    BindingsNotRevocable,
     /// The identity is already attached to a different account. There is no merge.
     #[error("this identity is already bound to another account")]
     IdentityAlreadyBound,
@@ -706,9 +710,25 @@ impl AuthService {
             .delete_with_fact(&user_id, &fact)
             .await?
         {
+            // The row survives only when a live binding was inserted after the
+            // cascade; a missing user is the other explanation.
+            if self.storage.users().get(&user_id).await?.is_some() {
+                return Err(AuthError::BindingsNotRevocable);
+            }
             return Err(AuthError::NotFound);
         }
         Ok(())
+    }
+
+    /// Whether any live binding remains, for the account-deletion gate.
+    pub async fn has_revocable_bindings(&self, user_id: UserId) -> AuthResult<bool> {
+        Ok(self
+            .storage
+            .bindings()
+            .list_by_user(&user_id)
+            .await?
+            .iter()
+            .any(|binding| binding.status != BindingStatus::Revoked))
     }
 
     pub async fn list_authorizations(&self, user_id: UserId) -> AuthResult<Vec<AuthorizationView>> {

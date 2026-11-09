@@ -152,6 +152,11 @@ pub(crate) fn auth_error(error: AuthError) -> ApiError {
             "last_identity",
             "an account must keep at least one identity",
         ),
+        AuthError::BindingsNotRevocable => problem_response(
+            StatusCode::CONFLICT,
+            "bindings_not_revocable",
+            "some upstream credentials could not be revoked; retry before deleting the account",
+        ),
         AuthError::IdentityAlreadyBound => problem_response(
             StatusCode::CONFLICT,
             "identity_already_bound",

@@ -83,6 +83,7 @@ pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
         AuthError::IdentityProviderRequired => StatusCode::BAD_REQUEST,
         AuthError::LoginRequired => StatusCode::UNAUTHORIZED,
         AuthError::AccountBanned => StatusCode::FORBIDDEN,
+        AuthError::BindingsNotRevocable => StatusCode::CONFLICT,
         AuthError::NotFound => StatusCode::NOT_FOUND,
         AuthError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         AuthError::Repo(RepoError::Busy) => StatusCode::SERVICE_UNAVAILABLE,
@@ -122,6 +123,7 @@ fn user_message(error: &AuthError) -> &'static str {
         AuthError::NotFound => copy::NOT_FOUND,
         // API-only refusals; the browser pages never reach them.
         AuthError::LastIdentity
+        | AuthError::BindingsNotRevocable
         | AuthError::IdentityAlreadyBound
         | AuthError::LoginRequiresAttach
         | AuthError::LoginRequiresLogout => copy::BAD_REQUEST,
