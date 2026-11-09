@@ -96,7 +96,10 @@ fn asset_response(path: &str, file: rust_embed::EmbeddedFile, head: bool) -> Res
     let body = if head {
         Body::empty()
     } else {
-        Body::from(file.data.into_owned())
+        match file.data {
+            std::borrow::Cow::Borrowed(bytes) => Body::from(axum::body::Bytes::from_static(bytes)),
+            std::borrow::Cow::Owned(bytes) => Body::from(bytes),
+        }
     };
 
     let mut builder = Response::builder()
@@ -227,5 +230,30 @@ mod s19_tests {
             .expect("ascii");
         assert!(csp.contains("default-src 'self'"), "{csp}");
         assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    }
+}
+
+#[cfg(test)]
+mod p11_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+
+    #[tokio::test]
+    async fn p11_static_asset_body_is_the_embedded_bytes() {
+        let path = WebAssets::iter()
+            .find(|path| path.starts_with("_app/immutable/"))
+            .expect("web build has immutable assets");
+        let expected = WebAssets::get(&path).expect("asset").data;
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("/{path}"))
+            .body(Body::empty())
+            .expect("request");
+        let response = serve(request).await;
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(body.as_ref(), expected.as_ref());
     }
 }

@@ -189,7 +189,7 @@ impl CachedView {
     }
 }
 
-fn page_body(pagination: &Pagination, items: Vec<Value>) -> Result<PageBody, GatewayError> {
+fn page_body(pagination: &Pagination, items: &[Value]) -> Result<PageBody, GatewayError> {
     let limit = usize::try_from(pagination.limit.unwrap_or(DEFAULT_PAGE_LIMIT))
         .map_err(|_| GatewayError::Internal)?;
     let offset = match &pagination.cursor {
@@ -757,11 +757,7 @@ impl GatewayService {
         snapshot: CachedView,
     ) -> Result<UpstreamPayload, GatewayError> {
         let data = if list_view {
-            let items = snapshot
-                .data
-                .as_array()
-                .cloned()
-                .ok_or(GatewayError::Internal)?;
+            let items = snapshot.data.as_array().ok_or(GatewayError::Internal)?;
             let page = page_body(&request.pagination, items)?;
             serde_json::to_value(page).map_err(|_| GatewayError::Internal)?
         } else {
@@ -864,5 +860,28 @@ impl GatewayService {
     ) -> Option<i64> {
         self.circuit
             .retry_after(&CircuitKey::Binding(connector_id, binding_id), now)
+    }
+}
+
+#[cfg(test)]
+mod p03_tests {
+    use super::*;
+
+    #[test]
+    fn p03_pagination_slices_without_cloning_the_whole_list() {
+        let items: Vec<Value> = (0..50)
+            .map(|index| serde_json::json!({ "index": index }))
+            .collect();
+        let page = page_body(
+            &Pagination {
+                limit: Some(10),
+                cursor: None,
+            },
+            &items,
+        )
+        .expect("page");
+        assert_eq!(page.items.len(), 10);
+        assert_eq!(page.items[0]["index"], 0);
+        assert!(page.next_cursor.is_some());
     }
 }

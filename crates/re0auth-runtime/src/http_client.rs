@@ -121,7 +121,7 @@ pub struct GuardedClient {
 
 #[derive(Debug)]
 struct PinnedClient {
-    pinned: SocketAddr,
+    pinned: Vec<SocketAddr>,
     client: reqwest::Client,
 }
 
@@ -141,7 +141,7 @@ fn user_agent() -> String {
 fn cached_client(
     clients: &HashMap<String, PinnedClient>,
     host: &str,
-    pinned: SocketAddr,
+    pinned: &[SocketAddr],
 ) -> Option<reqwest::Client> {
     clients
         .get(host)
@@ -190,7 +190,7 @@ impl GuardedClient {
 
     /// Resolves, vets, then pins the chosen address so DNS cannot be rebound
     /// between the check and the connection.
-    pub async fn vet(&self, raw: &str) -> Result<(Url, SocketAddr), OutboundDenied> {
+    pub async fn vet(&self, raw: &str) -> Result<(Url, Vec<SocketAddr>), OutboundDenied> {
         let url = Url::parse(raw).map_err(|_| OutboundDenied::Scheme("malformed"))?;
         check_scheme(url.scheme(), self.allow_http)?;
         let host = url.host_str().ok_or(OutboundDenied::NoAddress)?;
@@ -207,8 +207,15 @@ impl GuardedClient {
             resolved.map(|socket| socket.ip()).collect()
         };
 
-        let pinned = check_addresses(&addresses, self.policy)?;
-        Ok((url, SocketAddr::new(pinned, port)))
+        // Every address is vetted; all of them are pinned, not just the first.
+        // Pinning one of a rotating A-set rebuilt the client (and dropped the
+        // pool) on every request.
+        check_addresses(&addresses, self.policy)?;
+        let pinned = addresses
+            .iter()
+            .map(|address| SocketAddr::new(*address, port))
+            .collect();
+        Ok((url, pinned))
     }
 
     /// Pins the request to the vetted address while keeping `Host` and SNI.
@@ -217,7 +224,7 @@ impl GuardedClient {
     ///
     /// The client is cached per host and reused only while it still points at
     /// the address just vetted, so pool reuse never outlives a DNS move.
-    fn client_for(&self, url: &Url, pinned: SocketAddr) -> anyhow::Result<reqwest::Client> {
+    fn client_for(&self, url: &Url, pinned: &[SocketAddr]) -> anyhow::Result<reqwest::Client> {
         let host = url.host_str().context("vetted URL lost its host")?;
 
         let mut clients = self
@@ -237,14 +244,14 @@ impl GuardedClient {
             // 缺 User-Agent 会被上游拒绝，如 GitHub API 回 403
             .user_agent(user_agent())
             .use_preconfigured_tls(self.config.as_ref().clone())
-            .resolve(host, pinned)
+            .resolve_to_addrs(host, pinned)
             .build()
             .context("build pinned HTTP client")?;
 
         clients.insert(
             host.to_string(),
             PinnedClient {
-                pinned,
+                pinned: pinned.to_vec(),
                 client: client.clone(),
             },
         );
@@ -256,7 +263,7 @@ impl GuardedClient {
             .vet(url)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
+        let client = self.client_for(&url, &pinned)?;
         let response = ensure_success(
             client
                 .get(url)
@@ -283,7 +290,7 @@ impl GuardedClient {
             .vet(url)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
+        let client = self.client_for(&url, &pinned)?;
         let response = client
             .get(url)
             .header(reqwest::header::ACCEPT, "application/json")
@@ -327,7 +334,7 @@ impl GuardedClient {
             .vet(url)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
+        let client = self.client_for(&url, &pinned)?;
         let mut request = client
             .post(url)
             .header(reqwest::header::ACCEPT, "application/json")
@@ -364,7 +371,7 @@ impl GuardedClient {
             .vet(url)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
+        let client = self.client_for(&url, &pinned)?;
         let response = ensure_success(
             client
                 .post(url)
@@ -392,7 +399,7 @@ impl GuardedClient {
             .vet(url)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
+        let client = self.client_for(&url, &pinned)?;
         let pairs: Vec<(&str, &str)> = form
             .iter()
             .map(|(key, value)| (*key, value.as_str()))
@@ -445,7 +452,7 @@ impl GuardedClient {
             .vet(url)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
+        let client = self.client_for(&url, &pinned)?;
         let response = ensure_success(
             client
                 .post(url)
@@ -464,7 +471,7 @@ impl GuardedClient {
             .vet(url)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
+        let client = self.client_for(&url, &pinned)?;
         let response = ensure_success(
             client
                 .get(url)
@@ -490,7 +497,7 @@ impl GuardedClient {
             .vet(url)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
-        let client = self.client_for(&url, pinned)?;
+        let client = self.client_for(&url, &pinned)?;
         let response = ensure_success(
             client
                 .get(url)
@@ -899,8 +906,11 @@ mod tests {
         let client = GuardedClient::new().expect("client");
         let (url, pinned) = client.vet("https://203.0.113.10/x").await.expect("public");
         assert_eq!(url.host_str(), Some("203.0.113.10"));
-        assert_eq!(pinned.ip(), "203.0.113.10".parse::<IpAddr>().expect("ip"));
-        assert_eq!(pinned.port(), 443);
+        assert_eq!(
+            pinned[0].ip(),
+            "203.0.113.10".parse::<IpAddr>().expect("ip")
+        );
+        assert_eq!(pinned[0].port(), 443);
     }
 
     #[tokio::test]
@@ -916,16 +926,16 @@ mod tests {
         client.clients.lock().expect("cache lock").len()
     }
 
-    fn cached_pin(client: &GuardedClient, host: &str) -> Option<SocketAddr> {
+    fn cached_pin(client: &GuardedClient, host: &str) -> Option<Vec<SocketAddr>> {
         client
             .clients
             .lock()
             .expect("cache lock")
             .get(host)
-            .map(|entry| entry.pinned)
+            .map(|entry| entry.pinned.clone())
     }
 
-    fn cache_with(host: &str, pinned: SocketAddr) -> HashMap<String, PinnedClient> {
+    fn cache_with(host: &str, pinned: Vec<SocketAddr>) -> HashMap<String, PinnedClient> {
         let (config, _) = TlsConfig::mozilla_only().build().expect("tls");
         let client = reqwest::Client::builder()
             .use_preconfigured_tls(config)
@@ -939,10 +949,10 @@ mod tests {
     #[test]
     fn a_host_pinned_to_the_same_address_returns_the_cached_client() {
         let pinned: SocketAddr = "203.0.113.9:443".parse().expect("addr");
-        let clients = cache_with("upstream.example", pinned);
+        let clients = cache_with("upstream.example", vec![pinned]);
 
         assert!(
-            cached_client(&clients, "upstream.example", pinned).is_some(),
+            cached_client(&clients, "upstream.example", &[pinned]).is_some(),
             "the cached client must be returned, otherwise every request pays \
              a new TCP and TLS handshake"
         );
@@ -952,10 +962,10 @@ mod tests {
     fn a_host_that_moved_is_not_served_from_stale_cache() {
         let old: SocketAddr = "203.0.113.9:443".parse().expect("addr");
         let moved: SocketAddr = "203.0.113.77:443".parse().expect("addr");
-        let clients = cache_with("upstream.example", old);
+        let clients = cache_with("upstream.example", vec![old]);
 
         assert!(
-            cached_client(&clients, "upstream.example", moved).is_none(),
+            cached_client(&clients, "upstream.example", &[moved]).is_none(),
             "a client pinned to the old address must not be reused after the \
              guard vetted a different one"
         );
@@ -964,10 +974,10 @@ mod tests {
     #[test]
     fn an_unknown_host_has_no_cached_client() {
         let pinned: SocketAddr = "203.0.113.9:443".parse().expect("addr");
-        let clients = cache_with("upstream.example", pinned);
+        let clients = cache_with("upstream.example", vec![pinned]);
 
         assert!(
-            cached_client(&clients, "other.example", pinned).is_none(),
+            cached_client(&clients, "other.example", &[pinned]).is_none(),
             "entries are per host; one host must not serve another"
         );
     }
@@ -979,12 +989,12 @@ mod tests {
         let first: SocketAddr = "203.0.113.9:443".parse().expect("addr");
         let moved: SocketAddr = "203.0.113.77:443".parse().expect("addr");
 
-        client.client_for(&url, first).expect("first");
-        client.client_for(&url, moved).expect("moved");
+        client.client_for(&url, &[first]).expect("first");
+        client.client_for(&url, &[moved]).expect("moved");
 
         assert_eq!(
             cached_pin(&client, "upstream.example"),
-            Some(moved),
+            Some(vec![moved]),
             "the cache must rebuild when the vetted address changes, or the \
              guard would keep talking to an address it no longer vouches for"
         );
@@ -996,7 +1006,7 @@ mod tests {
         for host in ["a.example", "b.example"] {
             let url = Url::parse(&format!("https://{host}/v1/x")).expect("url");
             let pinned: SocketAddr = "203.0.113.9:443".parse().expect("addr");
-            client.client_for(&url, pinned).expect("client");
+            client.client_for(&url, &[pinned]).expect("client");
         }
         assert_eq!(
             cached_hosts(&client),
@@ -1067,5 +1077,22 @@ mod tests {
             line.contains("re0auth/"),
             "user-agent must name this client, got {line:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod p27_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn p27_vet_returns_every_vetted_address() {
+        let client =
+            GuardedClient::with_policy(OutboundPolicy::AllowLoopback, true).expect("client");
+        let (_, pinned) = client
+            .vet("http://localhost:9/path")
+            .await
+            .expect("localhost must resolve");
+        assert!(!pinned.is_empty());
+        assert!(pinned.iter().all(|addr| addr.ip().is_loopback()));
     }
 }

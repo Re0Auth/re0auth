@@ -254,3 +254,82 @@ async fn admin_client_mutations_write_security_facts() {
         .expect("promote");
     assert_eq!(fact_count(&store, AuditAction::UserRoleChanged).await, 1);
 }
+
+/// The CLI approval path must leave a security fact; before this it only
+/// flipped the device code, so an operator action left no audit trail.
+#[tokio::test]
+async fn s28_cli_device_approval_writes_a_fact() {
+    use re0auth_api::audit::AuditTier;
+    use re0auth_api::ports::{DeviceCode, DeviceCodeState};
+    use re0auth_api::{ClientId, DeviceCodeId};
+
+    let store = MemoryStore::default();
+    let clock = FixedClock(1_000);
+    let user = User {
+        id: UserId::new(),
+        display_name: "device-approver".to_string(),
+        role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
+        created_at: 1_000,
+        updated_at: 1_000,
+    };
+    store.users().create(&user).await.expect("user");
+
+    let code = DeviceCode {
+        id: DeviceCodeId::new(),
+        device_code_hash: vec![0x11; 32],
+        user_code_hash: re0auth_app::oauth::hash_secret("ABCDEFGH"),
+        client_id: {
+            use re0auth_api::ports::Client;
+            let client = Client {
+                id: ClientId::new(),
+                name: "device-client".to_string(),
+                redirect_uris: vec!["https://client.example/cb".to_string()],
+                allowed_scopes: vec!["openid".to_string()],
+                raw_access: false,
+                status: ClientStatus::Approved,
+                secret_hash: None,
+                created_at: 1_000,
+                updated_at: 1_000,
+            };
+            store
+                .clients()
+                .insert(
+                    &client,
+                    &SecurityFact::new(AuditAction::ClientCreated, 1_000, "client"),
+                )
+                .await
+                .expect("client");
+            client.id
+        },
+        scopes: vec!["openid".to_string()],
+        state: DeviceCodeState::Pending,
+        interval_secs: 5,
+        last_polled_at: None,
+        poll_count: 0,
+        user_code_misses: 0,
+        created_at: 1_000,
+        expires_at: 2_000,
+        consumed_at: None,
+        family_id: None,
+    };
+    store
+        .device_codes()
+        .insert(&code)
+        .await
+        .expect("device code");
+
+    re0auth_app::admin::approve_device(&store, &clock, "ABCD-EFGH", user.id)
+        .await
+        .expect("approve");
+
+    let audits = store.audits().recent(10).await.expect("audits");
+    assert!(
+        audits.iter().any(|record| {
+            record.action == AuditAction::DeviceApproved
+                && record.tier == AuditTier::Fact
+                && record.actor_user_id == Some(user.id)
+        }),
+        "the CLI approval must write a fact: {audits:?}"
+    );
+}

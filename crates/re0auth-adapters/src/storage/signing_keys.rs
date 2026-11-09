@@ -88,4 +88,16 @@ impl SigningKeyRepo for SqliteStore {
         }
         Ok(())
     }
+
+    async fn purge(&self, kid: &str) -> RepoResult<()> {
+        let result = sqlx::query("DELETE FROM signing_keys WHERE kid = ?")
+            .bind(kid)
+            .execute(&self.pool)
+            .await
+            .map_err(db_error)?;
+        if result.rows_affected() == 0 {
+            return Err(RepoError::NotFound);
+        }
+        Ok(())
+    }
 }

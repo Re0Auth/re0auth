@@ -4,7 +4,7 @@
 
 use super::MemoryStore;
 use async_trait::async_trait;
-use re0auth_api::audit::{AuditRecord, AuditTier};
+use re0auth_api::audit::{AuditRecord, AuditTier, SecurityFact};
 use re0auth_api::ports::{AuditFilter, AuditRepo, RepoResult};
 use re0auth_api::{AuditId, Unix, UserId};
 
@@ -47,6 +47,11 @@ impl AuditRepo for MemoryStore {
         let mut record = record.clone();
         record.tier = AuditTier::Telemetry;
         self.lock().audits.push(record);
+        Ok(())
+    }
+
+    async fn record_fact(&self, fact: &SecurityFact) -> RepoResult<()> {
+        Self::push_fact(&mut self.lock(), fact);
         Ok(())
     }
 

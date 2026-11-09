@@ -131,6 +131,15 @@ pub enum AdminCommand {
     /// server to start signing with the new key.
     #[command(name = "rotate-signing-key")]
     RotateSigningKey,
+    /// Permanently revoke a published signing key.
+    ///
+    /// Deletes the database row and the PEM. Refuses the active key; rotate
+    /// first, then purge the old one once the tokens it signed have expired.
+    #[command(name = "purge-signing-key")]
+    PurgeSigningKey {
+        #[arg(long)]
+        kid: String,
+    },
     /// Re-wrap every stored credential onto the current master key.
     ///
     /// Sub-credential envelopes are re-wrapped without touching their payload
@@ -289,6 +298,20 @@ pub async fn run(cfg: &Config, command: AdminCommand) -> anyhow::Result<()> {
             // ADR-0029: the running server keeps revocations in memory and only
             // reads the table at startup, so this write is not visible to it yet.
             println!("restart_required=true");
+        }
+        AdminCommand::PurgeSigningKey { kid } => {
+            let known = store.signing_keys().published().await?;
+            let signer = re0auth_adapters::crypto::RsaTokenSigner::load_or_generate(
+                std::path::Path::new(&cfg.crypto.signing_key_file),
+                &cfg.server.issuer,
+                clock.now(),
+                &known,
+            )?;
+            // Row first: a crash in between leaves an orphan PEM, which is
+            // harmless, instead of a published key with no material to verify.
+            store.signing_keys().purge(&kid).await?;
+            signer.purge(&kid, clock.now())?;
+            println!("purged_kid={kid}");
         }
         AdminCommand::RotateSigningKey => {
             let known = store.signing_keys().published().await?;

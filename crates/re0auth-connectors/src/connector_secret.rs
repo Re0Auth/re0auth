@@ -155,7 +155,7 @@ impl EncryptedFileSecretStore {
         };
         let vault = normalize(&self.path)?;
         let database = normalize(database_path)?;
-        if vault == database {
+        if vault == database || same_file(&vault, &database) {
             anyhow::bail!(
                 "connector secret file {} must not be the core database; use a separate path",
                 self.path.display()
@@ -337,8 +337,21 @@ impl EncryptedFileSecretStore {
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Re0Result<()> {
+    // Remove a pre-existing temp path first. `create_new` then refuses to
+    // follow a symlink and cannot inherit an older, wider mode: the file is
+    // guaranteed to be a fresh inode owned by this write.
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(internal(&format!(
+                "remove stale {}: {error}",
+                path.display()
+            )));
+        }
+    }
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -400,5 +413,82 @@ impl ConnectorSecretStore for EncryptedFileSecretStore {
             return Ok(());
         }
         self.store(&envelope)
+    }
+}
+
+/// Whether two paths name the same file, including hard links and
+/// case-insensitive file systems.
+///
+/// `canonicalize` alone misses hard links (different names, same inode) and
+/// preserves case on Windows, which is exactly how the vault/database guard
+/// could be bypassed.
+#[must_use]
+pub fn same_file(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (fs::metadata(left), fs::metadata(right)) {
+            return a.dev() == b.dev() && a.ino() == b.ino();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows exposes no stable file-id API; canonical paths still catch
+        // case-only aliases, and the production target is unix where dev+ino
+        // covers hard links too.
+        if let (Ok(a), Ok(b)) = (fs::canonicalize(left), fs::canonicalize(right)) {
+            return a
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&b.to_string_lossy());
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod s15_s16_tests {
+    use super::*;
+
+    #[test]
+    fn s15_write_private_replaces_a_pre_existing_temp_file() {
+        let dir = std::env::temp_dir().join(format!("re0auth-vault-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("vault.tmp");
+        fs::write(&path, b"stale").expect("stale file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("mode");
+        }
+
+        write_private(&path, b"fresh").expect("write");
+
+        assert_eq!(fs::read(&path).expect("read"), b"fresh");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the replacement must be private");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn s16_hard_links_are_the_same_file() {
+        let dir = std::env::temp_dir().join(format!("re0auth-link-{}", uuid::Uuid::now_v7()));
+        fs::create_dir_all(&dir).expect("dir");
+        let original = dir.join("core.db");
+        let link = dir.join("vault.json");
+        fs::write(&original, b"db").expect("db");
+        if fs::hard_link(&original, &link).is_ok() {
+            #[cfg(unix)]
+            assert!(same_file(&original, &link));
+            #[cfg(not(unix))]
+            let _ = &link;
+        }
+        let other = dir.join("other.json");
+        fs::write(&other, b"other").expect("other");
+        assert!(!same_file(&original, &other));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

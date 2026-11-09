@@ -7,6 +7,8 @@
 use async_trait::async_trait;
 
 use crate::audit::{AccessTelemetry, AuditAction, AuditRecord, AuditTier, SecurityFact};
+
+mod signing_keys;
 use crate::connector::ResourceSpec;
 use crate::oauth::ConsentVersion;
 use crate::secret::{ClientSecretHash, SealedSecret};
@@ -14,6 +16,7 @@ use crate::{
     AuditId, AuthCodeId, BindingId, ClientId, ConnectorId, ConsentId, DeviceCodeId, FamilyId,
     IdentityId, PendingAuthorizationId, RefreshTokenId, SessionId, Unix, UserId,
 };
+pub use signing_keys::SigningKeyRepo;
 
 /// INV-NOLOG-01: what a secret-bearing field prints instead of its value.
 ///
@@ -1365,6 +1368,11 @@ pub trait AuditRepo: Send + Sync {
     /// Appends a telemetry-tier record. Best effort by contract; callers count
     /// drops rather than retrying forever.
     async fn append(&self, record: &AuditRecord) -> RepoResult<()>;
+    /// Appends a security fact at fact tier.
+    ///
+    /// Separate from [`Self::append`], which forces telemetry: an action with no
+    /// surrounding transaction still has to land in the durable tier.
+    async fn record_fact(&self, fact: &SecurityFact) -> RepoResult<()>;
     /// Deletes records of one tier older than `before`.
     ///
     /// Tier-separated on purpose (Q-032): a fact purge must never take telemetry
@@ -1448,28 +1456,6 @@ pub struct SigningKeyRecord {
     pub activated_at: Unix,
     /// `None` while the key may still be used for verification.
     pub retired_at: Option<Unix>,
-}
-
-/// Our own signing keys, not to be confused with an IdP's JWKS.
-///
-/// Retiring a key does not delete it: tokens signed before the rotation remain
-/// verifiable until they expire (OPERATIONS.md §5.2). Reusing a `kid` would make
-/// old tokens resolve to a new key, which is the known failure mode this table
-/// exists to prevent.
-#[async_trait]
-pub trait SigningKeyRepo: Send + Sync {
-    /// Inserts a key, or updates it when `kid` already exists. Idempotent so a
-    /// restart re-publishing the same key does not fail.
-    async fn publish(&self, record: &SigningKeyRecord) -> RepoResult<()>;
-    /// Every key that must appear in the JWKS document, newest first.
-    ///
-    /// Includes retired keys: dropping them would make unexpired tokens signed
-    /// by the old key fail verification.
-    async fn published(&self) -> RepoResult<Vec<SigningKeyRecord>>;
-    /// The key new tokens should be signed with: the newest non-retired one.
-    async fn active(&self) -> RepoResult<Option<SigningKeyRecord>>;
-    /// Marks `kid` as retired. Idempotent.
-    async fn retire(&self, kid: &str, at: Unix) -> RepoResult<()>;
 }
 
 /// Aggregate port used by the contract suite.

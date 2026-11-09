@@ -275,18 +275,33 @@ impl BindingRepo for SqliteStore {
     }
 
     async fn anonymize_revoked_before(&self, before: Unix) -> RepoResult<u64> {
-        let result = sqlx::query(
-            "UPDATE bindings SET upstream_user_id = ? \
-             WHERE status = 'revoked' AND revoked_at IS NOT NULL AND revoked_at <= ? \
-             AND upstream_user_id != ?",
-        )
-        .bind(ANONYMIZED_UPSTREAM_USER_ID)
-        .bind(before)
-        .bind(ANONYMIZED_UPSTREAM_USER_ID)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(result.rows_affected())
+        // Batch the update so a large retention backlog does not hold the single
+        // SQLite writer for the whole sweep. Each batch is its own transaction.
+        const BATCH: u64 = 1_000;
+        let mut total = 0u64;
+        loop {
+            let result = sqlx::query(
+                "UPDATE bindings SET upstream_user_id = ? \
+                 WHERE rowid IN ( \
+                     SELECT rowid FROM bindings \
+                     WHERE status = 'revoked' AND revoked_at IS NOT NULL \
+                       AND revoked_at <= ? AND upstream_user_id != ? \
+                     LIMIT ?)",
+            )
+            .bind(ANONYMIZED_UPSTREAM_USER_ID)
+            .bind(before)
+            .bind(ANONYMIZED_UPSTREAM_USER_ID)
+            .bind(i64::try_from(BATCH).unwrap_or(i64::MAX))
+            .execute(&self.pool)
+            .await
+            .map_err(db_error)?;
+            let rows = result.rows_affected();
+            total = total.saturating_add(rows);
+            if rows < BATCH {
+                break;
+            }
+        }
+        Ok(total)
     }
 
     async fn store_sub_credential(

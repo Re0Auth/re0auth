@@ -1449,6 +1449,14 @@ impl SigningKeyRepo for MemoryStore {
             None => Err(RepoError::NotFound),
         }
     }
+
+    async fn purge(&self, kid: &str) -> RepoResult<()> {
+        self.lock()
+            .signing_keys
+            .remove(kid)
+            .map(|_| ())
+            .ok_or(RepoError::NotFound)
+    }
 }
 
 /// Active admins other than `id`.

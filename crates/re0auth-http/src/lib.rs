@@ -249,17 +249,18 @@ pub fn router(state: AppState) -> Router {
         // axum's own 2 MiB default is not the configured value, so leaving this
         // out made `limits.inbound_body_bytes` a knob that changed nothing.
         .layer(DefaultBodyLimit::max(inbound_body_bytes))
+        // Timeout first (innermost) so the outer metrics/request-id layers still
+        // see the 408 it produces; the reverse order hid every timed-out request.
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            request_timeout,
+        ))
         .layer(middleware::from_fn_with_state(
             metrics_state,
             metrics::layer,
         ))
         .layer(middleware::from_fn(copy::layer))
         .layer(middleware::from_fn(request_id::layer))
-        // 最外层：连读 body 也计时
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            request_timeout,
-        ))
         .with_state(state)
 }
 

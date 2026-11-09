@@ -206,3 +206,74 @@ async fn s24_revoking_a_binding_twice_writes_one_fact() {
         .expect("audit query");
     assert_eq!(facts.len(), 1, "one revocation, one fact");
 }
+
+/// Retention anonymizes every matching row, including when the backlog exceeds
+/// one batch; the loop must not stop after the first page.
+#[tokio::test]
+async fn p05_retention_anonymizes_the_whole_backlog() {
+    let store = store().await;
+    let user = user(UserId::new(), UserRole::User, UserStatus::Active);
+    store.users().create(&user).await.expect("user");
+
+    for index in 0..3 {
+        let mut binding = binding(user.id);
+        binding.upstream_id = format!("phihub-{index}");
+        store
+            .bindings()
+            .upsert(&binding, &binding_fact())
+            .await
+            .expect("binding");
+        store
+            .bindings()
+            .revoke(&binding.id, &revoke_fact(2_000), 2_000)
+            .await
+            .expect("revoke");
+    }
+
+    let anonymized = store
+        .bindings()
+        .anonymize_revoked_before(10_000)
+        .await
+        .expect("anonymize");
+    assert_eq!(anonymized, 3);
+
+    for binding in store.bindings().list_by_user(&user.id).await.expect("list") {
+        assert_ne!(binding.upstream_user_id, "player-1");
+    }
+}
+
+/// Purging a key deletes its row; a second purge reports NotFound rather than
+/// silently succeeding.
+#[tokio::test]
+async fn s09_signing_key_purge_removes_the_row() {
+    use re0auth_api::ports::SigningKeyRecord;
+
+    let store = store().await;
+    let record = SigningKeyRecord {
+        kid: "kid-1".to_string(),
+        alg: "RS256".to_string(),
+        public_jwk_json: "{}".to_string(),
+        created_at: 1_000,
+        activated_at: 1_000,
+        retired_at: None,
+    };
+    store
+        .signing_keys()
+        .publish(&record)
+        .await
+        .expect("publish");
+
+    store.signing_keys().purge("kid-1").await.expect("purge");
+    assert!(
+        store
+            .signing_keys()
+            .published()
+            .await
+            .expect("list")
+            .is_empty()
+    );
+    assert!(matches!(
+        store.signing_keys().purge("kid-1").await,
+        Err(RepoError::NotFound)
+    ));
+}

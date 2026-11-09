@@ -572,18 +572,22 @@ impl AuthService {
             let formatted = device::format_user_code(&normalized);
             let jti = URL_SAFE_NO_PAD.encode(self.random.bytes(16));
             let expires_at = now + approval_ticket_ttl(now);
-            let ticket = self
-                .signer
-                .sign_approval_ticket(&ApprovalTicketClaims {
-                    iss: self.issuer.clone(),
-                    sub: user_id.0.to_string(),
-                    aud: self.issuer.clone(),
-                    user_code: formatted.clone(),
-                    exp: expires_at,
-                    iat: now,
-                    jti: jti.clone(),
-                    token_use: APPROVAL_TICKET_USE.to_string(),
-                })
+            let claims = ApprovalTicketClaims {
+                iss: self.issuer.clone(),
+                sub: user_id.0.to_string(),
+                aud: self.issuer.clone(),
+                user_code: formatted.clone(),
+                exp: expires_at,
+                iat: now,
+                jti: jti.clone(),
+                token_use: APPROVAL_TICKET_USE.to_string(),
+            };
+            // RSA signing is CPU-bound; keep it off the async worker like the
+            // token path does.
+            let signer = self.signer.clone();
+            let ticket = tokio::task::spawn_blocking(move || signer.sign_approval_ticket(&claims))
+                .await
+                .map_err(|_| AuthError::Internal)?
                 .map_err(|_| AuthError::Internal)?;
             self.storage
                 .approval_tickets()

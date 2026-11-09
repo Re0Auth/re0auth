@@ -144,6 +144,13 @@ impl AuditRepo for SqliteStore {
         Ok(())
     }
 
+    async fn record_fact(&self, fact: &SecurityFact) -> RepoResult<()> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        record_fact(&mut tx, fact).await?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(())
+    }
+
     async fn purge_tier_before(&self, tier: AuditTier, before: Unix) -> RepoResult<u64> {
         let result = sqlx::query("DELETE FROM audit_logs WHERE tier = ? AND occurred_at <= ?")
             .bind(tier.as_str())

@@ -906,8 +906,8 @@ fn ssrf_guard_has_executable_tests() {
         "the guard must not follow redirects"
     );
     assert!(
-        client.contains(".resolve(host, pinned)"),
-        "the guard must pin the vetted address"
+        client.contains(".resolve_to_addrs(host, pinned)"),
+        "the guard must pin the vetted addresses"
     );
 }
 

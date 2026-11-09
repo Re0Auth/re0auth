@@ -111,7 +111,14 @@ pub async fn approve_device(
     storage
         .device_codes()
         .approve(&hash, user_id, clock.now())
-        .await
+        .await?;
+    let fact = SecurityFact::new(
+        AuditAction::DeviceApproved,
+        clock.now(),
+        format!("user_code_hash:{}", URL_SAFE_NO_PAD.encode(&hash)),
+    )
+    .actor(user_id);
+    storage.audits().record_fact(&fact).await
 }
 
 pub async fn deny_device(
@@ -120,7 +127,13 @@ pub async fn deny_device(
     user_code: &str,
 ) -> Result<(), RepoError> {
     let hash = hash_secret(&device::normalize_user_code(user_code));
-    storage.device_codes().deny(&hash, clock.now()).await
+    storage.device_codes().deny(&hash, clock.now()).await?;
+    let fact = SecurityFact::new(
+        AuditAction::DeviceDenied,
+        clock.now(),
+        format!("user_code_hash:{}", URL_SAFE_NO_PAD.encode(&hash)),
+    );
+    storage.audits().record_fact(&fact).await
 }
 
 /// Creates a session and returns the raw cookie and CSRF values exactly once.

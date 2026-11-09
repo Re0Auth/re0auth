@@ -637,3 +637,35 @@ async fn s12_over_quota_callers_are_rejected_before_token_verification() {
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert!(fixture.connector.calls().is_empty());
 }
+
+#[tokio::test]
+async fn s14_gateway_responses_disable_sniffing() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "scores",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"rks":15.2}"#.to_vec(),
+        }),
+    );
+    let token = access_token(&fixture, SCOPE);
+    let request = Request::builder()
+        .uri("/api/v1/upstreams/probe/scores")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("request");
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-content-type-options")
+            .expect("nosniff header"),
+        "nosniff"
+    );
+}

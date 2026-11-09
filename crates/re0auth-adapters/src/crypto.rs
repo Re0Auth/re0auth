@@ -176,6 +176,8 @@ pub struct RsaTokenSigner {
     active: RwLock<Option<String>>,
     /// Where newly generated private keys are written.
     key_dir: PathBuf,
+    /// The configured primary key path, needed by `purge` to revoke it too.
+    configured: PathBuf,
 }
 
 impl std::fmt::Debug for RsaTokenSigner {
@@ -274,6 +276,7 @@ impl RsaTokenSigner {
             keys: RwLock::new(keys),
             active: RwLock::new(active),
             key_dir,
+            configured: path.to_path_buf(),
         })
     }
 
@@ -331,6 +334,43 @@ impl RsaTokenSigner {
             key.record.retired_at = Some(now);
         }
         Ok(record)
+    }
+
+    /// Revokes a key completely: removes it from the key set and deletes its PEM.
+    ///
+    /// The database row is deleted by the caller first. A crash between the two
+    /// leaves an orphan file, never a published key whose material is gone.
+    pub fn purge(&self, kid: &str, now: Unix) -> anyhow::Result<()> {
+        {
+            let active = self
+                .active
+                .read()
+                .map_err(|_| anyhow::anyhow!("active key lock poisoned"))?;
+            if active.as_deref() == Some(kid) {
+                anyhow::bail!("refusing to purge the active signing key; rotate first");
+            }
+        }
+        {
+            let mut keys = self
+                .keys
+                .write()
+                .map_err(|_| anyhow::anyhow!("signing key lock poisoned"))?;
+            if keys.remove(kid).is_none() {
+                anyhow::bail!("unknown signing key {kid}");
+            }
+        }
+        let rotated = self.key_dir.join(format!("{kid}.pem"));
+        if rotated.exists() {
+            fs::remove_file(&rotated)?;
+        }
+        if self.configured.exists()
+            && SigningKey::load(&self.configured, now)
+                .map(|key| key.record.kid == kid)
+                .unwrap_or(false)
+        {
+            fs::remove_file(&self.configured)?;
+        }
+        Ok(())
     }
 
     fn active_key(&self) -> Re0Result<(String, Header, EncodingKey)> {
@@ -820,5 +860,32 @@ mod tests {
         // Lifecycle metadata is per-load, but the kid is not.
         assert_eq!(first_signer.record.created_at, 1_000);
         assert_eq!(second_signer.record.created_at, 2_000);
+    }
+}
+
+#[cfg(test)]
+mod s09_tests {
+    use super::*;
+
+    #[test]
+    fn s09_purge_revokes_a_retired_key_and_its_file() {
+        let dir = std::env::temp_dir().join(format!("re0auth-key-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("key dir");
+        let path = dir.join("signing-key.pem");
+        let signer = RsaTokenSigner::load_or_generate(&path, "https://issuer.test", 1_000, &[])
+            .expect("signer");
+        let old = signer.primary_record().expect("primary").kid;
+        let new = signer.rotate(1_001).expect("rotate").kid;
+        assert_ne!(old, new);
+
+        assert!(
+            signer.purge(&new, 1_002).is_err(),
+            "the active key must not be purged"
+        );
+        signer.purge(&old, 1_002).expect("purge retired key");
+
+        assert!(!signer.records().iter().any(|record| record.kid == old));
+        assert!(!path.exists(), "the configured PEM must be removed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
