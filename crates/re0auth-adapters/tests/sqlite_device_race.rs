@@ -72,6 +72,7 @@ async fn concurrent_device_polls_consume_once() {
         .expect("approve");
 
     let barrier = Arc::new(Barrier::new(2));
+    let client_id = code.client_id;
     let mut tasks = Vec::new();
     for _ in 0..2 {
         let store = store.clone();
@@ -79,7 +80,7 @@ async fn concurrent_device_polls_consume_once() {
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
-            store.device_codes().poll(&hash, 1_001).await
+            store.device_codes().poll(&hash, 1_001, client_id).await
         }));
     }
 

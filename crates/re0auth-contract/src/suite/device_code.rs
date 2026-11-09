@@ -66,15 +66,37 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_000)
+            .poll(&code.device_code_hash, 1_000, client.id)
             .await
             .expect("first poll"),
         DevicePoll::Pending
     );
+    // A foreign client is refused before any polling state is written, so the
+    // rate-limit window still starts at the first legitimate poll.
+    let stranger = super::client(1_000);
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_002)
+            .poll(&code.device_code_hash, 1_001, stranger.id)
+            .await
+            .expect("foreign poll"),
+        DevicePoll::ClientMismatch
+    );
+    assert_eq!(
+        store
+            .device_codes()
+            .find_by_device_hash(&code.device_code_hash)
+            .await
+            .expect("find after foreign poll")
+            .expect("code exists")
+            .last_polled_at,
+        Some(1_000),
+        "a foreign client must not touch polling state"
+    );
+    assert_eq!(
+        store
+            .device_codes()
+            .poll(&code.device_code_hash, 1_002, client.id)
             .await
             .expect("fast poll"),
         DevicePoll::SlowDown { interval_secs: 10 }
@@ -82,7 +104,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_012)
+            .poll(&code.device_code_hash, 1_012, client.id)
             .await
             .expect("poll after slow down"),
         DevicePoll::Pending
@@ -96,7 +118,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_014)
+            .poll(&code.device_code_hash, 1_014, client.id)
             .await
             .expect("approved poll"),
         DevicePoll::Approved {
@@ -108,7 +130,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_015)
+            .poll(&code.device_code_hash, 1_015, client.id)
             .await
             .expect("second poll"),
         DevicePoll::Consumed
@@ -163,7 +185,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&revocable.device_code_hash, 1_020)
+            .poll(&revocable.device_code_hash, 1_020, client.id)
             .await
             .expect("revoked poll"),
         DevicePoll::Denied
@@ -215,7 +237,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&denied.device_code_hash, 1_002)
+            .poll(&denied.device_code_hash, 1_002, client.id)
             .await
             .expect("denied poll"),
         DevicePoll::Denied
@@ -230,7 +252,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&expired.device_code_hash, 1_000)
+            .poll(&expired.device_code_hash, 1_000, client.id)
             .await
             .expect("expired poll"),
         DevicePoll::Expired
@@ -238,7 +260,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&[0xff; 32], 1_000)
+            .poll(&[0xff; 32], 1_000, client.id)
             .await
             .expect("missing poll"),
         DevicePoll::NotFound

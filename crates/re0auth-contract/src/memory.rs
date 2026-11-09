@@ -646,11 +646,20 @@ impl DeviceCodeRepo for MemoryStore {
         Ok(revoked)
     }
 
-    async fn poll(&self, device_code_hash: &[u8], now: Unix) -> RepoResult<DevicePoll> {
+    async fn poll(
+        &self,
+        device_code_hash: &[u8],
+        now: Unix,
+        client_id: ClientId,
+    ) -> RepoResult<DevicePoll> {
         let mut inner = self.lock();
         let Some(code) = inner.device_codes.get_mut(device_code_hash) else {
             return Ok(DevicePoll::NotFound);
         };
+
+        if code.client_id != client_id {
+            return Ok(DevicePoll::ClientMismatch);
+        }
 
         if code.state.status() == DeviceCodeStatus::Consumed {
             return Ok(DevicePoll::Consumed);

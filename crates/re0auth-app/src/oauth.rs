@@ -710,34 +710,20 @@ impl OAuthService {
         self.authenticate_client(client_id, client_secret).await?;
         let now = self.clock.now();
         let hash = hash_secret(device_code);
-        if let Some(code) = self
-            .storage
-            .device_codes()
-            .find_by_device_hash(&hash)
-            .await
-            .map_err(map_repo)?
-            && code.client_id != client_id
-        {
-            return Err(OAuthError::InvalidGrant("client mismatch"));
-        }
 
         let outcome = self
             .storage
             .device_codes()
-            .poll(&hash, now)
+            .poll(&hash, now, client_id)
             .await
             .map_err(map_repo)?;
         match outcome {
             DevicePoll::Pending => Err(OAuthError::AuthorizationPending),
             DevicePoll::SlowDown { interval_secs } => Err(OAuthError::SlowDown { interval_secs }),
+            DevicePoll::ClientMismatch => Err(OAuthError::InvalidGrant("client mismatch")),
             DevicePoll::Approved {
-                client_id: code_client,
-                user_id,
-                scopes,
+                user_id, scopes, ..
             } => {
-                if code_client != client_id {
-                    return Err(OAuthError::InvalidGrant("client mismatch"));
-                }
                 self.require_approved_client(client_id).await?;
                 // D2=A: the token exchange is the point where the device
                 // authorization becomes a consent record. A token can never

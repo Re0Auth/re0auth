@@ -181,7 +181,12 @@ impl DeviceCodeRepo for SqliteStore {
         Ok(result.rows_affected())
     }
 
-    async fn poll(&self, device_code_hash: &[u8], now: Unix) -> RepoResult<DevicePoll> {
+    async fn poll(
+        &self,
+        device_code_hash: &[u8],
+        now: Unix,
+        client_id: ClientId,
+    ) -> RepoResult<DevicePoll> {
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -200,6 +205,12 @@ impl DeviceCodeRepo for SqliteStore {
             return Ok(DevicePoll::NotFound);
         };
         let code = row_to_device_code(&row)?;
+
+        // Ownership is checked before any state changes: a poll from the wrong
+        // client must not move `last_polled_at` or consume an approved code.
+        if code.client_id != client_id {
+            return Ok(DevicePoll::ClientMismatch);
+        }
 
         if code.state.status() == DeviceCodeStatus::Consumed {
             return Ok(DevicePoll::Consumed);

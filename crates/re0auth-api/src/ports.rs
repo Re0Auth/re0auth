@@ -602,6 +602,9 @@ pub enum DevicePoll {
     Expired,
     Consumed,
     NotFound,
+    /// The code exists but belongs to a different client. Returned before any
+    /// polling state is written.
+    ClientMismatch,
 }
 
 pub use crate::login::{LoginPurpose, LoginTransaction};
@@ -1036,7 +1039,15 @@ pub trait DeviceCodeRepo: Send + Sync {
     -> RepoResult<u64>;
     /// Atomically applies the polling rate limit and consumes approved codes
     /// (INV-DEV-01).
-    async fn poll(&self, device_code_hash: &[u8], now: Unix) -> RepoResult<DevicePoll>;
+    ///
+    /// A code owned by another client is refused before any state is touched,
+    /// so the caller does not need to pre-read the row to check ownership.
+    async fn poll(
+        &self,
+        device_code_hash: &[u8],
+        now: Unix,
+        client_id: ClientId,
+    ) -> RepoResult<DevicePoll>;
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64>;
 }
 

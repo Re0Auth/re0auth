@@ -44,6 +44,16 @@ cargo bench -p re0auth-server --bench token_paths -- exchange_code
 3. **token 流程的重复客户端查询**：`authenticate_client` 已校验 `Approved`，三条流程随后又调用 `require_approved_client` 重查同一行。
 4. **网关门禁４次查询**：`is_revoked`、`is_family_revoked`、`users().get`、`consents().find`，合计 17.7 µs；相对上游 RTT 可忽略。
 
+## 测量方法：交替 A/B
+
+同一二进制连续运行会出现单调上升的漂移（实测三次 122 → 139 → 145 µs，约 18%，热降频所致），顺序 A/B 会把漂移误判成改动效果。
+
+因此每一项改动都按下面步骤测量：
+
+1. 改动前用 `cargo bench --no-run` 构建基准二进制，复制为 `target/bench_old.exe`；
+2. 落地改动后再次构建，复制为 `target/bench_new.exe`；
+3. 交替运行两者各 3 次（OLD/NEW/OLD/NEW/OLD/NEW），比较中位数与置信区间。
+
 ## 第 1 轮优化：并行签发
 
 `OAuthService::issue` 改为 `async`，把两次相互独立的签名分别交给 `spawn_blocking`，再同时等待。
@@ -57,8 +67,19 @@ cargo bench -p re0auth-server --bench token_paths -- exchange_code
 
 代价：单个 token 请求在约 0.8 ms 内占用两个 blocking 线程；总 CPU 不变，但异步 worker 不再被 RSA 运算阻塞，并发下的排队时间也随之下降。
 
+## 第 2 轮优化：设备轮询合并为单次读取
+
+`exchange_device_code` 原先先 `find_by_device_hash` 取行校验归属，再调用 `poll`，而 `poll` 事务内又读同一行。现在 `DeviceCodeRepo::poll` 直接接收 `client_id`，在读取后、任何状态写入前判断归属并返回 `DevicePoll::ClientMismatch`：重复读取消失，且错误文案与「不匹配不写状态」的语义保持不变。
+
+| 配对 | OLD | NEW |
+|---|---:|---:|
+| 1 | 131.45 µs | 96.19 µs |
+| 2 | 128.81 µs | 93.11 µs |
+| 3 | 135.74 µs | 91.84 µs |
+
+中位数由 **131.45 µs** 降至 **93.7 µs（−28.7%）**，两侧置信区间不重叠。
+
 ## 尚未处理
 
-- 合并设备轮询的 `find` + `poll`（预计该基准再降 10–15%）。
 - 删除三条 token 流程中重复的 `require_approved_client`（对 token 基准 <1%，但每次少一次查询）。
 - 网关路径中 `verify_gateway_token` 与 `GatewayService::fetch` 对同一 `users` 行的重复读取。
