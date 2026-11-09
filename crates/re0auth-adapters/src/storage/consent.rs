@@ -11,6 +11,35 @@ use re0auth_api::{ClientId, ConsentId, PendingAuthorizationId, SessionId, Unix, 
 use super::audit::record_fact;
 use super::{SqliteStore, db_error, parse_uuid, scopes_from_json, scopes_json};
 
+/// Union of the scopes already stored and the requested ones.
+///
+/// The app computes this too, but the stored row may have gained scopes from a
+/// concurrent grant since that read. Recomputing inside the write transaction
+/// keeps the union from losing an update (INV-CONSENT-01).
+fn merged_scopes(existing: &Option<SqliteRow>, consent: &Consent) -> RepoResult<Vec<String>> {
+    let mut scopes = match existing {
+        Some(row) => {
+            let revoked: Option<i64> = row.try_get("revoked_at").map_err(db_error)?;
+            if revoked.is_some() {
+                // A revoked row's scopes are history: re-granting starts from
+                // the request instead of silently restoring them.
+                Vec::new()
+            } else {
+                scopes_from_json(&row.try_get::<String, _>("scopes").map_err(db_error)?)?
+            }
+        }
+        None => Vec::new(),
+    };
+    for scope in &consent.scopes {
+        if !scopes.contains(scope) {
+            scopes.push(scope.clone());
+        }
+    }
+    scopes.sort();
+    scopes.dedup();
+    Ok(scopes)
+}
+
 fn row_to_consent(row: &SqliteRow) -> RepoResult<Consent> {
     Ok(Consent {
         id: ConsentId(parse_uuid(
@@ -87,25 +116,51 @@ impl ConsentRepo for SqliteStore {
     }
 
     async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<Consent> {
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let row = sqlx::query(
-            "INSERT INTO consents \
-             (id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version) \
-             VALUES (?, ?, ?, ?, ?, ?, NULL, 1) \
-             ON CONFLICT(user_id, client_id) DO UPDATE SET \
-             scopes = excluded.scopes, updated_at = excluded.updated_at, revoked_at = NULL, \
-             version = consents.version + 1 \
-             RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(db_error)?;
+        let existing = sqlx::query(
+            "SELECT scopes, revoked_at FROM consents WHERE user_id = ? AND client_id = ?",
         )
-        .bind(consent.id.0.to_string())
         .bind(consent.user_id.0.to_string())
         .bind(consent.client_id.0.to_string())
-        .bind(scopes_json(&consent.scopes)?)
-        .bind(consent.created_at)
-        .bind(consent.updated_at)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(db_error)?;
+        let merged = merged_scopes(&existing, consent)?;
+
+        let row = if existing.is_some() {
+            sqlx::query(
+                "UPDATE consents SET scopes = ?, updated_at = ?, revoked_at = NULL, \
+                 version = version + 1 WHERE user_id = ? AND client_id = ? \
+                 RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
+            )
+            .bind(scopes_json(&merged)?)
+            .bind(consent.updated_at)
+            .bind(consent.user_id.0.to_string())
+            .bind(consent.client_id.0.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?
+        } else {
+            sqlx::query(
+                "INSERT INTO consents \
+                 (id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version) \
+                 VALUES (?, ?, ?, ?, ?, ?, NULL, 1) \
+                 RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
+            )
+            .bind(consent.id.0.to_string())
+            .bind(consent.user_id.0.to_string())
+            .bind(consent.client_id.0.to_string())
+            .bind(scopes_json(&merged)?)
+            .bind(consent.created_at)
+            .bind(consent.updated_at)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?
+        };
         record_fact(&mut tx, fact).await?;
         tx.commit().await.map_err(db_error)?;
         row_to_consent(&row)
@@ -116,35 +171,60 @@ impl ConsentRepo for SqliteStore {
         consent: &Consent,
         fact: &SecurityFact,
     ) -> RepoResult<Option<Consent>> {
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let row = sqlx::query(
-            "INSERT INTO consents \
-             (id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version) \
-             VALUES (?, ?, ?, ?, ?, ?, NULL, 1) \
-             ON CONFLICT(user_id, client_id) DO UPDATE SET \
-             scopes = excluded.scopes, updated_at = excluded.updated_at, \
-             version = consents.version + 1 \
-             WHERE consents.revoked_at IS NULL \
-             RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(db_error)?;
+        let existing = sqlx::query(
+            "SELECT scopes, revoked_at FROM consents WHERE user_id = ? AND client_id = ?",
         )
-        .bind(consent.id.0.to_string())
         .bind(consent.user_id.0.to_string())
         .bind(consent.client_id.0.to_string())
-        .bind(scopes_json(&consent.scopes)?)
-        .bind(consent.created_at)
-        .bind(consent.updated_at)
         .fetch_optional(&mut *tx)
         .await
         .map_err(db_error)?;
-        let stored = match &row {
-            Some(row) => {
-                record_fact(&mut tx, fact).await?;
-                Some(row_to_consent(row)?)
+        if let Some(row) = &existing {
+            let revoked: Option<i64> = row.try_get("revoked_at").map_err(db_error)?;
+            if revoked.is_some() {
+                return Ok(None);
             }
-            None => None,
+        }
+        let merged = merged_scopes(&existing, consent)?;
+
+        let row = if existing.is_some() {
+            sqlx::query(
+                "UPDATE consents SET scopes = ?, updated_at = ?, version = version + 1 \
+                 WHERE user_id = ? AND client_id = ? \
+                 RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
+            )
+            .bind(scopes_json(&merged)?)
+            .bind(consent.updated_at)
+            .bind(consent.user_id.0.to_string())
+            .bind(consent.client_id.0.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?
+        } else {
+            sqlx::query(
+                "INSERT INTO consents \
+                 (id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version) \
+                 VALUES (?, ?, ?, ?, ?, ?, NULL, 1) \
+                 RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
+            )
+            .bind(consent.id.0.to_string())
+            .bind(consent.user_id.0.to_string())
+            .bind(consent.client_id.0.to_string())
+            .bind(scopes_json(&merged)?)
+            .bind(consent.created_at)
+            .bind(consent.updated_at)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?
         };
+        record_fact(&mut tx, fact).await?;
         tx.commit().await.map_err(db_error)?;
-        Ok(stored)
+        Ok(Some(row_to_consent(&row)?))
     }
 
     async fn revoke(

@@ -953,6 +953,18 @@ impl ApprovalTicketRepo for MemoryStore {
     }
 }
 
+fn merged_consent_scopes(existing: &[String], requested: &[String]) -> Vec<String> {
+    let mut scopes = existing.to_vec();
+    for scope in requested {
+        if !scopes.contains(scope) {
+            scopes.push(scope.clone());
+        }
+    }
+    scopes.sort();
+    scopes.dedup();
+    scopes
+}
+
 #[async_trait]
 impl ConsentRepo for MemoryStore {
     async fn find(&self, user: &UserId, client: &ClientId) -> RepoResult<Option<Consent>> {
@@ -989,6 +1001,11 @@ impl ConsentRepo for MemoryStore {
             stored.id = existing.id;
             stored.created_at = existing.created_at;
             stored.version = ConsentVersion(existing.version.0 + 1);
+            stored.scopes = if existing.revoked_at.is_some() {
+                merged_consent_scopes(&[], &consent.scopes)
+            } else {
+                merged_consent_scopes(&existing.scopes, &consent.scopes)
+            };
         } else {
             stored.version = ConsentVersion(1);
         }
@@ -1018,6 +1035,7 @@ impl ConsentRepo for MemoryStore {
             stored.id = existing.id;
             stored.created_at = existing.created_at;
             stored.version = ConsentVersion(existing.version.0 + 1);
+            stored.scopes = merged_consent_scopes(&existing.scopes, &consent.scopes);
         } else {
             stored.version = ConsentVersion(1);
         }

@@ -910,7 +910,28 @@ pub async fn consent_contract<S: Storage>(store: &S) {
             .find(&owner.id, &client.id)
             .await
             .expect("find"),
-        Some(regranted)
+        Some(regranted.clone())
+    );
+
+    // A stale writer must not drop a scope another grant added in between.
+    let stale = Consent {
+        scopes: vec!["openid".to_string(), "email".to_string()],
+        updated_at: 1_150,
+        ..regranted.clone()
+    };
+    let merged = store
+        .consents()
+        .grant(&stale, &fact(AuditAction::ConsentGranted, 1_150, "consent"))
+        .await
+        .expect("stale grant");
+    assert_eq!(merged.version, ConsentVersion(3));
+    assert_eq!(
+        merged.scopes,
+        vec![
+            "email".to_string(),
+            "openid".to_string(),
+            "phigros.stats.read".to_string()
+        ]
     );
 
     store
@@ -974,7 +995,7 @@ pub async fn consent_contract<S: Storage>(store: &S) {
         .grant(&first, &fact(AuditAction::ConsentGranted, 1_400, "consent"))
         .await
         .expect("interactive regrant");
-    assert_eq!(regranted.version, ConsentVersion(4));
+    assert_eq!(regranted.version, ConsentVersion(5));
 }
 
 pub async fn pending_authorization_contract<S: Storage>(store: &S) {
