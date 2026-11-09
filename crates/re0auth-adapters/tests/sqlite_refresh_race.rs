@@ -19,6 +19,8 @@ fn token(user: UserId, client: ClientId, family: FamilyId, hash: u8) -> RefreshT
         user_id: user,
         scopes: vec!["openid".to_string()],
         created_at: 1_000,
+        family_created_at: 1_000,
+        auth_time: 1_000,
         expires_at: 10_000,
         consumed_at: None,
         revoked_at: None,

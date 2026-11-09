@@ -164,6 +164,16 @@ impl BindingRepo for SqliteStore {
         rows.iter().map(row_to_binding).collect()
     }
 
+    async fn count_active(&self) -> RepoResult<u64> {
+        let row = sqlx::query("SELECT COUNT(*) AS n FROM bindings WHERE status = 'active'")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_error)?;
+        row.try_get::<i64, _>("n")
+            .map(|value| value as u64)
+            .map_err(db_error)
+    }
+
     async fn mark_needs_reauth(
         &self,
         id: &BindingId,

@@ -115,6 +115,9 @@ impl UserRepo for MemoryStore {
         Ok(users)
     }
 
+    async fn count(&self) -> RepoResult<u64> {
+        Ok(self.lock().users.len() as u64)
+    }
     async fn set_role(
         &self,
         id: &UserId,
@@ -131,7 +134,6 @@ impl UserRepo for MemoryStore {
         Self::push_fact(&mut inner, fact);
         Ok(())
     }
-
     async fn set_status(
         &self,
         id: &UserId,
@@ -148,7 +150,6 @@ impl UserRepo for MemoryStore {
         Self::push_fact(&mut inner, fact);
         Ok(())
     }
-
     async fn set_status_and_revoke_sessions(
         &self,
         id: &UserId,
@@ -170,7 +171,6 @@ impl UserRepo for MemoryStore {
         }
         Ok(())
     }
-
     async fn set_role_and_status(
         &self,
         id: &UserId,
@@ -198,7 +198,6 @@ impl UserRepo for MemoryStore {
         }
         Ok(())
     }
-
     async fn count_admins(&self) -> RepoResult<u64> {
         let inner = self.lock();
         Ok(inner
@@ -215,7 +214,6 @@ impl UserRepo for MemoryStore {
         inner.users.insert(user.id, user.clone());
         Ok(())
     }
-
     async fn get(&self, id: &UserId) -> RepoResult<Option<User>> {
         Ok(self.lock().users.get(id).cloned())
     }
@@ -466,6 +464,7 @@ impl AuthCodeRepo for MemoryStore {
             redirect_uri: code.redirect_uri.clone(),
             scopes: code.scopes.clone(),
             nonce: code.nonce.clone(),
+            auth_time: code.auth_time,
         })
     }
 

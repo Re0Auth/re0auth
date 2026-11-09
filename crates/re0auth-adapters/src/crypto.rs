@@ -527,6 +527,7 @@ mod tests {
                 exp: 4_000_000_000,
                 iat: 1_000,
                 nonce: Some("nonce".to_string()),
+                auth_time: Some(1_000),
             })
             .expect("sign id");
         assert!(signer.verify_access(&id).is_err());

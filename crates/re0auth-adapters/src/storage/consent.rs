@@ -79,6 +79,7 @@ fn row_to_pending_authorization(row: &SqliteRow) -> RepoResult<PendingAuthorizat
         code_challenge: row.try_get("code_challenge").map_err(db_error)?,
         code_challenge_method: row.try_get("code_challenge_method").map_err(db_error)?,
         nonce: row.try_get("nonce").map_err(db_error)?,
+        auth_time: row.try_get("auth_time").map_err(db_error)?,
         created_at: row.try_get("created_at").map_err(db_error)?,
         expires_at: row.try_get("expires_at").map_err(db_error)?,
         consumed_at: row.try_get("consumed_at").map_err(db_error)?,
@@ -265,8 +266,8 @@ impl PendingAuthorizationRepo for SqliteStore {
         sqlx::query(
             "INSERT INTO pending_authorizations \
              (id, session_id, user_id, client_id, redirect_uri, scopes, state, \
-              code_challenge, code_challenge_method, nonce, created_at, expires_at, consumed_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              code_challenge, code_challenge_method, nonce, auth_time, created_at, expires_at, consumed_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(request.id.0.to_string())
         .bind(request.session_id.0.to_string())
@@ -278,6 +279,7 @@ impl PendingAuthorizationRepo for SqliteStore {
         .bind(&request.code_challenge)
         .bind(&request.code_challenge_method)
         .bind(request.nonce.as_deref())
+        .bind(request.auth_time)
         .bind(request.created_at)
         .bind(request.expires_at)
         .bind(request.consumed_at)
@@ -290,7 +292,7 @@ impl PendingAuthorizationRepo for SqliteStore {
     async fn get(&self, id: &PendingAuthorizationId) -> RepoResult<Option<PendingAuthorization>> {
         sqlx::query(
             "SELECT id, session_id, user_id, client_id, redirect_uri, scopes, state, \
-             code_challenge, code_challenge_method, nonce, created_at, expires_at, consumed_at \
+             code_challenge, code_challenge_method, nonce, auth_time, created_at, expires_at, consumed_at \
              FROM pending_authorizations WHERE id = ?",
         )
         .bind(id.0.to_string())
@@ -311,7 +313,7 @@ impl PendingAuthorizationRepo for SqliteStore {
             "UPDATE pending_authorizations SET consumed_at = ? \
              WHERE id = ? AND session_id = ? AND consumed_at IS NULL AND expires_at > ? \
              RETURNING id, session_id, user_id, client_id, redirect_uri, scopes, state, \
-             code_challenge, code_challenge_method, nonce, created_at, expires_at, consumed_at",
+             code_challenge, code_challenge_method, nonce, auth_time, created_at, expires_at, consumed_at",
         )
         .bind(now)
         .bind(id.0.to_string())

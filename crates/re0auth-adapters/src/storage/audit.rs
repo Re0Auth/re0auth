@@ -94,6 +94,16 @@ impl AuditRepo for SqliteStore {
         rows.iter().map(row_to_audit).collect()
     }
 
+    async fn count(&self) -> RepoResult<u64> {
+        let row = sqlx::query("SELECT COUNT(*) AS n FROM audit_logs")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_error)?;
+        row.try_get::<i64, _>("n")
+            .map(|value| value as u64)
+            .map_err(db_error)
+    }
+
     async fn by_actor(&self, user: &UserId, limit: u32) -> RepoResult<Vec<AuditRecord>> {
         let rows = sqlx::query(
             "SELECT id, occurred_at, actor_user_id, client_id, action, target, outcome, \

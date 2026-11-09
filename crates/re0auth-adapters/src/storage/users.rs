@@ -215,6 +215,16 @@ impl UserRepo for SqliteStore {
         rows.iter().map(row_to_user).collect()
     }
 
+    async fn count(&self) -> RepoResult<u64> {
+        let row = sqlx::query("SELECT COUNT(*) AS n FROM users")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_error)?;
+        row.try_get::<i64, _>("n")
+            .map(|value| value as u64)
+            .map_err(db_error)
+    }
+
     async fn set_role(
         &self,
         id: &UserId,

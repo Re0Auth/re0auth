@@ -158,7 +158,6 @@ pub struct Session {
     pub absolute_expires_at: Unix,
     pub revoked_at: Option<Unix>,
 }
-
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
@@ -187,13 +186,13 @@ pub struct AuthCode {
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
     pub nonce: Option<String>,
+    pub auth_time: Unix,
     pub created_at: Unix,
     pub expires_at: Unix,
     pub consumed_at: Option<Unix>,
     /// 兑换时写入，重放撤销靠它回溯
     pub family_id: Option<FamilyId>,
 }
-
 impl std::fmt::Debug for AuthCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthCode")
@@ -291,6 +290,7 @@ mod redaction_tests {
             code_challenge: Some("challenge".to_string()),
             code_challenge_method: Some("S256".to_string()),
             nonce: Some(canary_string()),
+            auth_time: 1,
             created_at: 1,
             expires_at: 2,
             consumed_at: None,
@@ -376,6 +376,8 @@ mod redaction_tests {
             user_id: UserId::new(),
             scopes: vec!["openid".to_string()],
             created_at: 1,
+            family_created_at: 1,
+            auth_time: 1,
             expires_at: 2,
             consumed_at: None,
             revoked_at: None,
@@ -403,6 +405,7 @@ mod redaction_tests {
             code_challenge: "challenge".to_string(),
             code_challenge_method: "S256".to_string(),
             nonce: Some(canary_string()),
+            auth_time: 1,
             created_at: 1,
             expires_at: 2,
             consumed_at: None,
@@ -447,7 +450,6 @@ pub struct ConsumeAuthCode<'a> {
     /// 本次兑换将创建的家族，与消费同语句写入
     pub family_id: FamilyId,
 }
-
 impl std::fmt::Debug for ConsumeAuthCode<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConsumeAuthCode")
@@ -468,6 +470,7 @@ pub struct AuthGrant {
     pub redirect_uri: String,
     pub scopes: Vec<String>,
     pub nonce: Option<String>,
+    pub auth_time: Unix,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -570,7 +573,6 @@ pub struct DeviceCode {
     /// same UPDATE that marks the code consumed, so a replay can revoke it.
     pub family_id: Option<FamilyId>,
 }
-
 impl std::fmt::Debug for DeviceCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeviceCode")
@@ -628,7 +630,6 @@ pub struct ApprovalTicket {
     pub expires_at: Unix,
     pub consumed_at: Option<Unix>,
 }
-
 impl std::fmt::Debug for ApprovalTicket {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApprovalTicket")
@@ -672,11 +673,11 @@ pub struct PendingAuthorization {
     pub code_challenge: String,
     pub code_challenge_method: String,
     pub nonce: Option<String>,
+    pub auth_time: Unix,
     pub created_at: Unix,
     pub expires_at: Unix,
     pub consumed_at: Option<Unix>,
 }
-
 impl std::fmt::Debug for PendingAuthorization {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingAuthorization")
@@ -707,12 +708,14 @@ pub struct RefreshToken {
     pub user_id: UserId,
     pub scopes: Vec<String>,
     pub created_at: Unix,
+    /// When this refresh family began; rotation copies it.
+    pub family_created_at: Unix,
+    pub auth_time: Unix,
     pub expires_at: Unix,
     pub consumed_at: Option<Unix>,
     pub revoked_at: Option<Unix>,
     pub replaced_by: Option<RefreshTokenId>,
 }
-
 impl std::fmt::Debug for RefreshToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RefreshToken")
@@ -737,7 +740,6 @@ pub struct RotateRefreshToken<'a> {
     pub old_hash: &'a [u8],
     pub new: RefreshToken,
 }
-
 impl std::fmt::Debug for RotateRefreshToken<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RotateRefreshToken")
@@ -807,6 +809,7 @@ pub trait UserRepo: Send + Sync {
     /// Cursor-based rather than offset-based so a concurrent insert cannot make
     /// a page skip or repeat a row (UUID v7 ids are time-ordered).
     async fn list(&self, before: Option<&UserId>, limit: u32) -> RepoResult<Vec<User>>;
+    async fn count(&self) -> RepoResult<u64>;
     /// Changes role; the fact lands in the same transaction (INV-AUDIT-01).
     async fn set_role(
         &self,
@@ -842,7 +845,6 @@ pub trait UserRepo: Send + Sync {
     /// How many admins exist, for the "cannot demote the last admin" guard.
     async fn count_admins(&self) -> RepoResult<u64>;
 }
-
 #[async_trait]
 pub trait SessionRepo: Send + Sync {
     async fn create(&self, session: &Session) -> RepoResult<()>;
@@ -950,7 +952,6 @@ pub struct PendingBinding {
     pub expires_at: Unix,
     pub consumed_at: Option<Unix>,
 }
-
 impl std::fmt::Debug for PendingBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingBinding")
@@ -1104,6 +1105,7 @@ pub trait ClientRepo: Send + Sync {
     async fn set_status(&self, id: &ClientId, status: ClientStatus, now: Unix) -> RepoResult<()>;
     /// Clients, newest first, strictly older than `before` when it is given.
     async fn list(&self, before: Option<&ClientId>, limit: u32) -> RepoResult<Vec<Client>>;
+    async fn count(&self) -> RepoResult<u64>;
     /// Replaces the mutable fields (`name`, `redirect_uris`, `allowed_scopes`,
     /// `raw_access`, `status`). `id`, `created_at` and the secret are untouched.
     async fn update(&self, client: &Client, fact: &SecurityFact, now: Unix) -> RepoResult<()>;
@@ -1316,6 +1318,7 @@ pub trait BindingRepo: Send + Sync {
         query: &BindingQuery,
         limit: u32,
     ) -> RepoResult<Vec<Binding>>;
+    async fn count_active(&self) -> RepoResult<u64>;
 
     /// Physically removes the upstream account identity from bindings revoked at
     /// or before `before`, without deleting the row.
@@ -1360,6 +1363,7 @@ pub trait AuditRepo: Send + Sync {
         before: Option<&AuditId>,
         limit: u32,
     ) -> RepoResult<Vec<AuditRecord>>;
+    async fn count(&self) -> RepoResult<u64>;
     /// Appends a telemetry-tier record. Best effort by contract; callers count
     /// drops rather than retrying forever.
     async fn append(&self, record: &AuditRecord) -> RepoResult<()>;

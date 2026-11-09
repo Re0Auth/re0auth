@@ -88,4 +88,8 @@ impl AuditRepo for MemoryStore {
         records.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         Ok(records)
     }
+
+    async fn count(&self) -> RepoResult<u64> {
+        Ok(self.lock().audits.len() as u64)
+    }
 }

@@ -51,6 +51,9 @@ pub struct IdTokenClaims {
     pub iat: Unix,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+    /// OIDC Core §2: seconds since the user authenticated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_time: Option<Unix>,
 }
 
 impl std::fmt::Debug for IdTokenClaims {
@@ -62,6 +65,7 @@ impl std::fmt::Debug for IdTokenClaims {
             .field("exp", &self.exp)
             .field("iat", &self.iat)
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
+            .field("auth_time", &self.auth_time)
             .finish()
     }
 }

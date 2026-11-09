@@ -374,6 +374,8 @@ fn row_to_refresh_token(row: &SqliteRow) -> RepoResult<RefreshToken> {
         )?),
         scopes: scopes_from_json(&row.try_get::<String, _>("scopes").map_err(db_error)?)?,
         created_at: row.try_get("created_at").map_err(db_error)?,
+        family_created_at: row.try_get("family_created_at").map_err(db_error)?,
+        auth_time: row.try_get("auth_time").map_err(db_error)?,
         expires_at: row.try_get("expires_at").map_err(db_error)?,
         consumed_at: row.try_get("consumed_at").map_err(db_error)?,
         revoked_at: row.try_get("revoked_at").map_err(db_error)?,
@@ -534,8 +536,8 @@ impl AuthCodeRepo for SqliteStore {
         sqlx::query(
             "INSERT INTO auth_codes \
              (id, code_hash, client_id, user_id, redirect_uri, scopes, code_challenge, \
-              code_challenge_method, nonce, created_at, expires_at, consumed_at, family_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              code_challenge_method, nonce, auth_time, created_at, expires_at, consumed_at, family_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(code.id.0.to_string())
         .bind(code.code_hash.as_slice())
@@ -546,6 +548,7 @@ impl AuthCodeRepo for SqliteStore {
         .bind(code.code_challenge.as_deref())
         .bind(code.code_challenge_method.as_deref())
         .bind(code.nonce.as_deref())
+        .bind(code.auth_time)
         .bind(code.created_at)
         .bind(code.expires_at)
         .bind(code.consumed_at)
@@ -569,7 +572,7 @@ impl AuthCodeRepo for SqliteStore {
              WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ? \
              AND client_id = ? AND redirect_uri = ? \
              AND code_challenge IS ? AND code_challenge_method IS ? \
-             RETURNING user_id, client_id, redirect_uri, scopes, nonce",
+             RETURNING user_id, client_id, redirect_uri, scopes, nonce, auth_time",
         )
         .bind(now)
         .bind(req.family_id.0.to_string())
@@ -594,6 +597,7 @@ impl AuthCodeRepo for SqliteStore {
                 redirect_uri: row.try_get("redirect_uri").map_err(db_error)?,
                 scopes: scopes_from_json(&row.try_get::<String, _>("scopes").map_err(db_error)?)?,
                 nonce: row.try_get("nonce").map_err(db_error)?,
+                auth_time: row.try_get("auth_time").map_err(db_error)?,
             });
         }
 
@@ -658,9 +662,9 @@ impl RefreshTokenRepo for SqliteStore {
     async fn insert(&self, token: &RefreshToken) -> RepoResult<()> {
         sqlx::query(
             "INSERT INTO refresh_tokens \
-             (id, token_hash, family_id, client_id, user_id, scopes, created_at, expires_at, \
-              consumed_at, revoked_at, replaced_by) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, token_hash, family_id, client_id, user_id, scopes, created_at, \
+              family_created_at, auth_time, expires_at, consumed_at, revoked_at, replaced_by) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(token.id.0.to_string())
         .bind(token.token_hash.as_slice())
@@ -669,6 +673,8 @@ impl RefreshTokenRepo for SqliteStore {
         .bind(token.user_id.0.to_string())
         .bind(scopes_json(&token.scopes)?)
         .bind(token.created_at)
+        .bind(token.family_created_at)
+        .bind(token.auth_time)
         .bind(token.expires_at)
         .bind(token.consumed_at)
         .bind(token.revoked_at)
@@ -682,7 +688,7 @@ impl RefreshTokenRepo for SqliteStore {
     async fn find(&self, token_hash: &[u8]) -> RepoResult<Option<RefreshToken>> {
         let row = sqlx::query(
             "SELECT id, token_hash, family_id, client_id, user_id, scopes, created_at, \
-             expires_at, consumed_at, revoked_at, replaced_by \
+             family_created_at, auth_time, expires_at, consumed_at, revoked_at, replaced_by \
              FROM refresh_tokens WHERE token_hash = ?",
         )
         .bind(token_hash)
@@ -707,7 +713,7 @@ impl RefreshTokenRepo for SqliteStore {
 
         let row = sqlx::query(
             "SELECT id, token_hash, family_id, client_id, user_id, scopes, created_at, \
-             expires_at, consumed_at, revoked_at, replaced_by \
+             family_created_at, auth_time, expires_at, consumed_at, revoked_at, replaced_by \
              FROM refresh_tokens WHERE token_hash = ?",
         )
         .bind(old_hash)
@@ -783,9 +789,9 @@ impl RefreshTokenRepo for SqliteStore {
 
         sqlx::query(
             "INSERT INTO refresh_tokens \
-             (id, token_hash, family_id, client_id, user_id, scopes, created_at, expires_at, \
-              consumed_at, revoked_at, replaced_by) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, token_hash, family_id, client_id, user_id, scopes, created_at, \
+              family_created_at, auth_time, expires_at, consumed_at, revoked_at, replaced_by) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(new.id.0.to_string())
         .bind(new.token_hash.as_slice())
@@ -794,6 +800,8 @@ impl RefreshTokenRepo for SqliteStore {
         .bind(new.user_id.0.to_string())
         .bind(scopes_json(&new.scopes)?)
         .bind(new.created_at)
+        .bind(new.family_created_at)
+        .bind(new.auth_time)
         .bind(new.expires_at)
         .bind(new.consumed_at)
         .bind(new.revoked_at)
@@ -1256,6 +1264,16 @@ impl ClientRepo for SqliteStore {
         .await
         .map_err(db_error)?;
         rows.iter().map(row_to_client).collect()
+    }
+
+    async fn count(&self) -> RepoResult<u64> {
+        let row = sqlx::query("SELECT COUNT(*) AS n FROM clients")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_error)?;
+        row.try_get::<i64, _>("n")
+            .map(|value| value as u64)
+            .map_err(db_error)
     }
 
     async fn update(&self, client: &Client, fact: &SecurityFact, now: Unix) -> RepoResult<()> {

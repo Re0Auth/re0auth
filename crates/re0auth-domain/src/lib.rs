@@ -56,6 +56,11 @@ pub fn refresh_token_ttl(_now: Unix) -> Unix {
     30 * 24 * 60 * 60
 }
 
+/// Hard cap on one refresh family, regardless of rotation.
+pub fn refresh_token_absolute_ttl(_now: Unix) -> Unix {
+    90 * 24 * 60 * 60
+}
+
 pub fn session_idle_ttl(_now: Unix) -> Unix {
     30 * 60
 }

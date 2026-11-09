@@ -15,6 +15,15 @@ pub fn verify_s256(verifier: &str, challenge: &str) -> bool {
     challenge_s256(verifier) == challenge
 }
 
+/// RFC 7636 §4.2 challenge 语法。本服务只支持 S256，因此长度固定为 43。
+#[must_use]
+pub fn is_valid_challenge(challenge: &str) -> bool {
+    challenge.len() == 43
+        && challenge
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
+}
+
 /// RFC 7636 verifier 语法
 #[must_use]
 pub fn is_valid_verifier(verifier: &str) -> bool {
@@ -45,6 +54,17 @@ mod tests {
         assert_eq!(challenge_s256(verifier), challenge);
         assert!(verify_s256(verifier, challenge));
         assert!(!verify_s256("wrong-verifier", challenge));
+    }
+
+    #[test]
+    fn challenge_syntax_is_exactly_the_s256_size() {
+        assert!(is_valid_challenge(
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        ));
+        assert!(!is_valid_challenge(""));
+        assert!(!is_valid_challenge(&"a".repeat(42)));
+        assert!(!is_valid_challenge(&"a".repeat(44)));
+        assert!(!is_valid_challenge(&("a".repeat(42) + "!")));
     }
 
     #[test]

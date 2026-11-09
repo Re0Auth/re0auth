@@ -39,6 +39,15 @@ impl BindingRepo for MemoryStore {
         bindings.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         Ok(bindings)
     }
+
+    async fn count_active(&self) -> RepoResult<u64> {
+        Ok(self
+            .lock()
+            .bindings
+            .values()
+            .filter(|binding| binding.status == BindingStatus::Active)
+            .count() as u64)
+    }
     async fn upsert(&self, binding: &Binding, fact: &SecurityFact) -> RepoResult<()> {
         let mut inner = self.lock();
         if !inner.users.contains_key(&binding.user_id) {

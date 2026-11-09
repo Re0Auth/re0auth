@@ -48,6 +48,10 @@ impl ClientRepo for MemoryStore {
         Ok(clients)
     }
 
+    async fn count(&self) -> RepoResult<u64> {
+        Ok(self.lock().clients.len() as u64)
+    }
+
     async fn update(&self, client: &Client, fact: &SecurityFact, now: Unix) -> RepoResult<()> {
         let mut inner = self.lock();
         let Some(stored) = inner.clients.get_mut(&client.id) else {

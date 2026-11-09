@@ -114,6 +114,7 @@ async fn seed_auth_code(store: &SqliteStore, user: UserId, client: ClientId, raw
         code_challenge: Some(pkce::challenge_s256(VERIFIER)),
         code_challenge_method: Some("S256".to_string()),
         nonce: None,
+        auth_time: NOW,
         created_at: NOW,
         expires_at: NOW + 10_000_000,
         consumed_at: None,
@@ -135,6 +136,8 @@ async fn seed_refresh_token(store: &SqliteStore, user: UserId, client: ClientId,
         user_id: user,
         scopes: vec!["openid".to_string(), "profile".to_string()],
         created_at: NOW,
+        family_created_at: NOW,
+        auth_time: NOW,
         expires_at: NOW + 10_000_000,
         consumed_at: None,
         revoked_at: None,
@@ -284,7 +287,7 @@ fn benches(c: &mut Criterion) {
                     let raw = format!("refresh-{n}");
                     seed_refresh_token(&store, user, client, &raw).await;
                     let start = std::time::Instant::now();
-                    let response = svc.refresh(client, None, &raw, None).await;
+                    let response = svc.refresh(client, None, &raw, None, None).await;
                     elapsed += start.elapsed();
                     black_box(response.is_ok());
                 }
