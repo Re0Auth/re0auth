@@ -29,6 +29,7 @@ use jsonwebtoken::jwk::{
 };
 use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use re0auth_api::oauth::{
     ACCESS_TOKEN_USE, APPROVAL_TICKET_USE, AccessTokenClaims, ApprovalTicketClaims, IdTokenClaims,
@@ -71,8 +72,10 @@ impl SigningKey {
     /// always gets a different one — reusing a `kid` for a new key is the known
     /// failure mode where old tokens resolve to the wrong key.
     pub fn load(path: &Path, now: Unix) -> anyhow::Result<Self> {
-        let pem = fs::read_to_string(path)
-            .with_context(|| format!("read signing key {}", path.display()))?;
+        let pem = Zeroizing::new(
+            fs::read_to_string(path)
+                .with_context(|| format!("read signing key {}", path.display()))?,
+        );
         let der = pem_body(&pem).with_context(|| {
             format!(
                 "signing key {} must be a PKCS#8 PEM (`BEGIN PRIVATE KEY`); \
@@ -88,7 +91,7 @@ impl SigningKey {
     pub fn generate(path: &Path, now: Unix) -> anyhow::Result<Self> {
         let key_pair = KeyPair::generate(KeySize::Rsa2048).context("generate RSA signing key")?;
         let der = AsDer::<Pkcs8V1Der>::as_der(&key_pair).context("encode signing key as PKCS#8")?;
-        let pem = pkcs8_pem(der.as_ref());
+        let pem = Zeroizing::new(pkcs8_pem(der.as_ref()));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create key directory {}", parent.display()))?;

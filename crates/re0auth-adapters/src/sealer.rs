@@ -208,12 +208,12 @@ impl SecretSealer for AesGcmSealer {
 
         // A fresh DEK per record: rotating the KEK then never has to touch a
         // payload, and revoking one credential cannot affect another's key.
-        let dek_bytes = self.random.bytes(KEY_LEN);
+        let dek_bytes = Zeroizing::new(self.random.bytes(KEY_LEN));
         if dek_bytes.len() != KEY_LEN {
             return Err(internal("random source returned a short dek"));
         }
         let mut dek = Zeroizing::new([0u8; KEY_LEN]);
-        dek.copy_from_slice(&dek_bytes);
+        dek.copy_from_slice(dek_bytes.as_slice());
 
         let binding_aad = aad(binding);
         let (dek_nonce, wrapped_dek) = self.wrap(&dek, &binding_aad)?;
@@ -323,9 +323,10 @@ impl AesGcmSealer {
             .map_err(|_| internal("dek wrap failed"))?;
 
         // Read back before handing the value on.
-        let check = kek
-            .decrypt(&nonce, Payload { msg: &wrapped, aad })
-            .map_err(|_| internal("dek wrap does not round-trip"))?;
+        let check = Zeroizing::new(
+            kek.decrypt(&nonce, Payload { msg: &wrapped, aad })
+                .map_err(|_| internal("dek wrap does not round-trip"))?,
+        );
         if check.as_slice() != dek.as_ref() {
             return Err(internal("dek wrap read back a different key"));
         }

@@ -96,7 +96,7 @@ fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
                 );
             }
         }
-        let mut content = String::new();
+        let mut content = Zeroizing::new(String::new());
         file.read_to_string(&mut content).map_err(|error| {
             anyhow::anyhow!("read encryption key file {}: {error}", path.display())
         })?;
