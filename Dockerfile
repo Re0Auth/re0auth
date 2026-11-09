@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM node:24-bookworm-slim AS web
+FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS web
 
 WORKDIR /web
 RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
@@ -9,7 +9,7 @@ RUN pnpm install --frozen-lockfile --prod=false
 COPY web/ ./
 RUN pnpm run build
 
-FROM rust:1.99.1-bookworm AS builder
+FROM rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS builder
 
 # aws-lc-sys (jsonwebtoken/aws_lc_rs) builds through CMake; SQLite is bundled.
 RUN apt-get update \
@@ -22,7 +22,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --locked -p re0auth-server
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget \

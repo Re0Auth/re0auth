@@ -206,10 +206,13 @@ jobs:
   publish:
     needs: [build, validate, gate]
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ needs.validate.outputs.version }}
+      digest: ${{ steps.verify.outputs.digest }}
     permissions:
-      # Releases and source tags are repo content; publishing them belongs to
-      # this job alone, so the workflow-wide permission stays read-only.
-      contents: write
+      # Publishing images needs packages:write; source tags and Releases are
+      # created by the separate `release` job, the only one with contents:write.
+      contents: read
       packages: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -269,6 +272,7 @@ jobs:
           done
 
       - name: verify both registries
+        id: verify
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
@@ -285,16 +289,42 @@ jobs:
             exit 1
           fi
           echo "digest: $ghcr"
+          echo "digest=$ghcr" >> "$GITHUB_OUTPUT"
 
-      # The image tag promises a specific commit. Publish the matching source
-      # tag and GitHub Release here so `git describe` and the Releases page agree
-      # with the registry without a second manual step.
+      - name: summary
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## 发布 $VERSION
+
+          | 来源 | 拉取命令 |
+          | --- | --- |
+          | 国内（CNB） | \`docker pull $CNB_IMAGE:$VERSION\` |
+          | 国际（GHCR） | \`docker pull $GHCR_IMAGE:$VERSION\` |
+
+          支持 \`linux/amd64\` 与 \`linux/arm64\`，两个仓库内容一致。
+          EOF
+
+  # Source tags and Releases are repo content. Kept separate from `publish` so
+  # the job that talks to registries never holds contents:write.
+  release:
+    needs: [publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
       - name: create source tag and GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.validate.outputs.version }}
+          VERSION: ${{ needs.publish.outputs.version }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
         run: |
           set -eu
+          if [ -z "$DIGEST" ]; then
+            echo "缺少发布的 manifest digest" >&2
+            exit 1
+          fi
 
           # Create the tag atomically. If it already exists, it must point at
           # this commit: `--target` is ignored for an existing tag, so never
@@ -320,8 +350,6 @@ jobs:
             fi
           fi
 
-          digest=$(docker buildx imagetools inspect "$GHCR_IMAGE:$VERSION" \
-            | awk '/Digest:/{print $2; exit}')
           {
             echo "## 镜像"
             echo
@@ -330,7 +358,7 @@ jobs:
             echo "| 国内（CNB） | \`docker pull $CNB_IMAGE:$VERSION\` |"
             echo "| 国际（GHCR） | \`docker pull $GHCR_IMAGE:$VERSION\` |"
             echo
-            echo "manifest digest：\`$digest\`（两个仓库一致，含 linux/amd64 与 linux/arm64）"
+            echo "manifest digest：\`$DIGEST\`（两个仓库一致，含 linux/amd64 与 linux/arm64）"
             echo
             echo "**提交列表**：https://github.com/$GITHUB_REPOSITORY/commits/$VERSION"
           } > release-notes.md
@@ -344,18 +372,3 @@ jobs:
             gh release create "$VERSION" --verify-tag \
               --title "$VERSION" --notes-file release-notes.md
           fi
-
-      - name: summary
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## 发布 $VERSION
-
-          | 来源 | 拉取命令 |
-          | --- | --- |
-          | 国内（CNB） | \`docker pull $CNB_IMAGE:$VERSION\` |
-          | 国际（GHCR） | \`docker pull $GHCR_IMAGE:$VERSION\` |
-
-          支持 \`linux/amd64\` 与 \`linux/arm64\`，两个仓库内容一致。
-          EOF
