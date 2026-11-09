@@ -189,7 +189,7 @@ impl ConsentRepo for SqliteStore {
             let revoked: Option<i64> = row.try_get("revoked_at").map_err(db_error)?;
             // A revocation that happened after this flow began wins; an older
             // one is history and the new approval may replace it.
-            if revoked.is_some_and(|revoked| revoked >= revive_after) {
+            if revoked.is_some_and(|revoked| revoked > revive_after) {
                 return Ok(None);
             }
         }

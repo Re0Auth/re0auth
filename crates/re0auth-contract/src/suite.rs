@@ -979,7 +979,7 @@ pub async fn consent_contract<S: Storage>(store: &S) {
         .grant_if_live(
             &first,
             &fact(AuditAction::ConsentGranted, 1_300, "device"),
-            1_200,
+            1_199,
         )
         .await
         .expect("grant_if_live");

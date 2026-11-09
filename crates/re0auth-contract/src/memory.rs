@@ -1107,7 +1107,7 @@ impl ConsentRepo for MemoryStore {
         if let Some(existing) = inner.consents.get(&key) {
             if existing
                 .revoked_at
-                .is_some_and(|revoked| revoked >= revive_after)
+                .is_some_and(|revoked| revoked > revive_after)
             {
                 return Ok(None);
             }
