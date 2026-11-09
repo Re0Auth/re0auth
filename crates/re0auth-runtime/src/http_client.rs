@@ -507,13 +507,14 @@ impl GuardedClient {
 /// kept rather than after they are all in memory.
 /// 只认 JSON 媒体类型，缺头时放行
 fn is_json_media_type(value: &str) -> bool {
-    let essence = value
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    essence == "application/json" || essence.ends_with("+json")
+    let Ok(parsed) = value.parse::<mime::Mime>() else {
+        return false;
+    };
+    let essence = parsed.essence_str();
+    let Some(subtype) = essence.strip_prefix("application/") else {
+        return false;
+    };
+    subtype == "json" || (subtype.len() > "+json".len() && subtype.ends_with("+json"))
 }
 
 async fn read_limited(mut response: reqwest::Response, limit: usize) -> anyhow::Result<Vec<u8>> {
@@ -585,6 +586,9 @@ mod tests {
         assert!(is_json_media_type("application/jwk-set+json"));
         assert!(!is_json_media_type("text/html"));
         assert!(!is_json_media_type("application/x-www-form-urlencoded"));
+        assert!(!is_json_media_type("foo+json"));
+        assert!(!is_json_media_type("+json"));
+        assert!(!is_json_media_type("application/+json"));
         assert!(!is_json_media_type(""));
     }
 
