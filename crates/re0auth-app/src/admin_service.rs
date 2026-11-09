@@ -120,6 +120,14 @@ pub struct AdminBindingView {
 }
 
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+pub struct AdminStatsView {
+    pub users: u64,
+    pub clients: u64,
+    pub active_bindings: u64,
+    pub audit_records: u64,
+}
+
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct AdminAuditView {
     pub id: String,
     pub occurred_at: i64,
@@ -200,6 +208,15 @@ impl AdminService {
     }
 
     // ---- Clients ---------------------------------------------------------
+
+    pub async fn stats(&self) -> Result<AdminStatsView, AdminError> {
+        Ok(AdminStatsView {
+            users: self.storage.users().count().await?,
+            clients: self.storage.clients().count().await?,
+            active_bindings: self.storage.bindings().count_active().await?,
+            audit_records: self.storage.audits().count().await?,
+        })
+    }
 
     pub async fn list_clients(
         &self,

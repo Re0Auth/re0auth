@@ -165,6 +165,27 @@ fn check_redirect_uris(values: &[String]) -> Result<(), ApiError> {
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/admin/stats",
+    tag = "admin",
+    security(("session" = [])),
+    responses(
+        (status = 200, body = re0auth_app::admin_service::AdminStatsView),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
+pub(crate) async fn stats(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    admin_session(&state, &headers).await?;
+    let view = service(&state)?.stats().await.map_err(admin_error)?;
+    Ok(no_store(Json(view).into_response()))
+}
+
 // ---- Clients -------------------------------------------------------------
 
 #[utoipa::path(

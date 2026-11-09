@@ -165,6 +165,7 @@ export const copy = {
 	admin: {
 		title: '管理后台',
 		nav: {
+			overview: '总览',
 			clients: '客户端',
 			users: '用户',
 			bindings: '绑定',
@@ -179,6 +180,14 @@ export const copy = {
 		loginAction: '去登录',
 		notConfigured: '这个实例没有启用管理接口。',
 		loadFailed: '读取失败，请稍后重试。',
+		stats: {
+			title: '总览',
+			subtitle: '实例的账号、客户端、绑定与审计规模。',
+			users: '用户',
+			clients: '客户端',
+			activeBindings: '活跃绑定',
+			auditRecords: '审计记录'
+		},
 		retry: '重试',
 		loadMore: '加载更多',
 		empty: '没有数据。',

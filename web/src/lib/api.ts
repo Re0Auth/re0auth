@@ -118,6 +118,15 @@ export const bindingRevocationSchema = z.object({
 // 字段与 re0auth_app::admin_service 的视图一一对应：
 // archtest 的 *_matches_the_spa_schema 会逐字段比对，改名会红。
 
+export const adminStatsSchema = z.object({
+	users: z.number().int().nonnegative(),
+	clients: z.number().int().nonnegative(),
+	active_bindings: z.number().int().nonnegative(),
+	audit_records: z.number().int().nonnegative()
+});
+
+export type AdminStats = z.infer<typeof adminStatsSchema>;
+
 export const adminClientSchema = z.object({
 	id: z.string(),
 	name: z.string(),

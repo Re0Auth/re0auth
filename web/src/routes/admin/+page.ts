@@ -1,6 +1,4 @@
-import { redirect } from '@sveltejs/kit';
-
-// 管理后台没有总览页：直接落到第一个分区。
-export function load(): never {
-	redirect(307, '/admin/clients');
+// 总览页自行请求统计；不做服务端加载，权限仍由布局的 /api/me 判定。
+export function load() {
+	return {};
 }

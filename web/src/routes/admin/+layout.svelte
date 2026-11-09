@@ -22,6 +22,7 @@
 	});
 
 	const sections = [
+		{ href: '/admin', label: copy.admin.nav.overview },
 		{ href: '/admin/clients', label: copy.admin.nav.clients },
 		{ href: '/admin/users', label: copy.admin.nav.users },
 		{ href: '/admin/bindings', label: copy.admin.nav.bindings },

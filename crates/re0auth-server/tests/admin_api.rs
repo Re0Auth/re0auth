@@ -529,3 +529,21 @@ async fn killswitch_requires_an_admin_session() {
     assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
     assert_eq!(body["code"], "forbidden");
 }
+
+#[tokio::test]
+async fn stats_reports_instance_counts_to_admins() {
+    let app = app().await;
+    let (status, body) = get(&app, "/api/admin/stats", &app.admin_cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["users"].as_u64().expect("users") >= 2, "{body}");
+    assert!(body["clients"].is_u64(), "{body}");
+    assert!(body["active_bindings"].is_u64(), "{body}");
+    assert!(body["audit_records"].is_u64(), "{body}");
+}
+
+#[tokio::test]
+async fn stats_is_admin_only() {
+    let app = app().await;
+    let (status, _) = get(&app, "/api/admin/stats", &app.user_cookie).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
