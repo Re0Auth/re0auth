@@ -35,6 +35,14 @@ pub(crate) fn charge(
             limit,
             window_secs,
         } => {
+            let lane = match lane {
+                Lane::Unauthenticated => "unauthenticated",
+                Lane::Authenticated => "authenticated",
+                Lane::PerUser => "per_user",
+            };
+            state
+                .metrics
+                .inc("rate_limit_denied_total", &[("lane", lane)]);
             let mut response = shape.response(
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate_limited",

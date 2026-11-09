@@ -51,7 +51,10 @@ fn service(state: &AppState) -> Result<&AdminService, ApiError> {
 ///
 /// 401 (no session) and 403 (not an admin) stay distinct: collapsing them would
 /// tell a logged-in non-admin to log in again, which cannot change the outcome.
-async fn admin_session(state: &AppState, headers: &HeaderMap) -> Result<SessionContext, ApiError> {
+pub(crate) async fn admin_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<SessionContext, ApiError> {
     let context = session_context_from_headers(state, headers).await?;
     if context.user.role != UserRole::Admin {
         return Err(admin_required());

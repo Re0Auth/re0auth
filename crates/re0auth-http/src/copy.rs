@@ -1,43 +1,127 @@
 //! User-facing copy for the server-rendered pages.
 //!
-//! One home for every Chinese string a person can see, so a wording change is a
-//! single edit and a future locale switch replaces this module instead of the
-//! markup. Protocol text is deliberately not here: `error_description`, problem
-//! `detail`, audit targets and logs are diagnostic channels, and their stable
-//! identifier is `code`, not prose.
+//! The catalog is the single source shared with the SPA. Unknown keys fall back
+//! to the default locale and then to the key itself: a missing translation must
+//! never take a page down.
 
-pub(crate) const AUTH_ERROR_TITLE: &str = "登录未完成";
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
-/// 内部错误只露这句，细节进日志
-pub(crate) const SERVER_ERROR: &str = "服务暂时不可用，请稍后重试";
+use axum::http::HeaderMap;
 
-pub(crate) const LOGIN_REQUIRED: &str = "请先登录";
-pub(crate) const ACCOUNT_BANNED: &str = "账号已被封禁，无法登录";
-pub(crate) const BAD_REQUEST: &str = "请求参数不正确";
-pub(crate) const PAGE_EXPIRED: &str = "页面已失效，请重试";
-pub(crate) const LOGIN_EXPIRED: &str = "登录已失效，请重新登录";
-pub(crate) const IDP_UNAVAILABLE: &str = "登录方式暂时不可用";
-pub(crate) const IDP_UNKNOWN: &str = "未知的登录方式";
-pub(crate) const IDP_REQUIRED: &str = "请选择登录方式";
-pub(crate) const RATE_LIMITED: &str = "操作过于频繁，请稍后再试";
-pub(crate) const NOT_FOUND: &str = "页面不存在";
-pub(crate) const TICKET_INVALID: &str = "授权请求无效，请重新发起";
+const ZH: &str = include_str!("../../../locales/zh-CN.json");
+const EN: &str = include_str!("../../../locales/en.json");
+const DEFAULT: &str = "zh-CN";
 
-pub(crate) const MISSING_USER_CODE: &str = "缺少设备码";
+fn catalogs() -> &'static BTreeMap<String, BTreeMap<String, String>> {
+    static CATALOGS: OnceLock<BTreeMap<String, BTreeMap<String, String>>> = OnceLock::new();
+    CATALOGS.get_or_init(|| {
+        let mut catalogs = BTreeMap::new();
+        for (locale, raw) in [("zh-CN", ZH), ("en", EN)] {
+            let parsed = serde_json::from_str(raw).expect("locale catalog is valid JSON");
+            catalogs.insert(locale.to_string(), parsed);
+        }
+        catalogs
+    })
+}
 
-pub(crate) const DEVICE_APPROVAL_TITLE: &str = "批准设备";
-pub(crate) const DEVICE_CODE_LABEL: &str = "设备码";
-pub(crate) const CLIENT_LABEL: &str = "客户端";
-pub(crate) const SCOPES_LABEL: &str = "请求权限";
-pub(crate) const DEVICE_APPROVAL_WARNING: &str =
-    "只有在另一台设备上看到同一个设备码时才批准；否则请拒绝。";
-pub(crate) const APPROVE_BUTTON: &str = "批准";
-pub(crate) const DENY_BUTTON: &str = "拒绝";
+/// Resolve `?lang=` > `re0auth_lang` cookie > `Accept-Language` > `zh-CN`.
+#[must_use]
+pub(crate) fn resolve_locale(headers: &HeaderMap, query: Option<&str>) -> String {
+    if let Some(query) = query {
+        for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+            if key == "lang" {
+                return normalize(&value);
+            }
+        }
+    }
+    if let Some(cookies) = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+    {
+        for cookie in cookies.split(';') {
+            let mut parts = cookie.trim().splitn(2, '=');
+            if parts.next() == Some("re0auth_lang")
+                && let Some(value) = parts.next()
+            {
+                return normalize(value);
+            }
+        }
+    }
+    if let Some(accept) = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|value| value.to_str().ok())
+    {
+        for candidate in accept.split(',') {
+            let language = candidate.split(';').next().unwrap_or("").trim();
+            if language.starts_with("en") {
+                return "en".to_string();
+            }
+            if language.starts_with("zh") {
+                return "zh-CN".to_string();
+            }
+        }
+    }
+    DEFAULT.to_string()
+}
 
-pub(crate) const DEVICE_APPROVED_TITLE: &str = "设备已批准";
-pub(crate) const DEVICE_APPROVED_MESSAGE: &str = "设备已获得授权，可以关闭此页面。";
-pub(crate) const DEVICE_DENIED_TITLE: &str = "设备已拒绝";
-pub(crate) const DEVICE_DENIED_MESSAGE: &str = "本次设备授权已被拒绝。";
+fn normalize(value: &str) -> String {
+    let value = value.trim();
+    if value.starts_with("en") {
+        "en".to_string()
+    } else {
+        DEFAULT.to_string()
+    }
+}
 
-pub(crate) const DEVICE_ERROR_TITLE: &str = "设备授权";
-pub(crate) const DEVICE_ERROR_HEADING: &str = "无法处理设备授权";
+/// Translate `key`. Never panics.
+#[must_use]
+pub(crate) fn t(locale: &str, key: &str) -> String {
+    catalogs()
+        .get(locale)
+        .and_then(|catalog| catalog.get(key))
+        .or_else(|| catalogs().get(DEFAULT).and_then(|catalog| catalog.get(key)))
+        .cloned()
+        .unwrap_or_else(|| key.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn catalogs_have_the_same_keys() {
+        let catalogs = catalogs();
+        let zh: BTreeSet<_> = catalogs["zh-CN"].keys().collect();
+        let en: BTreeSet<_> = catalogs["en"].keys().collect();
+        assert_eq!(zh, en);
+    }
+
+    #[test]
+    fn missing_keys_fall_back_safely() {
+        assert_eq!(t("en", "unknown-key"), "unknown-key");
+        assert_eq!(t("xx", "device_approval_title"), "批准设备");
+    }
+}
+
+tokio::task_local! {
+    static LOCALE: String;
+}
+
+/// Resolve the locale for one request and expose it to the page renderer.
+pub(crate) async fn layer(
+    request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let locale = resolve_locale(request.headers(), request.uri().query());
+    LOCALE.scope(locale, next.run(request)).await
+}
+
+#[must_use]
+pub(crate) fn current_locale() -> String {
+    LOCALE
+        .try_with(Clone::clone)
+        .unwrap_or_else(|_| DEFAULT.to_string())
+}

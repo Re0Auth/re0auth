@@ -2703,3 +2703,95 @@ async fn authorize_max_age_with_prompt_none_returns_login_required() {
     assert!(location.contains("error=login_required"), "{location}");
     assert!(location.contains("state=keep"), "{location}");
 }
+
+#[tokio::test]
+async fn metrics_is_hidden_by_default() {
+    let app = app().await;
+    let (status, _, _) = get(&app, "/metrics").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn form_post_page_honours_query_and_header_locale() {
+    let app = app().await;
+    let uri = format!(
+        "/oauth/authorize?response_type=none&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&response_mode=form_post&lang=en",
+        app.client_id.0
+    );
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+        Some("en")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::VARY)
+            .and_then(|v| v.to_str().ok()),
+        Some("Accept-Language")
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let body = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(body.contains(r#"<html lang="en">"#), "{body}");
+    assert!(body.contains("Continue"), "{body}");
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri.replace("&lang=en", ""))
+                .header(header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_LANGUAGE)
+            .and_then(|v| v.to_str().ok()),
+        Some("en")
+    );
+}
+
+#[tokio::test]
+async fn server_page_honours_query_locale() {
+    let app = app().await;
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/device/start?lang=en")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let body = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(body.contains(r#"<html lang="en">"#), "{body}");
+    assert!(body.contains("Missing device code"), "{body}");
+}

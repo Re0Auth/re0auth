@@ -9,7 +9,7 @@ use maud::{PreEscaped, html};
 use re0auth_api::oauth::SUPPORTED_SCOPES;
 use re0auth_app::auth::AuthError;
 use re0auth_app::oauth::{
-    AuthorizeOutcome, AuthorizeRequest, ConsentDecision, OAuthError, parse_scope,
+    AuthorizeOutcome, AuthorizeRequest, ConsentDecision, OAuthError, RevocationOutcome, parse_scope,
 };
 use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
@@ -235,19 +235,22 @@ enum ResponseMode {
 /// body rather than the query string. `action` is the registered redirect URI,
 /// so its own query parameters survive alongside the form fields.
 fn form_post_response(action: &str, params: &[(String, String)]) -> Response {
+    let locale = crate::copy::current_locale();
+    let title = crate::copy::t(&locale, "form_post_title");
+    let continue_label = crate::copy::t(&locale, "form_post_continue");
     let document = html! {
         (PreEscaped("<!doctype html>"))
-        html lang="en" {
+        html lang=(locale) {
             head {
                 meta charset="utf-8";
-                title { "Redirecting" }
+                title { (title) }
             }
             body {
                 form method="post" action=(action) {
                     @for (name, value) in params {
                         input type="hidden" name=(name) value=(value);
                     }
-                    noscript { button type="submit" { "Continue" } }
+                    noscript { button type="submit" { (continue_label) } }
                 }
                 script { "document.forms[0].submit();" }
             }
@@ -258,6 +261,13 @@ fn form_post_response(action: &str, params: &[(String, String)]) -> Response {
     headers.insert(
         header::CONTENT_TYPE,
         header::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    if let Ok(value) = header::HeaderValue::from_str(&locale) {
+        headers.insert(header::CONTENT_LANGUAGE, value);
+    }
+    headers.insert(
+        header::VARY,
+        header::HeaderValue::from_static("Accept-Language"),
     );
     headers.insert(
         header::CACHE_CONTROL,
@@ -721,6 +731,10 @@ pub(crate) async fn token(
     )?;
     let client_id = credentials.id;
     let secret = credentials.secret.as_deref();
+    let grant_type = form
+        .grant_type
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
     let response = match form.grant_type.as_deref() {
         Some("authorization_code") => {
             let code = form
@@ -774,6 +788,12 @@ pub(crate) async fn token(
         None => return Err(invalid_request("grant_type is required", Shape::Rfc6749)),
     };
 
+    state
+        .metrics
+        .inc("oauth_token_issued_total", &[("grant_type", &grant_type)]);
+    if grant_type == "refresh_token" {
+        state.metrics.inc("refresh_rotations_total", &[]);
+    }
     Ok(no_store(Json(response).into_response()))
 }
 
@@ -914,7 +934,7 @@ pub(crate) async fn revoke(
     if token.is_empty() {
         return Err(invalid_request("token must not be empty", Shape::Rfc6749));
     }
-    state
+    let outcome = state
         .oauth
         .revoke_token(
             token,
@@ -924,5 +944,10 @@ pub(crate) async fn revoke(
         )
         .await
         .map_err(|error| oauth_error(error, Shape::Rfc6749))?;
+    if matches!(outcome, RevocationOutcome::Revoked) {
+        state
+            .metrics
+            .inc("token_revocations_total", &[("kind", "token")]);
+    }
     Ok(no_store(StatusCode::OK.into_response()))
 }

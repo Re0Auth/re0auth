@@ -9,6 +9,7 @@ mod cookies;
 mod copy;
 mod error;
 mod limit_headers;
+mod metrics;
 pub mod openapi;
 mod pages;
 mod parsers;
@@ -84,6 +85,9 @@ pub struct AppState {
     pub trusted_proxies: Vec<client_address::ProxyRange>,
     /// 单请求处理上限，超时返回 408。
     pub request_timeout: Duration,
+    /// Prometheus 指标；默认关闭，开启后仍受本地/管理员访问控制。
+    pub metrics: Arc<metrics::Metrics>,
+    pub metrics_enabled: bool,
 }
 
 impl AppState {
@@ -99,6 +103,8 @@ impl AppState {
             inbound_body_bytes: DEFAULT_INBOUND_BODY_BYTES,
             trusted_proxies: Vec::new(),
             request_timeout: Duration::from_secs(30),
+            metrics: Arc::new(metrics::Metrics::new()),
+            metrics_enabled: false,
         }
     }
 
@@ -144,6 +150,12 @@ impl AppState {
         self
     }
 
+    #[must_use]
+    pub fn with_metrics(mut self, enabled: bool) -> Self {
+        self.metrics_enabled = enabled;
+        self
+    }
+
     /// INV-RATE-01: the one place a request's address is derived.
     fn client_address(&self, peer: SocketAddr, headers: &HeaderMap) -> String {
         client_address::resolve(peer.ip(), headers, &self.trusted_proxies)
@@ -153,8 +165,10 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     let inbound_body_bytes = state.inbound_body_bytes;
     let request_timeout = state.request_timeout;
+    let metrics_state = state.clone();
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics::endpoint))
         // INV-READY-01: readiness means "can serve requests", not "process is
         // up". The probe touches storage so an orchestrator stops routing to an
         // instance whose database is gone.
@@ -235,6 +249,11 @@ pub fn router(state: AppState) -> Router {
         // axum's own 2 MiB default is not the configured value, so leaving this
         // out made `limits.inbound_body_bytes` a knob that changed nothing.
         .layer(DefaultBodyLimit::max(inbound_body_bytes))
+        .layer(middleware::from_fn_with_state(
+            metrics_state,
+            metrics::layer,
+        ))
+        .layer(middleware::from_fn(copy::layer))
         .layer(middleware::from_fn(request_id::layer))
         // 最外层：连读 body 也计时
         .layer(TimeoutLayer::with_status_code(

@@ -47,7 +47,7 @@ pub(crate) async fn device_start(
     Query(query): Query<DevicePageQuery>,
 ) -> Response {
     let Some(user_code) = query.user_code else {
-        return device_error_page(copy::MISSING_USER_CODE);
+        return device_error_page(copy::t(&copy::current_locale(), "missing_user_code"));
     };
     // INV-RATE-01: per-code attempt counters are keyed on the derived address,
     // so an attacker behind a trusted proxy cannot split one identity across
@@ -136,7 +136,10 @@ pub(crate) async fn device_qr(
         return Ok(auth_error_html(AuthError::RateLimited).into_response());
     }
     let Some(user_code) = query.user_code else {
-        return Ok(device_error_page(copy::MISSING_USER_CODE));
+        return Ok(device_error_page(copy::t(
+            &copy::current_locale(),
+            "missing_user_code",
+        )));
     };
     match state
         .auth

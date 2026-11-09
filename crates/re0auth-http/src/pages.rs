@@ -13,6 +13,10 @@ use re0auth_app::auth::AuthError;
 use crate::copy;
 use crate::idp_status;
 
+fn tr(key: &str) -> String {
+    copy::t(&copy::current_locale(), key)
+}
+
 pub(crate) struct HtmlFailure(pub(crate) Box<Response>);
 
 impl IntoResponse for HtmlFailure {
@@ -29,32 +33,32 @@ pub(crate) fn device_approval_page(
 ) -> Response {
     let body = html! {
         main.card {
-            h1 { (copy::DEVICE_APPROVAL_TITLE) }
-            p.muted { (copy::DEVICE_CODE_LABEL) }
+            h1 { (tr("device_approval_title")) }
+            p.muted { (tr("device_code_label")) }
             p.code { (user_code) }
-            p.muted { (copy::CLIENT_LABEL) }
+            p.muted { (tr("client_label")) }
             p.code { (client_id) }
-            p.muted { (copy::SCOPES_LABEL) }
+            p.muted { (tr("scopes_label")) }
             ul { @for scope in scopes { li { (scope) } } }
-            p.muted { (copy::DEVICE_APPROVAL_WARNING) }
+            p.muted { (tr("device_approval_warning")) }
             form method="post" action="/device/approve" {
                 input type="hidden" name="ticket" value=(ticket);
-                button type="submit" { (copy::APPROVE_BUTTON) }
+                button type="submit" { (tr("approve_button")) }
             }
             form method="post" action="/device/deny" {
                 input type="hidden" name="ticket" value=(ticket);
-                button type="submit" class="secondary" { (copy::DENY_BUTTON) }
+                button type="submit" class="secondary" { (tr("deny_button")) }
             }
         }
     };
-    html_response(StatusCode::OK, copy::DEVICE_APPROVAL_TITLE, body)
+    html_response(StatusCode::OK, tr("device_approval_title"), body)
 }
 
 pub(crate) fn device_result_page(approved: bool) -> Response {
     let (title, message) = if approved {
-        (copy::DEVICE_APPROVED_TITLE, copy::DEVICE_APPROVED_MESSAGE)
+        (tr("device_approved_title"), tr("device_approved_message"))
     } else {
-        (copy::DEVICE_DENIED_TITLE, copy::DEVICE_DENIED_MESSAGE)
+        (tr("device_denied_title"), tr("device_denied_message"))
     };
     let body = html! {
         main.card {
@@ -65,14 +69,15 @@ pub(crate) fn device_result_page(approved: bool) -> Response {
     html_response(StatusCode::OK, title, body)
 }
 
-pub(crate) fn device_error_page(message: &str) -> Response {
+pub(crate) fn device_error_page(message: impl AsRef<str>) -> Response {
+    let message = message.as_ref();
     let body = html! {
         main.card {
-            h1 { (copy::DEVICE_ERROR_HEADING) }
+            h1 { (tr("device_error_heading")) }
             p.muted { (message) }
         }
     };
-    html_response(StatusCode::BAD_REQUEST, copy::DEVICE_ERROR_TITLE, body)
+    html_response(StatusCode::BAD_REQUEST, tr("device_error_title"), body)
 }
 
 pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
@@ -92,43 +97,43 @@ pub(crate) fn auth_error_html(error: AuthError) -> HtmlFailure {
     };
     let body = html! {
         main.card {
-            h1 { (copy::AUTH_ERROR_TITLE) }
+            h1 { (tr("auth_error_title")) }
             p.muted { (user_message(&error)) }
         }
     };
     HtmlFailure(Box::new(html_response(
         status,
-        copy::AUTH_ERROR_TITLE,
+        tr("auth_error_title"),
         body,
     )))
 }
 
 /// 内部错误文案固定，避免把数据库或上游细节送进浏览器
-fn user_message(error: &AuthError) -> &'static str {
+fn user_message(error: &AuthError) -> String {
     match error {
-        AuthError::LoginRequired => copy::LOGIN_REQUIRED,
-        AuthError::AccountBanned => copy::ACCOUNT_BANNED,
-        AuthError::InvalidRequest(_) => copy::BAD_REQUEST,
-        AuthError::Csrf => copy::PAGE_EXPIRED,
+        AuthError::LoginRequired => tr("login_required"),
+        AuthError::AccountBanned => tr("account_banned"),
+        AuthError::InvalidRequest(_) => tr("bad_request"),
+        AuthError::Csrf => tr("page_expired"),
         AuthError::StateInvalid
         | AuthError::StateExpired
         | AuthError::StateConsumed
         | AuthError::TicketExpired
-        | AuthError::TicketConsumed => copy::LOGIN_EXPIRED,
-        AuthError::InvalidTicket | AuthError::DeviceUnavailable => copy::TICKET_INVALID,
-        AuthError::IdpUnavailable => copy::IDP_UNAVAILABLE,
-        AuthError::UnknownIdentityProvider => copy::IDP_UNKNOWN,
-        AuthError::IdentityProviderRequired => copy::IDP_REQUIRED,
-        AuthError::RateLimited => copy::RATE_LIMITED,
-        AuthError::NotFound => copy::NOT_FOUND,
+        | AuthError::TicketConsumed => tr("login_expired"),
+        AuthError::InvalidTicket | AuthError::DeviceUnavailable => tr("ticket_invalid"),
+        AuthError::IdpUnavailable => tr("idp_unavailable"),
+        AuthError::UnknownIdentityProvider => tr("idp_unknown"),
+        AuthError::IdentityProviderRequired => tr("idp_required"),
+        AuthError::RateLimited => tr("rate_limited"),
+        AuthError::NotFound => tr("not_found"),
         // API-only refusals; the browser pages never reach them.
         AuthError::LastIdentity
         | AuthError::BindingsNotRevocable
         | AuthError::IdentityAlreadyBound
         | AuthError::LoginRequiresAttach
-        | AuthError::LoginRequiresLogout => copy::BAD_REQUEST,
+        | AuthError::LoginRequiresLogout => tr("bad_request"),
         // 内部故障只给固定文案，具体原因留在日志里
-        AuthError::Repo(_) | AuthError::Internal | AuthError::Idp(_) => copy::SERVER_ERROR,
+        AuthError::Repo(_) | AuthError::Internal | AuthError::Idp(_) => tr("server_error"),
     }
 }
 
@@ -139,10 +144,12 @@ fn user_message(error: &AuthError) -> &'static str {
 /// doctype, and the stylesheet, which is a `const` rather than a value from a
 /// request. maud escapes `& < > "`, which covers text and its own double-quoted
 /// attributes; `'` needs no escaping in either context.
-fn html_response(status: StatusCode, title: &str, body: Markup) -> Response {
+fn html_response(status: StatusCode, title: impl AsRef<str>, body: Markup) -> Response {
+    let title = title.as_ref();
+    let locale = copy::current_locale();
     let document = html! {
         (PreEscaped("<!doctype html>"))
-        html lang="zh-CN" {
+        html lang=(locale) {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
@@ -156,6 +163,15 @@ fn html_response(status: StatusCode, title: &str, body: Markup) -> Response {
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         header::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    if let Ok(value) = header::HeaderValue::from_str(&locale) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LANGUAGE, value);
+    }
+    response.headers_mut().insert(
+        header::VARY,
+        header::HeaderValue::from_static("Accept-Language"),
     );
     response.headers_mut().insert(
         header::CACHE_CONTROL,
