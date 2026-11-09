@@ -430,12 +430,14 @@ impl OAuthService {
             return Err(OAuthError::InvalidScope);
         }
 
+        // The consent page is the one place allowed to re-grant after a revoke.
         self.grant_consent(
             *user_id,
             request.client_id,
             &request.scopes,
             now,
             correlation_id,
+            true,
         )
         .await?;
         let code = self
@@ -546,6 +548,7 @@ impl OAuthService {
         requested: &[String],
         now: Unix,
         correlation_id: Option<&str>,
+        revive: bool,
     ) -> Result<Consent, OAuthError> {
         // INV-CONSENT-01: the consent record stores only the union of scopes.
         let existing = self
@@ -571,31 +574,38 @@ impl OAuthService {
         }
         scopes.sort();
         scopes.dedup();
-        let stored = self
-            .storage
-            .consents()
-            .grant(
-                &Consent {
-                    id,
-                    user_id,
-                    client_id,
-                    scopes,
-                    created_at,
-                    updated_at: now,
-                    revoked_at: None,
-                    version: ConsentVersion(0),
-                },
-                &SecurityFact::new(
-                    AuditAction::ConsentGranted,
-                    now,
-                    format!("consent:{client_id:?}"),
-                )
-                .actor(user_id)
-                .client(client_id)
-                .with_request_id(correlation_id),
-            )
-            .await
-            .map_err(map_repo)?;
+        let fact = SecurityFact::new(
+            AuditAction::ConsentGranted,
+            now,
+            format!("consent:{client_id:?}"),
+        )
+        .actor(user_id)
+        .client(client_id)
+        .with_request_id(correlation_id);
+        let pending = Consent {
+            id,
+            user_id,
+            client_id,
+            scopes,
+            created_at,
+            updated_at: now,
+            revoked_at: None,
+            version: ConsentVersion(0),
+        };
+        // Only the consent page may revive a revoked grant. The device flow is
+        // non-interactive: if the user revoked while the poll was in flight,
+        // the revocation wins (INV-AUTHZ-02).
+        let stored = if revive {
+            self.storage
+                .consents()
+                .grant(&pending, &fact)
+                .await
+                .map(Some)
+        } else {
+            self.storage.consents().grant_if_live(&pending, &fact).await
+        }
+        .map_err(map_repo)?
+        .ok_or(OAuthError::InvalidGrant("consent revoked"))?;
         Ok(stored)
     }
 
@@ -731,7 +741,7 @@ impl OAuthService {
                 // authorization becomes a consent record. A token can never
                 // exist without one.
                 let consent = self
-                    .grant_consent(user_id, client_id, &scopes, now, correlation_id)
+                    .grant_consent(user_id, client_id, &scopes, now, correlation_id, false)
                     .await?;
                 let (refresh_raw, refresh_hash) = new_secret(self.random.as_ref());
                 let refresh = RefreshToken {

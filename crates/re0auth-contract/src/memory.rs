@@ -991,6 +991,35 @@ impl ConsentRepo for MemoryStore {
         Ok(stored)
     }
 
+    async fn grant_if_live(
+        &self,
+        consent: &Consent,
+        fact: &SecurityFact,
+    ) -> RepoResult<Option<Consent>> {
+        let mut inner = self.lock();
+        if !inner.users.contains_key(&consent.user_id)
+            || !inner.clients.contains_key(&consent.client_id)
+        {
+            return Err(RepoError::NotFound);
+        }
+        let key = (consent.user_id, consent.client_id);
+        let mut stored = consent.clone();
+        if let Some(existing) = inner.consents.get(&key) {
+            if existing.revoked_at.is_some() {
+                return Ok(None);
+            }
+            stored.id = existing.id;
+            stored.created_at = existing.created_at;
+            stored.version = ConsentVersion(existing.version.0 + 1);
+        } else {
+            stored.version = ConsentVersion(1);
+        }
+        stored.revoked_at = None;
+        inner.consents.insert(key, stored.clone());
+        Self::push_fact(&mut inner, fact);
+        Ok(Some(stored))
+    }
+
     async fn revoke(
         &self,
         user: &UserId,

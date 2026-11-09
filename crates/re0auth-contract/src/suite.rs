@@ -950,6 +950,30 @@ pub async fn consent_contract<S: Storage>(store: &S) {
             .await,
         Err(RepoError::NotFound)
     ));
+
+    // The non-interactive path must not revive a revoked grant.
+    let revived = store
+        .consents()
+        .grant_if_live(&first, &fact(AuditAction::ConsentGranted, 1_300, "device"))
+        .await
+        .expect("grant_if_live");
+    assert!(revived.is_none(), "a revoked consent must stay revoked");
+    assert!(
+        store
+            .consents()
+            .find(&owner.id, &client.id)
+            .await
+            .expect("find")
+            .is_none()
+    );
+
+    // The interactive path (the consent page) is still allowed to re-grant.
+    let regranted = store
+        .consents()
+        .grant(&first, &fact(AuditAction::ConsentGranted, 1_400, "consent"))
+        .await
+        .expect("interactive regrant");
+    assert_eq!(regranted.version, ConsentVersion(4));
 }
 
 pub async fn pending_authorization_contract<S: Storage>(store: &S) {

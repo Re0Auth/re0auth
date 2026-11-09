@@ -111,6 +111,42 @@ impl ConsentRepo for SqliteStore {
         row_to_consent(&row)
     }
 
+    async fn grant_if_live(
+        &self,
+        consent: &Consent,
+        fact: &SecurityFact,
+    ) -> RepoResult<Option<Consent>> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let row = sqlx::query(
+            "INSERT INTO consents \
+             (id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version) \
+             VALUES (?, ?, ?, ?, ?, ?, NULL, 1) \
+             ON CONFLICT(user_id, client_id) DO UPDATE SET \
+             scopes = excluded.scopes, updated_at = excluded.updated_at, \
+             version = consents.version + 1 \
+             WHERE consents.revoked_at IS NULL \
+             RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
+        )
+        .bind(consent.id.0.to_string())
+        .bind(consent.user_id.0.to_string())
+        .bind(consent.client_id.0.to_string())
+        .bind(scopes_json(&consent.scopes)?)
+        .bind(consent.created_at)
+        .bind(consent.updated_at)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let stored = match &row {
+            Some(row) => {
+                record_fact(&mut tx, fact).await?;
+                Some(row_to_consent(row)?)
+            }
+            None => None,
+        };
+        tx.commit().await.map_err(db_error)?;
+        Ok(stored)
+    }
+
     async fn revoke(
         &self,
         user: &UserId,
