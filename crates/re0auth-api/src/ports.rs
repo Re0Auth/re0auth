@@ -780,38 +780,21 @@ pub struct Binding {
 pub trait UserRepo: Send + Sync {
     async fn create(&self, user: &User) -> RepoResult<()>;
     async fn get(&self, id: &UserId) -> RepoResult<Option<User>>;
-    /// Attaches an identity to an account that already exists.
-    ///
-    /// This is the attach primitive, not a login primitive: it neither creates a
-    /// user nor moves an identity. The unique constraint on `(issuer, subject)`
-    /// is what keeps one identity from belonging to two accounts, and a second
-    /// link of the same pair reports [`RepoError::Conflict`].
-    /// Attaches an identity and records the fact in the same transaction.
+    /// Attaches an identity; `(issuer, subject)` is unique across accounts.
     async fn link_identity(&self, identity: &Identity, fact: &SecurityFact) -> RepoResult<()>;
     async fn find_by_identity(&self, issuer: &str, subject: &str) -> RepoResult<Option<User>>;
-    /// Every identity attached to one account, oldest first.
-    ///
-    /// Ordered by `(created_at, id)` so the account page renders a stable list
-    /// and two identities created in the same second keep a fixed order.
+    /// Every identity on one account, oldest first by `(created_at, id)`.
     async fn list_identities(&self, user: &UserId) -> RepoResult<Vec<Identity>>;
-    /// Detaches one identity from one account, and reports whether a row went.
-    ///
-    /// Scoped by `user` on purpose: the id comes from a request, and a delete
-    /// without the owner in the WHERE clause would let a caller detach somebody
-    /// else's login. The store also enforces the last-identity floor. The fact
-    /// is written only when a row was removed.
+    /// Detaches one identity, scoped to its owner; the store enforces the
+    /// last-identity floor. The fact is written only when a row was removed.
     async fn unlink_identity(
         &self,
         user: &UserId,
         id: &IdentityId,
         fact: &SecurityFact,
     ) -> RepoResult<bool>;
-    /// Deletes an account and records the fact in the same transaction.
-    ///
-    /// [`Self::delete`] stays fact-free on purpose: the contract suite uses it as
-    /// test cleanup. This is the production entry point, and the fact has to
-    /// commit with the deletion — otherwise the trail would claim a deletion that
-    /// rolled back, or a deletion would happen with no record of it.
+    /// Deletes an account and records the fact in the same transaction; refuses
+    /// while a live binding remains. [`Self::delete`] is fact-free test cleanup.
     async fn delete_with_fact(&self, id: &UserId, fact: &SecurityFact) -> RepoResult<bool>;
     /// Deletes the user and all dependent rows; audit rows survive with a null
     /// actor (INV-FK-01).
@@ -821,8 +804,7 @@ pub trait UserRepo: Send + Sync {
     /// Cursor-based rather than offset-based so a concurrent insert cannot make
     /// a page skip or repeat a row (UUID v7 ids are time-ordered).
     async fn list(&self, before: Option<&UserId>, limit: u32) -> RepoResult<Vec<User>>;
-    /// Changes a user's role. Reports `NotFound` for an unknown id. The audit
-    /// fact lands in the same transaction (INV-AUDIT-01).
+    /// Changes role; the fact lands in the same transaction (INV-AUDIT-01).
     async fn set_role(
         &self,
         id: &UserId,
@@ -830,8 +812,7 @@ pub trait UserRepo: Send + Sync {
         fact: &SecurityFact,
         now: Unix,
     ) -> RepoResult<()>;
-    /// Changes a user's admission status. Same transaction/audit rule as
-    /// set_role.
+    /// Changes admission status; the fact lands in the same transaction.
     async fn set_status(
         &self,
         id: &UserId,
@@ -839,9 +820,6 @@ pub trait UserRepo: Send + Sync {
         fact: &SecurityFact,
         now: Unix,
     ) -> RepoResult<()>;
-    /// Applies a role and a status change in one transaction. A ban also
-    /// revokes sessions here, so the combined PATCH cannot leave half a
-    /// decision behind.
     async fn set_role_and_status(
         &self,
         id: &UserId,
@@ -851,8 +829,6 @@ pub trait UserRepo: Send + Sync {
         status_fact: &SecurityFact,
         now: Unix,
     ) -> RepoResult<()>;
-    /// Bans the account and revokes every session in the same transaction
-    /// (B15). Used when a ban must take effect as one decision, not two writes.
     async fn set_status_and_revoke_sessions(
         &self,
         id: &UserId,

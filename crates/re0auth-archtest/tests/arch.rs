@@ -2373,8 +2373,10 @@ fn request_path_logs_are_absent_and_would_be_redacted() {
         }
     }
 
+    // Two sites, both logging an opaque binding id and a coarse error kind:
+    // admin_service.rs (single revoke) and binding.rs (cascade batch).
     assert_eq!(
-        call_sites, 0,
+        call_sites, 2,
         "the request path now has {call_sites} `tracing::*!` call site(s); this guard was \
          written when there were none. Re-read each site for token or secret \
          interpolation, then update the expected count here."
