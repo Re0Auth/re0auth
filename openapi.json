@@ -62,6 +62,32 @@
         }
       }
     },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "operationId": "endpoint",
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition.",
+            "content": {
+              "text/plain; version=0.0.4": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Metrics are enabled but the caller is neither loopback nor an admin."
+          },
+          "404": {
+            "description": "Metrics are disabled."
+          }
+        }
+      }
+    },
     "/api/auth/providers": {
       "get": {
         "tags": [

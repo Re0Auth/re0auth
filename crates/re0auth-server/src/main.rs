@@ -721,7 +721,8 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         // the only safe default for a directly exposed instance.
         .with_trusted_proxies(trusted_proxies(&cfg)?)
         // 慢客户端不能无限期占着连接；超时返回 408。
-        .with_request_timeout(std::time::Duration::from_secs(cfg.timeouts.request_secs));
+        .with_request_timeout(std::time::Duration::from_secs(cfg.timeouts.request_secs))
+        .with_metrics(cfg.metrics.enabled);
 
     // The admin surface is built after the data plane (see below) because an
     // admin revoke now tells the upstream, which needs the binding surface.

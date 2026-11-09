@@ -129,9 +129,9 @@ async fn setup() -> TestApp {
         .expect("client");
 
     TestApp {
-        router: router(AppState::new(oauth, auth)).layer(
+        router: router(AppState::new(oauth, auth).with_metrics(true)).layer(
             axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from((
-                [203, 0, 113, 10],
+                [127, 0, 0, 1],
                 4444,
             ))),
         ),
@@ -1855,4 +1855,33 @@ async fn introspection_requires_a_client_and_hides_foreign_tokens() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn metrics_counts_http_and_token_requests() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-metrics").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    assert!(tokens["access_token"].is_string());
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("metrics");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let body = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(body.contains("oauth_token_issued_total"), "{body}");
+    assert!(body.contains("grant_type=\"authorization_code\""), "{body}");
+    assert!(body.contains("http_requests_total"), "{body}");
+    assert!(body.contains("route=\"/oauth/token\""), "{body}");
 }

@@ -62,6 +62,7 @@ pub fn is_reserved_path(path: &str) -> bool {
             | "/.well-known"
             | "/healthz"
             | "/readyz"
+            | "/metrics"
             | "/device/start"
             | "/device/approve"
             | "/device/deny"

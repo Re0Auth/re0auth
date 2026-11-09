@@ -19,6 +19,10 @@ pub struct Config {
     /// INV-CACHE-01..03. Absent means caching is off.
     #[serde(default)]
     pub cache: CacheConfig,
+    /// Prometheus exposition. Off by default; when enabled it is still gated
+    /// to loopback or an admin session.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
     /// 绑定凭证的惰性推断阈值。
     #[serde(default)]
     pub binding_probe: BindingProbeConfig,
@@ -383,6 +387,13 @@ pub struct LimitsConfig {
     pub upstream_response_bytes: u64,
     pub upstream_inflight_bytes: u64,
     pub inbound_body_bytes: u64,
+}
+
+/// Prometheus exposition settings.
+#[derive(Debug, Default, Deserialize)]
+pub struct MetricsConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// Response cache (INV-CACHE-01..03).

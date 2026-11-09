@@ -125,7 +125,9 @@ async fn app() -> App {
     let (admin_cookie, admin_csrf) = session(&store, &clock, admin_id).await;
     let (user_cookie, _) = session(&store, &clock, user_id).await;
 
-    let state = AppState::new(oauth, auth).with_admin(Arc::new(admin));
+    let state = AppState::new(oauth, auth)
+        .with_admin(Arc::new(admin))
+        .with_metrics(true);
     App {
         router: router(state).layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 7], 4444)))),
         admin_id,
@@ -546,4 +548,43 @@ async fn stats_is_admin_only() {
     let app = app().await;
     let (status, _) = get(&app, "/api/admin/stats", &app.user_cookie).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn metrics_is_admin_gated_when_enabled() {
+    let app = app().await;
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .header(header::COOKIE, &app.admin_cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("metrics");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/plain; version=0.0.4; charset=utf-8")
+    );
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .header(header::COOKIE, &app.user_cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("metrics");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

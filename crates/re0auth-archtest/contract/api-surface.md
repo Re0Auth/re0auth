@@ -102,6 +102,7 @@
 ```text
 GET    /healthz
 GET    /readyz
+GET    /metrics
 GET    /.well-known/openid-configuration
 GET    /jwks.json
 GET    /api/auth/providers

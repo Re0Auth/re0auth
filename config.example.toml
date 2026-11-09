@@ -68,6 +68,10 @@ inbound_body_bytes = 1048576
 # ttl_secs = 300
 # max_bytes = 8388608
 
+# Prometheus 指标。默认关闭；开启后 /metrics 仍只允许本地回环或管理员会话。
+# [metrics]
+# enabled = false
+
 # 绑定凭证的惰性失效推断：超过该天数未刷新即视为失效。
 # 不探测上游，只按本地记录的刷新时间推断；0 表示关闭推断。
 # [binding_probe]

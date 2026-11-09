@@ -22,6 +22,7 @@ use crate::{admin, binding_routes};
     paths(
         crate::healthz,
         crate::readyz,
+        crate::metrics::endpoint,
         session::providers,
         session::login,
         session::auth_callback,
