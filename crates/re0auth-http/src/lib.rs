@@ -34,8 +34,8 @@ use re0auth_app::oauth::OAuthService;
 use routes::device::{device_approve, device_deny, device_qr, device_start};
 use routes::gateway::{fetch_raw, fetch_upstream};
 use routes::oauth::{
-    authorize, device_authorization, discovery, jwks, oauth_consent, oauth_pending, revoke, token,
-    userinfo,
+    authorize, authorize_post, device_authorization, discovery, introspect, jwks, oauth_consent,
+    oauth_pending, revoke, token, userinfo, userinfo_post,
 };
 use routes::session::{
     auth_callback, authorizations, begin_identity_attach, delete_account, detach_identity,
@@ -164,11 +164,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/providers", get(providers))
         .route("/auth/login", get(login))
         .route("/auth/callback", get(auth_callback))
-        .route("/oauth/authorize", get(authorize))
+        .route("/oauth/authorize", get(authorize).post(authorize_post))
         .route("/oauth/device_authorization", post(device_authorization))
         .route("/oauth/token", post(token))
+        .route("/oauth/introspect", post(introspect))
         .route("/oauth/revoke", post(revoke))
-        .route("/userinfo", get(userinfo))
+        .route("/userinfo", get(userinfo).post(userinfo_post))
         .route("/api/oauth/pending", get(oauth_pending))
         .route("/api/oauth/consent", post(oauth_consent))
         .route("/api/me", get(me).delete(delete_account))
@@ -208,6 +209,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/raw/{connector}/{resource}", get(fetch_raw))
         // Admin API (B1). The action sub-resource is registered before the
         // `{id}` route so `rotate-secret` cannot be read as an id.
+        .route("/api/admin/stats", get(admin::stats))
         .route(
             "/api/admin/clients",
             get(admin::list_clients).post(admin::create_client),

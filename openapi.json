@@ -1014,6 +1014,33 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "prompt",
+            "in": "query",
+            "description": "none, login, consent, or select_account.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "max_age",
+            "in": "query",
+            "description": "Maximum seconds since authentication.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "response_mode",
+            "in": "query",
+            "description": "query (default) or form_post.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1022,6 +1049,41 @@
           },
           "400": {
             "description": "RFC 6749 flat error body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "authorize_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizeQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "302": {
+            "description": "To the client's redirect_uri with a code, or to the consent screen."
+          },
+          "400": {
             "content": {
               "application/json": {
                 "schema": {
@@ -1238,6 +1300,53 @@
         }
       }
     },
+    "/oauth/introspect": {
+      "post": {
+        "tags": [
+          "protocol"
+        ],
+        "operationId": "introspect",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/IntrospectionForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntrospectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/userinfo": {
       "get": {
         "tags": [
@@ -1269,6 +1378,52 @@
             "bearer": []
           }
         ]
+      },
+      "post": {
+        "tags": [
+          "protocol"
+        ],
+        "summary": "OIDC Core §5.3.1: the UserInfo Endpoint MUST accept GET and POST. On POST\nthe token may arrive as a form parameter (RFC 6750 §2.2), but not in\naddition to an Authorization header (RFC 6750 §2).",
+        "operationId": "userinfo_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/UserInfoForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorBody"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/oauth/revoke": {
@@ -1613,6 +1768,57 @@
         "security": [
           {
             "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/admin/stats": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "operationId": "stats",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminStatsView"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
           }
         ]
       }
@@ -2869,6 +3075,37 @@
           }
         }
       },
+      "AdminStatsView": {
+        "type": "object",
+        "required": [
+          "users",
+          "clients",
+          "active_bindings",
+          "audit_records"
+        ],
+        "properties": {
+          "active_bindings": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "audit_records": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "clients": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "users": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "AdminUserView": {
         "type": "object",
         "required": [
@@ -2955,6 +3192,77 @@
           "updated_at": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "AuthorizeQuery": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_challenge": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code_challenge_method": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_age": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nonce": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redirect_uri": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -3382,6 +3690,103 @@
           "issuer": {
             "type": "string",
             "description": "The IdP issuer. Shown instead of the subject, which never leaves the server."
+          }
+        }
+      },
+      "IntrospectionForm": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "IntrospectionResponse": {
+        "type": "object",
+        "description": "RFC 7662 introspection response. Inactive tokens expose only `active`.",
+        "required": [
+          "active"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "aud": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exp": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/i64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "iat": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/i64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "iss": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "jti": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sub": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token_type": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4016,6 +4421,12 @@
               "string",
               "null"
             ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4133,6 +4544,17 @@
           },
           "sub": {
             "type": "string"
+          }
+        }
+      },
+      "UserInfoForm": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

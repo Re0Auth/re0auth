@@ -108,10 +108,13 @@ GET    /api/auth/providers
 GET    /auth/login
 GET    /auth/callback
 GET    /oauth/authorize
+POST   /oauth/authorize
 POST   /oauth/device_authorization
 POST   /oauth/token
+POST   /oauth/introspect
 POST   /oauth/revoke
 GET    /userinfo
+POST   /userinfo
 GET    /api/oauth/pending
 POST   /api/oauth/consent
 GET    /api/me
@@ -135,6 +138,7 @@ POST   /device/approve
 POST   /device/deny
 GET    /api/v1/upstreams/{connector}/{resource}
 GET    /api/v1/raw/{connector}/{resource}
+GET    /api/admin/stats
 GET    /api/admin/clients
 POST   /api/admin/clients
 GET    /api/admin/clients/{id}
