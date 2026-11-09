@@ -772,7 +772,7 @@ async fn callback_rejects_provider_errors_and_missing_parameters() {
     let (status, _, location) = get_with_cookie(
         &app,
         "/auth/callback?code=abc&state=unknown",
-        "re0auth_login=unknown",
+        "__Host-re0auth_login=unknown",
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -856,6 +856,9 @@ async fn device_start_and_qr_reject_missing_or_unknown_codes() {
     }
 
     // A syntactically wrong code is rejected without revealing whether it exists.
+    // Fresh app: the empty-code checks above already spent part of the shared
+    // attempt budget, and this loop wants to observe the lookup refusal itself.
+    let app = build_app(1024 * 1024).await;
     for code in [
         "ZZZZ-ZZZZ",
         "1234",

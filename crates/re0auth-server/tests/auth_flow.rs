@@ -1548,3 +1548,26 @@ async fn a_banned_user_cannot_approve_a_pending_device_code() {
     .await;
     assert_eq!(approve.status(), StatusCode::FORBIDDEN);
 }
+
+/// The QR endpoint shares the user-code attempt budget; otherwise it is a free
+/// oracle for whether a guessed code is live.
+#[tokio::test]
+async fn device_qr_shares_the_user_code_attempt_budget() {
+    let app = setup().await;
+    for _ in 0..5 {
+        let bad = get_request(
+            &app,
+            &format!("/device/qr.svg?{}", form(&[("user_code", "ZZZZ-ZZZZ")])),
+            None,
+        )
+        .await;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    }
+    let limited = get_request(
+        &app,
+        &format!("/device/qr.svg?{}", form(&[("user_code", "ZZZZ-ZZZZ")])),
+        None,
+    )
+    .await;
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+}

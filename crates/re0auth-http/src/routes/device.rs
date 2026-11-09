@@ -125,16 +125,47 @@ pub(crate) async fn device_start(
 )]
 pub(crate) async fn device_qr(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Query(query): Query<DevicePageQuery>,
 ) -> Result<Response, HtmlFailure> {
+    // Same budget as the verification page: rendering the QR is a user_code
+    // lookup, so it must not be a free oracle for whether a code is live.
+    let client_ip = state.client_address(addr, &headers);
+    if !state.auth.device_attempt_allowed(&client_ip) {
+        return Ok(auth_error_html(AuthError::RateLimited).into_response());
+    }
     let Some(user_code) = query.user_code else {
         return Ok(device_error_page(copy::MISSING_USER_CODE));
     };
-    state
+    match state
         .auth
-        .device_info(&user_code)
+        .device_code_attempt_locked(&client_ip, &user_code)
         .await
-        .map_err(auth_error_html)?;
+    {
+        Ok(true) => return Ok(auth_error_html(AuthError::RateLimited).into_response()),
+        Ok(false) => {}
+        Err(error) => return Ok(auth_error_html(error).into_response()),
+    }
+    if let Err(error) = state.auth.device_info(&user_code).await {
+        if let Err(record_error) = state
+            .auth
+            .record_device_code_miss(&client_ip, &user_code)
+            .await
+        {
+            return Ok(auth_error_html(record_error).into_response());
+        }
+        state.auth.record_device_failure(&client_ip);
+        return Ok(auth_error_html(error).into_response());
+    }
+    if let Err(error) = state
+        .auth
+        .clear_device_code_attempts(&client_ip, &user_code)
+        .await
+    {
+        return Ok(auth_error_html(error).into_response());
+    }
+    state.auth.clear_device_attempts(&client_ip);
     let uri = state.auth.device_verification_uri(&user_code);
     let svg = qr_svg(&uri).map_err(|_| auth_error_html(AuthError::Internal))?;
     let mut response = ([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response();
