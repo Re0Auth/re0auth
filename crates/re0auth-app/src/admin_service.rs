@@ -654,7 +654,18 @@ impl AdminService {
                     .invalidate(&re0auth_api::cache::binding_prefix(&id))
                     .await;
                 if let Some(bindings) = self.bindings.as_ref() {
-                    bindings.notify_upstreams(pending).await;
+                    let expected = pending.len();
+                    let acknowledged = bindings.notify_upstreams(pending).await;
+                    if acknowledged < expected {
+                        // The local row is already gone, so this is the only
+                        // record that the upstream may still hold a credential.
+                        tracing::warn!(
+                            binding = %id.0,
+                            acknowledged,
+                            expected,
+                            "upstream revocation was not acknowledged"
+                        );
+                    }
                 }
                 Ok(())
             }

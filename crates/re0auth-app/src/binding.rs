@@ -518,7 +518,20 @@ impl BindingService {
                     revoked += 1;
                 }
                 Err(RepoError::NotFound) => {}
-                Err(error) => return Err(AuthError::Repo(error)),
+                Err(error) => {
+                    // One local failure must not lose the rest of the batch;
+                    // the caller gets this entry in `failed`.
+                    tracing::warn!(
+                        binding = %binding.id.0,
+                        error = %error,
+                        "cascade revoke failed locally"
+                    );
+                    failed.push(FailedRevocation {
+                        id: binding.id.0.to_string(),
+                        upstream: binding.upstream_id.clone(),
+                        reason: "local_storage_error",
+                    });
+                }
             }
         }
         Ok(BindingRevocationSummary { revoked, failed })
