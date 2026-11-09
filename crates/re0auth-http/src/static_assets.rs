@@ -112,12 +112,11 @@ fn asset_response(path: &str, file: rust_embed::EmbeddedFile, head: bool) -> Res
         builder = builder
             .header(header::X_FRAME_OPTIONS, "DENY")
             .header(header::REFERRER_POLICY, "no-referrer")
-            // The shell is the one HTML document the SPA ships. A CSP here
-            // bounds what a future injection could load or execute.
-            .header(
-                header::CONTENT_SECURITY_POLICY,
-                "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'self'",
-            );
+            // SvelteKit emits a meta CSP carrying the per-build inline-script
+            // hash. A second full policy here would intersect with it and block
+            // that script, so the header only adds the directive meta cannot
+            // express.
+            .header(header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'");
     }
 
     builder
@@ -228,8 +227,21 @@ mod s19_tests {
             .expect("the shell must carry a CSP")
             .to_str()
             .expect("ascii");
-        assert!(csp.contains("default-src 'self'"), "{csp}");
         assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+        assert!(
+            !csp.contains("script-src"),
+            "the header must not override the build-specific meta policy: {csp}"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let html = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(html.contains("http-equiv=\"content-security-policy\""));
+        assert!(
+            html.contains("script-src"),
+            "the meta policy is the one with the hash"
+        );
     }
 }
 
