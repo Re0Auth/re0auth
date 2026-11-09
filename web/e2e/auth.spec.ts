@@ -353,6 +353,9 @@ test('device entry reaches ticket approval and token exchange', async ({ browser
 		user_code: string;
 	};
 	const context = await browser.newContext();
+	// The approval page is server-rendered and honours Accept-Language; pin the
+	// locale so assertions do not depend on the runner's browser language.
+	await context.addCookies([{ name: 're0auth_lang', value: 'zh-CN', url: APP }]);
 	const page = await context.newPage();
 	await page.goto(`/device?user_code=${encodeURIComponent(device.user_code)}`);
 	await expect(page.getByRole('heading', { name: '批准设备' })).toBeVisible();
