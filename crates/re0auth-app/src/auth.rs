@@ -180,6 +180,25 @@ pub struct FailedRevocation {
     pub reason: &'static str,
 }
 
+const MAX_DEVICE_ATTEMPT_KEYS: usize = 4096;
+
+fn prune_device_attempts(attempts: &mut HashMap<String, Vec<i64>>, now: i64) {
+    let cutoff = now - device::device_attempt_window();
+    attempts.retain(|_, timestamps| {
+        timestamps.retain(|at| *at > cutoff);
+        !timestamps.is_empty()
+    });
+}
+
+fn make_device_attempt_room(attempts: &mut HashMap<String, Vec<i64>>, client_ip: &str) {
+    if !attempts.contains_key(client_ip)
+        && attempts.len() >= MAX_DEVICE_ATTEMPT_KEYS
+        && let Some(oldest) = attempts.keys().next().cloned()
+    {
+        attempts.remove(&oldest);
+    }
+}
+
 fn binding_status_str(status: BindingStatus) -> &'static str {
     match status {
         BindingStatus::Pending => "pending",
@@ -217,6 +236,8 @@ pub struct AuthService {
     random: Arc<dyn Random>,
     issuer: String,
     secure_cookies: bool,
+    /// Bounded: stale keys are pruned on access and the map has a hard cap, so
+    /// a scanner cannot grow it without limit.
     device_attempts: Arc<Mutex<HashMap<String, Vec<i64>>>>,
     /// INV-CACHE-02: swept when a binding is revoked, so the stale path cannot
     /// keep serving a player's data after they unbound.
@@ -344,14 +365,13 @@ impl AuthService {
     #[must_use]
     pub fn device_attempt_allowed(&self, client_ip: &str) -> bool {
         let now = self.clock.now();
-        let cutoff = now - device::device_attempt_window();
         let mut attempts = self
             .device_attempts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let entries = attempts.entry(client_ip.to_string()).or_default();
-        entries.retain(|at| *at > cutoff);
-        entries.len() < device::device_attempt_limit()
+        prune_device_attempts(&mut attempts, now);
+        make_device_attempt_room(&mut attempts, client_ip);
+        attempts.entry(client_ip.to_string()).or_default().len() < device::device_attempt_limit()
     }
 
     pub fn record_device_failure(&self, client_ip: &str) {
@@ -360,6 +380,8 @@ impl AuthService {
             .device_attempts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        prune_device_attempts(&mut attempts, now);
+        make_device_attempt_room(&mut attempts, client_ip);
         let entries = attempts.entry(client_ip.to_string()).or_default();
         if entries.len() < device::device_attempt_limit() {
             entries.push(now);
@@ -371,6 +393,11 @@ impl AuthService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(client_ip);
+    }
+
+    #[must_use]
+    pub fn device_attempt_retry_after_secs(&self) -> u64 {
+        u64::try_from(device::device_attempt_window()).unwrap_or(u64::MAX)
     }
 
     pub async fn device_code_attempt_locked(
@@ -1274,5 +1301,16 @@ mod tests {
         assert!(!csrf_matches("csrf-token", &stored));
         stored.extend_from_slice(&[0u8; 4]);
         assert!(!csrf_matches("csrf-token", &stored));
+    }
+
+    #[test]
+    fn device_attempt_map_has_a_hard_cap() {
+        let mut attempts = HashMap::new();
+        for index in 0..MAX_DEVICE_ATTEMPT_KEYS + 100 {
+            let client = format!("peer-{index}");
+            make_device_attempt_room(&mut attempts, &client);
+            attempts.entry(client).or_insert_with(|| vec![1]);
+        }
+        assert!(attempts.len() <= MAX_DEVICE_ATTEMPT_KEYS);
     }
 }

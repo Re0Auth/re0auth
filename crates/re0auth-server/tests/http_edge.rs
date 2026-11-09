@@ -946,14 +946,41 @@ async fn device_start_locks_out_repeated_failures() {
     let bad = format!("/device/start?{}", form(&[("user_code", "ZZZZ-ZZZZ")]));
 
     let mut last = StatusCode::BAD_REQUEST;
+    let mut last_body = String::new();
+    let mut last_headers = axum::http::HeaderMap::new();
     for _ in 0..6 {
-        let (status, _, _) = get(&app, &bad).await;
-        last = status;
+        let response = app
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&bad)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        last = response.status();
+        last_headers = response.headers().clone();
+        last_body = String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body")
+                .to_vec(),
+        )
+        .expect("utf8");
     }
     assert_eq!(
         last,
         StatusCode::TOO_MANY_REQUESTS,
-        "the sixth failed attempt must be rate limited"
+        "the sixth failed attempt must be rate limited: {last_body}"
+    );
+    assert_eq!(
+        last_headers
+            .get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("900"),
+        "the lockout must tell the client when to retry"
     );
 
     // The lockout is scoped to the peer, so a correct code from the same peer is
@@ -976,6 +1003,21 @@ async fn device_start_locks_out_repeated_failures() {
     )
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "lockout is per peer");
+}
+
+#[tokio::test]
+async fn device_lockout_is_counted_by_metrics() {
+    let app = app_with_metrics().await;
+    let bad = format!("/device/start?{}", form(&[("user_code", "ZZZZ-ZZZZ")]));
+    for _ in 0..6 {
+        let _ = get(&app, &bad).await;
+    }
+    let (status, body, _) = get(&app, "/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("rate_limit_denied_total{lane=\"device\"}"),
+        "device lockout metric missing: {body}"
+    );
 }
 
 #[tokio::test]

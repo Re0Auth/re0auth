@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Form, Query, State};
-use axum::http::{HeaderMap, header};
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use qrcodegen::{QrCode, QrCodeEcc};
 use re0auth_api::ports::ApprovalDecision;
@@ -15,7 +15,9 @@ use url::form_urlencoded;
 use crate::AppState;
 use crate::cookies::{append_set_cookie, login_intent_cookie};
 use crate::copy;
+use crate::error::{ApiError, Shape};
 use crate::pages::{HtmlFailure, auth_error_html, device_error_page, device_result_page};
+use crate::rate::charge_unauthenticated;
 use crate::request_id;
 
 #[derive(Debug, Deserialize)]
@@ -46,16 +48,18 @@ pub(crate) async fn device_start(
     headers: HeaderMap,
     Query(query): Query<DevicePageQuery>,
 ) -> Response {
+    let client_ip = state.client_address(addr, &headers);
+    // INV-RATE-01: the device page is unauthenticated, so it uses the same
+    // keyed budget as login rather than a second, unbounded counter.
+    if let Err(error) = charge_unauthenticated(&state, &client_ip, Shape::Problem) {
+        return rate_limited_html(error);
+    }
+    if !state.auth.device_attempt_allowed(&client_ip) {
+        return device_limited_html(&state);
+    }
     let Some(user_code) = query.user_code else {
         return device_error_page(copy::t(&copy::current_locale(), "missing_user_code"));
     };
-    // INV-RATE-01: per-code attempt counters are keyed on the derived address,
-    // so an attacker behind a trusted proxy cannot split one identity across
-    // many spoofed hops to widen its guessing budget.
-    let client_ip = state.client_address(addr, &headers);
-    if !state.auth.device_attempt_allowed(&client_ip) {
-        return auth_error_html(AuthError::RateLimited).into_response();
-    }
     match state
         .auth
         .device_code_attempt_locked(&client_ip, &user_code)
@@ -132,8 +136,11 @@ pub(crate) async fn device_qr(
     // Same budget as the verification page: rendering the QR is a user_code
     // lookup, so it must not be a free oracle for whether a code is live.
     let client_ip = state.client_address(addr, &headers);
+    if let Err(error) = charge_unauthenticated(&state, &client_ip, Shape::Problem) {
+        return Ok(rate_limited_html(error));
+    }
     if !state.auth.device_attempt_allowed(&client_ip) {
-        return Ok(auth_error_html(AuthError::RateLimited).into_response());
+        return Ok(device_limited_html(&state));
     }
     let Some(user_code) = query.user_code else {
         return Ok(device_error_page(copy::t(
@@ -181,6 +188,31 @@ pub(crate) async fn device_qr(
         header::HeaderValue::from_static("nosniff"),
     );
     Ok(response)
+}
+
+/// Keeps the shared limiter's hint on the HTML lane too.
+fn rate_limited_html(error: ApiError) -> Response {
+    let retry_after = error.headers.get(header::RETRY_AFTER).cloned();
+    let mut response = auth_error_html(AuthError::RateLimited).into_response();
+    if let Some(value) = retry_after {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    response
+}
+
+/// The bounded per-peer failure lockout, with the same observable contract as
+/// the shared limiter's 429.
+fn device_limited_html(state: &AppState) -> Response {
+    state
+        .metrics
+        .inc("rate_limit_denied_total", &[("lane", "device")]);
+    let mut response = auth_error_html(AuthError::RateLimited).into_response();
+    if let Ok(value) =
+        HeaderValue::from_str(&state.auth.device_attempt_retry_after_secs().to_string())
+    {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    response
 }
 
 pub(crate) fn qr_svg(text: &str) -> Result<String, qrcodegen::DataTooLong> {
