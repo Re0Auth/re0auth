@@ -19,7 +19,7 @@
 //! step stays here.
 
 use axum::http::{HeaderMap, header};
-use headers::authorization::Basic;
+use headers::authorization::{Basic, Bearer};
 use headers::{Authorization, Cookie, HeaderMapExt};
 use percent_encoding::percent_decode_str;
 use re0auth_api::ClientId;
@@ -57,14 +57,10 @@ pub(crate) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let authorization: Authorization<Bearer> = headers.typed_get()?;
+    let token = authorization.0.token();
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 pub(crate) fn parse_client_id(value: Option<&str>) -> Result<ClientId, ApiError> {

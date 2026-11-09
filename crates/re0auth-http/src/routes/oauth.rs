@@ -820,7 +820,7 @@ pub(crate) async fn userinfo(
     )?;
     let token = bearer_token(&headers)
         .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Rfc6749))?;
-    userinfo_with(&state, token).await
+    userinfo_with(&state, &token).await
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -857,7 +857,8 @@ pub(crate) async fn userinfo_post(
         .access_token
         .as_deref()
         .filter(|value| !value.is_empty());
-    let token = match (bearer_token(&headers), body_token) {
+    let header_token = bearer_token(&headers);
+    let token = match (header_token.as_deref(), body_token) {
         (Some(_), Some(_)) => {
             return Err(invalid_request(
                 "use only one bearer token method",

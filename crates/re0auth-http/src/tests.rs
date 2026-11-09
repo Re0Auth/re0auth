@@ -575,7 +575,7 @@ fn csrf_header_rejects_blank_and_non_ascii() {
 }
 
 #[test]
-fn bearer_token_requires_the_exact_scheme() {
+fn bearer_token_accepts_a_case_insensitive_scheme() {
     let mut headers = HeaderMap::new();
     assert_eq!(bearer_token(&headers), None);
     headers.insert(header::AUTHORIZATION, "Basic abc".parse().unwrap());
@@ -583,9 +583,11 @@ fn bearer_token_requires_the_exact_scheme() {
     headers.insert(header::AUTHORIZATION, "Bearer ".parse().unwrap());
     assert_eq!(bearer_token(&headers), None, "empty token is not a token");
     headers.insert(header::AUTHORIZATION, "bearer abc".parse().unwrap());
-    assert_eq!(bearer_token(&headers), None, "scheme is case-sensitive");
+    assert_eq!(bearer_token(&headers).as_deref(), Some("abc"));
+    headers.insert(header::AUTHORIZATION, "Bearer   abc".parse().unwrap());
+    assert_eq!(bearer_token(&headers).as_deref(), Some("abc"));
     headers.insert(header::AUTHORIZATION, "Bearer abc".parse().unwrap());
-    assert_eq!(bearer_token(&headers), Some("abc"));
+    assert_eq!(bearer_token(&headers).as_deref(), Some("abc"));
 }
 
 #[test]

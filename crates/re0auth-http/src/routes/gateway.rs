@@ -114,7 +114,7 @@ async fn fetch(
         .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Problem))?;
     let (user_id, granted, client_id) = state
         .oauth
-        .verify_gateway_token(token)
+        .verify_gateway_token(&token)
         .await
         .map_err(|error| oauth_error(error, Shape::Problem))?;
     // Authenticated lane, keyed by the client that owns the token. Keyed by IP
