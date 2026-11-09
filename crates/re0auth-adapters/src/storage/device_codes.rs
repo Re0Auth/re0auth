@@ -187,6 +187,28 @@ impl DeviceCodeRepo for SqliteStore {
         now: Unix,
         client_id: ClientId,
     ) -> RepoResult<DevicePoll> {
+        // Common case: a pending code polled after its advertised interval.
+        // One atomic statement covers the whole decision plus the counter bump,
+        // so the transaction below is only entered when the outcome depends on
+        // reading the row or mutating it differently.
+        let advanced = sqlx::query(
+            "UPDATE device_codes SET last_polled_at = ?, poll_count = poll_count + 1 \
+             WHERE device_code_hash = ? AND client_id = ? AND status = 'pending' \
+             AND expires_at > ? \
+             AND (last_polled_at IS NULL OR ? >= last_polled_at + interval_secs)",
+        )
+        .bind(now)
+        .bind(device_code_hash)
+        .bind(client_id.0.to_string())
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        if advanced.rows_affected() == 1 {
+            return Ok(DevicePoll::Pending);
+        }
+
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
