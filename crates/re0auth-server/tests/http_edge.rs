@@ -139,6 +139,19 @@ async fn build_app(inbound_body: usize) -> App {
     build(store, inbound_body).await
 }
 
+async fn app_with_metrics() -> App {
+    let store = SqliteStore::connect("sqlite::memory:")
+        .await
+        .expect("SQLite store");
+    build_with(
+        store,
+        1024 * 1024,
+        |_| Arc::new(re0auth_api::rate::Unlimited),
+        true,
+    )
+    .await
+}
+
 /// Builds a fresh app over an existing store. The in-memory per-IP buckets live
 /// in `AuthService`, so this models a restart: the database survives, the
 /// in-memory counters do not. That difference is what the persistent per-code
@@ -154,7 +167,7 @@ async fn build_with_limiter(
     inbound_body: usize,
     rate: Arc<dyn re0auth_api::rate::RateLimiter>,
 ) -> App {
-    build_with(store, inbound_body, move |_| Arc::clone(&rate)).await
+    build_with(store, inbound_body, move |_| Arc::clone(&rate), false).await
 }
 
 fn strict_limiter(clock: &TestClock, burst: u32) -> Arc<dyn re0auth_api::rate::RateLimiter> {
@@ -186,16 +199,24 @@ async fn app_with_strict_limits(burst: u32) -> App {
     let store = SqliteStore::connect("sqlite::memory:")
         .await
         .expect("SQLite store");
-    build_with(store, 1024 * 1024, move |clock| {
-        strict_limiter(clock, burst)
-    })
+    build_with(
+        store,
+        1024 * 1024,
+        move |clock| strict_limiter(clock, burst),
+        true,
+    )
     .await
 }
 
 /// The limiter is built from the app's own clock, which only exists inside this
 /// function. Building it before that point would give the test a limiter on a
 /// different clock, and the time-travel tests would pass for the wrong reason.
-async fn build_with<F>(store: SqliteStore, inbound_body: usize, make_rate: F) -> App
+async fn build_with<F>(
+    store: SqliteStore,
+    inbound_body: usize,
+    make_rate: F,
+    metrics_enabled: bool,
+) -> App
 where
     F: Fn(&TestClock) -> Arc<dyn re0auth_api::rate::RateLimiter>,
 {
@@ -292,10 +313,11 @@ where
 
     let state = AppState::new(oauth, auth)
         .with_rate_limiter(make_rate(&clock))
-        .with_inbound_body_bytes(inbound_body);
+        .with_inbound_body_bytes(inbound_body)
+        .with_metrics(metrics_enabled);
 
     App {
-        router: router(state).layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 7], 4444)))),
+        router: router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4444)))),
         store,
         clock,
         client_id,
@@ -2794,4 +2816,51 @@ async fn server_page_honours_query_locale() {
     let body = String::from_utf8(body.to_vec()).expect("utf8");
     assert!(body.contains(r#"<html lang="en">"#), "{body}");
     assert!(body.contains("Missing device code"), "{body}");
+}
+
+#[tokio::test]
+async fn gateway_requests_are_counted_by_the_metrics_endpoint() {
+    let app = app_with_metrics().await;
+    let (_, _, _) = send(
+        &app,
+        Request::builder()
+            .uri("/api/v1/upstreams/probe/scores")
+            .body(Body::empty())
+            .expect("request"),
+    )
+    .await;
+    let (status, body, _) = get(&app, "/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("gateway_requests_total"),
+        "gateway metric missing: {body}"
+    );
+    assert!(
+        body.contains("connector=\"probe\"") && body.contains("resource=\"scores\""),
+        "gateway labels missing: {body}"
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_denials_are_counted_by_the_metrics_endpoint() {
+    let app = app_with_strict_limits(1).await;
+    let body = form(&[
+        ("client_id", &app.client_id.0.to_string()),
+        ("scope", GOOD_SCOPE),
+    ]);
+    let (status, _, _) = post(&app, "/oauth/device_authorization", body.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = post(&app, "/oauth/device_authorization", body).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    let (status, body, _) = get(&app, "/metrics").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("rate_limit_denied_total"),
+        "rate-limit metric missing: {body}"
+    );
+    assert!(
+        body.contains("lane=\"unauthenticated\""),
+        "rate-limit lane label missing: {body}"
+    );
 }
