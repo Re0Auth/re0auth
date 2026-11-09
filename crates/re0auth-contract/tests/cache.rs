@@ -13,11 +13,7 @@ use re0auth_api::{BindingId, Clock, Unix};
 use re0auth_contract::memory_cache::{ClockedCache, MemoryCache};
 
 fn response(body: &[u8]) -> CachedResponse {
-    CachedResponse {
-        content_type: "application/json".to_string(),
-        body: body.to_vec(),
-        stale: false,
-    }
+    CachedResponse::new("application/json", body.to_vec())
 }
 
 struct TestClock(Arc<AtomicI64>);

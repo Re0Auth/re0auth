@@ -484,11 +484,7 @@ async fn rebinding_invalidates_cached_responses() {
     cache
         .put(
             &cached_key,
-            &CachedResponse {
-                content_type: "application/json".to_string(),
-                body: br#"{"account":"A"}"#.to_vec(),
-                stale: false,
-            },
+            &CachedResponse::new("application/json", br#"{"account":"A"}"#.to_vec()),
             std::time::Duration::from_secs(300),
         )
         .await;
@@ -496,11 +492,7 @@ async fn rebinding_invalidates_cached_responses() {
     cache
         .put(
             &other_key,
-            &CachedResponse {
-                content_type: "application/json".to_string(),
-                body: br#"{"account":"other"}"#.to_vec(),
-                stale: false,
-            },
+            &CachedResponse::new("application/json", br#"{"account":"other"}"#.to_vec()),
             std::time::Duration::from_secs(300),
         )
         .await;

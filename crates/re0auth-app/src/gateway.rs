@@ -496,7 +496,7 @@ impl GatewayService {
         if !request.raw
             && let Some(cached) = self.cache.get(&cache_key).await
         {
-            let snapshot = CachedView::decode(&cached.body)?;
+            let snapshot = CachedView::decode(cached.body())?;
             // A cache hit is still a read of this user's data, so it belongs in
             // the access ledger; `latency_ms = 0` marks that no upstream call
             // was made.
@@ -729,11 +729,7 @@ impl GatewayService {
         self.cache
             .put(
                 cache_key,
-                &re0auth_api::cache::CachedResponse {
-                    content_type: "application/json".to_string(),
-                    body: encoded,
-                    stale: false,
-                },
+                &re0auth_api::cache::CachedResponse::new("application/json", encoded),
                 self.cache_ttl,
             )
             .await;

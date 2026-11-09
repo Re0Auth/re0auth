@@ -2236,8 +2236,15 @@ fn the_value_layers_stay_free_of_shared_ownership() {
     //
     // `re0auth-api` is the contract layer. Its ports necessarily name
     // `Arc<dyn _>` for callers to share, so those few files are exempt; the
-    // rest of it must stay value-shaped too.
-    let allowed: &[&str] = &["connector.rs", "secret.rs", "idp.rs", "ports.rs"];
+    // rest of it must stay value-shaped too. `cache.rs` shares the response
+    // body between cache hits, which is the same shared-handle pattern.
+    let allowed: &[&str] = &[
+        "cache.rs",
+        "connector.rs",
+        "secret.rs",
+        "idp.rs",
+        "ports.rs",
+    ];
     for crate_dir in ["crates/re0auth-domain/src", "crates/re0auth-api/src"] {
         let mut files = Vec::new();
         rust_files(&root().join(crate_dir), &mut files);

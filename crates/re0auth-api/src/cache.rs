@@ -32,13 +32,65 @@ use crate::BindingId;
 /// mislabel a connector that returns something else.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CachedResponse {
-    pub content_type: String,
-    pub body: Vec<u8>,
+    /// Shared so a cache hit clones two words instead of the whole body.
+    /// The payload never changes after construction; `stale` sits outside so
+    /// marking an entry does not force a copy.
+    data: std::sync::Arc<CachedData>,
     /// Past its fresh TTL but still within the stale window.
     ///
     /// Only the gateway's outage path may serve these; the normal path must
     /// treat them as a miss.
-    pub stale: bool,
+    stale: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct CachedData {
+    content_type: String,
+    body: Vec<u8>,
+}
+
+impl CachedResponse {
+    #[must_use]
+    pub fn new(content_type: impl Into<String>, body: Vec<u8>) -> Self {
+        Self {
+            data: std::sync::Arc::new(CachedData {
+                content_type: content_type.into(),
+                body,
+            }),
+            stale: false,
+        }
+    }
+
+    #[must_use]
+    pub fn content_type(&self) -> &str {
+        &self.data.content_type
+    }
+
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        &self.data.body
+    }
+
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.stale
+    }
+
+    #[must_use]
+    pub fn as_fresh(&self) -> Self {
+        Self {
+            data: std::sync::Arc::clone(&self.data),
+            stale: false,
+        }
+    }
+
+    #[must_use]
+    pub fn as_stale(&self) -> Self {
+        Self {
+            data: std::sync::Arc::clone(&self.data),
+            stale: true,
+        }
+    }
 }
 
 /// Key builders. Nothing else may construct a cache key.
@@ -107,6 +159,17 @@ impl Cache for NoCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloning_a_response_shares_the_payload() {
+        let original = CachedResponse::new("application/json", vec![1, 2, 3]);
+        let copy = original.clone();
+        assert_eq!(copy.body(), original.body());
+        assert!(
+            std::ptr::eq(copy.body().as_ptr(), original.body().as_ptr()),
+            "a cache hit must not copy the body"
+        );
+    }
 
     #[test]
     fn a_binding_prefix_never_matches_another_binding() {

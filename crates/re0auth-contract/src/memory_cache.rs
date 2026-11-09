@@ -23,8 +23,7 @@ use re0auth_api::cache::{Cache, CachedResponse};
 pub const STALE_GRACE: Duration = Duration::from_secs(1_800);
 
 struct Entry {
-    content_type: String,
-    value: Vec<u8>,
+    response: CachedResponse,
     /// Absolute expiry in Unix seconds, from the injected clock.
     fresh_until: i64,
     stale_until: i64,
@@ -127,11 +126,7 @@ impl Cache for ClockedCache {
         entries
             .get(key)
             .filter(|entry| now < entry.fresh_until)
-            .map(|entry| CachedResponse {
-                content_type: entry.content_type.clone(),
-                body: entry.value.clone(),
-                stale: false,
-            })
+            .map(|entry| entry.response.as_fresh())
     }
 
     async fn get_any(&self, key: &str) -> Option<CachedResponse> {
@@ -146,10 +141,10 @@ impl Cache for ClockedCache {
         if now >= entry.stale_until {
             return None;
         }
-        Some(CachedResponse {
-            content_type: entry.content_type.clone(),
-            body: entry.value.clone(),
-            stale: now >= entry.fresh_until,
+        Some(if now >= entry.fresh_until {
+            entry.response.as_stale()
+        } else {
+            entry.response.as_fresh()
         })
     }
 
@@ -164,8 +159,7 @@ impl Cache for ClockedCache {
             .insert(
                 key.to_string(),
                 Entry {
-                    content_type: value.content_type.clone(),
-                    value: value.body.clone(),
+                    response: value.as_fresh(),
                     fresh_until,
                     stale_until: MemoryCache::stale_until(fresh_until),
                 },

@@ -859,11 +859,7 @@ async fn primed_cache(
     cache
         .put(
             &re0auth_api::cache::key(&app.binding.id, "phigros", "scores"),
-            &re0auth_api::cache::CachedResponse {
-                content_type: "application/json".to_string(),
-                body,
-                stale: false,
-            },
+            &re0auth_api::cache::CachedResponse::new("application/json", body),
             std::time::Duration::from_secs(300),
         )
         .await;

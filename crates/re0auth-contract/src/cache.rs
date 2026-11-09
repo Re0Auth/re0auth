@@ -21,11 +21,7 @@ use re0auth_api::BindingId;
 use re0auth_api::cache::{Cache, CachedResponse, binding_prefix, key};
 
 fn response(body: &[u8]) -> CachedResponse {
-    CachedResponse {
-        content_type: "application/json".to_string(),
-        body: body.to_vec(),
-        stale: false,
-    }
+    CachedResponse::new("application/json", body.to_vec())
 }
 
 /// Runs every cache assertion against `cache`.
@@ -51,16 +47,16 @@ pub async fn cache_contract_suite(cache: &dyn Cache, advance: impl Fn(i64)) {
         .await;
     let fresh = cache.get(&entry_key).await.expect("a fresh entry must hit");
     assert_eq!(
-        fresh.body.as_slice(),
+        fresh.body(),
         b"payload",
         "the body must be returned verbatim"
     );
     assert_eq!(
-        fresh.content_type.as_str(),
+        fresh.content_type(),
         "application/json",
         "the media type must survive the round trip"
     );
-    assert!(!fresh.stale, "a fresh entry must not be flagged stale");
+    assert!(!fresh.is_stale(), "a fresh entry must not be flagged stale");
 
     // --- freshness follows the injected clock --------------------------
     advance(61);
@@ -74,8 +70,11 @@ pub async fn cache_contract_suite(cache: &dyn Cache, advance: impl Fn(i64)) {
         .get_any(&entry_key)
         .await
         .expect("a stale entry must remain readable during the grace window");
-    assert!(hit.stale, "the entry is past its TTL and must be flagged");
-    assert_eq!(hit.body, b"payload");
+    assert!(
+        hit.is_stale(),
+        "the entry is past its TTL and must be flagged"
+    );
+    assert_eq!(hit.body(), b"payload");
 
     // --- past the grace window it is gone entirely ---------------------
     advance(1_801);
@@ -117,7 +116,7 @@ pub async fn cache_contract_suite(cache: &dyn Cache, advance: impl Fn(i64)) {
         "the revoked binding's entry must be gone"
     );
     assert_eq!(
-        cache.get(&survivor).await.map(|hit| hit.body.clone()),
+        cache.get(&survivor).await.map(|hit| hit.body().to_vec()),
         Some(b"keep".to_vec()),
         "another binding's entries must survive the sweep"
     );

@@ -145,11 +145,10 @@ async fn warm(cache: &ClockedCache, binding: &Binding) {
         cache
             .put(
                 &key(&binding.id, "phigros", resource),
-                &CachedResponse {
-                    content_type: "application/json".to_string(),
-                    body: format!(r#"{{"resource":"{resource}"}}"#).into_bytes(),
-                    stale: false,
-                },
+                &CachedResponse::new(
+                    "application/json",
+                    format!(r#"{{"resource":"{resource}"}}"#).into_bytes(),
+                ),
                 Duration::from_secs(300),
             )
             .await;
@@ -197,11 +196,7 @@ async fn revoking_leaves_other_bindings_cached() {
     f.cache
         .put(
             &other_key,
-            &CachedResponse {
-                content_type: "application/json".to_string(),
-                body: b"someone-else".to_vec(),
-                stale: false,
-            },
+            &CachedResponse::new("application/json", b"someone-else".to_vec()),
             Duration::from_secs(300),
         )
         .await;

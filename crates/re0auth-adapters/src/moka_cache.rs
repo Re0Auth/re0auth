@@ -55,7 +55,7 @@ impl MokaCache {
             // Weight by body size so one 4 MiB response cannot silently occupy
             // the space of thousands of small ones.
             .weigher(|key: &String, entry: &Entry| {
-                let body = u32::try_from(entry.response.body.len()).unwrap_or(u32::MAX);
+                let body = u32::try_from(entry.response.body().len()).unwrap_or(u32::MAX);
                 let key_len = u32::try_from(key.len()).unwrap_or(u32::MAX);
                 body.saturating_add(key_len).saturating_add(1)
             })
@@ -85,11 +85,7 @@ impl Cache for MokaCache {
     async fn get(&self, key: &str) -> Option<CachedResponse> {
         let now = self.clock.now();
         let entry = self.entries.get(key).await?;
-        (now < entry.fresh_until).then_some(CachedResponse {
-            content_type: entry.response.content_type.clone(),
-            body: entry.response.body.clone(),
-            stale: false,
-        })
+        (now < entry.fresh_until).then(|| entry.response.as_fresh())
     }
 
     async fn get_any(&self, key: &str) -> Option<CachedResponse> {
@@ -98,10 +94,10 @@ impl Cache for MokaCache {
         if now >= entry.stale_until {
             return None;
         }
-        Some(CachedResponse {
-            content_type: entry.response.content_type.clone(),
-            body: entry.response.body.clone(),
-            stale: now >= entry.fresh_until,
+        Some(if now >= entry.fresh_until {
+            entry.response.as_stale()
+        } else {
+            entry.response.as_fresh()
         })
     }
 
@@ -112,11 +108,7 @@ impl Cache for MokaCache {
             .insert(
                 key.to_string(),
                 Entry {
-                    response: CachedResponse {
-                        content_type: value.content_type.clone(),
-                        body: value.body.clone(),
-                        stale: false,
-                    },
+                    response: value.as_fresh(),
                     fresh_until,
                     stale_until: Self::stale_until(fresh_until),
                 },
@@ -178,11 +170,7 @@ mod tests {
         let (_clock, cache) = setup();
         let revoked = re0auth_api::BindingId::new();
         let other = re0auth_api::BindingId::new();
-        let value = CachedResponse {
-            content_type: "application/json".to_string(),
-            body: b"x".to_vec(),
-            stale: false,
-        };
+        let value = CachedResponse::new("application/json", b"x".to_vec());
         for resource in ["scores", "profile"] {
             cache
                 .put(
