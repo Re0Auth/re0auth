@@ -857,8 +857,14 @@ pub trait AuthCodeRepo: Send + Sync {
     async fn insert(&self, code: &AuthCode, fact: &SecurityFact) -> RepoResult<()>;
     /// Atomically validates the code and marks it consumed (INV-AUTH-01).
     async fn consume(&self, req: ConsumeAuthCode<'_>, now: Unix) -> RepoResult<AuthGrant>;
-    /// 已消费码换出的家族，重放时据此回退
-    async fn family_of(&self, code_hash: &[u8]) -> RepoResult<Option<FamilyId>>;
+    /// 已消费码换出的家族及其签发 client，重放时据此回退。
+    ///
+    /// The client is returned so a replay from another client cannot revoke a
+    /// family it does not own (and the audit fact names the right client).
+    async fn family_and_client_of(
+        &self,
+        code_hash: &[u8],
+    ) -> RepoResult<Option<(FamilyId, ClientId)>>;
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64>;
 }
 

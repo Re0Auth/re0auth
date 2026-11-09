@@ -903,21 +903,26 @@ impl OAuthService {
         client_id: ClientId,
         now: Unix,
     ) -> Result<(), OAuthError> {
-        let Some(family_id) = self
+        let Some((family_id, owner)) = self
             .storage
             .auth_codes()
-            .family_of(code_hash)
+            .family_and_client_of(code_hash)
             .await
             .map_err(map_repo)?
         else {
             return Ok(());
         };
+        // A client that did not receive this code must not be able to revoke
+        // the family it issued; the response is the same either way.
+        if owner != client_id {
+            return Ok(());
+        }
         let fact = SecurityFact::new(
             AuditAction::AuthCodeReuseDetected,
             now,
             format!("family:{}", family_id.0),
         )
-        .client(client_id);
+        .client(owner);
         self.storage
             .refresh_tokens()
             .revoke_family(&family_id, &fact, now)

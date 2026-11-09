@@ -617,8 +617,11 @@ impl AuthCodeRepo for SqliteStore {
         }
     }
 
-    async fn family_of(&self, code_hash: &[u8]) -> RepoResult<Option<FamilyId>> {
-        let row = sqlx::query("SELECT family_id FROM auth_codes WHERE code_hash = ?")
+    async fn family_and_client_of(
+        &self,
+        code_hash: &[u8],
+    ) -> RepoResult<Option<(FamilyId, ClientId)>> {
+        let row = sqlx::query("SELECT family_id, client_id FROM auth_codes WHERE code_hash = ?")
             .bind(code_hash)
             .fetch_optional(&self.pool)
             .await
@@ -627,8 +630,13 @@ impl AuthCodeRepo for SqliteStore {
             return Ok(None);
         };
         let raw: Option<String> = row.try_get("family_id").map_err(db_error)?;
-        raw.map(|value| parse_uuid(&value).map(FamilyId))
-            .transpose()
+        let Some(family) = raw else {
+            return Ok(None);
+        };
+        let client = ClientId(parse_uuid(
+            &row.try_get::<String, _>("client_id").map_err(db_error)?,
+        )?);
+        Ok(Some((FamilyId(parse_uuid(&family)?), client)))
     }
 
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {

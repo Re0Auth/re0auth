@@ -1486,3 +1486,24 @@ async fn replaying_a_device_code_revokes_the_family_it_issued() {
     assert_eq!(refreshed.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(refreshed).await["error"], "invalid_grant");
 }
+
+/// A client that never received the code cannot revoke the family it issued.
+#[tokio::test]
+async fn a_foreign_client_cannot_revoke_another_clients_family_by_replaying_its_code() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-foreign-replay").await;
+    let first = exchange_code(&app, &code).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let tokens = body_json(first).await;
+    let refresh = tokens["refresh_token"].as_str().expect("refresh token");
+
+    let other = insert_second_client(&app).await;
+    let replay = exchange_code_with(&app, &other, &code, VERIFIER).await;
+    assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(replay).await["error"], "invalid_grant");
+
+    // The replay came from a client that never owned the code: the original
+    // family must still be alive.
+    let refreshed = refresh_tokens(&app, refresh).await;
+    assert_eq!(refreshed.status(), StatusCode::OK);
+}

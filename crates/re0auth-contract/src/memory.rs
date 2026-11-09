@@ -395,12 +395,15 @@ impl AuthCodeRepo for MemoryStore {
         })
     }
 
-    async fn family_of(&self, code_hash: &[u8]) -> RepoResult<Option<FamilyId>> {
+    async fn family_and_client_of(
+        &self,
+        code_hash: &[u8],
+    ) -> RepoResult<Option<(FamilyId, ClientId)>> {
         let inner = self.lock();
         Ok(inner
             .auth_codes
             .get(code_hash)
-            .and_then(|code| code.family_id))
+            .and_then(|code| code.family_id.map(|family| (family, code.client_id))))
     }
 
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {
