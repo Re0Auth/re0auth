@@ -67,6 +67,9 @@
 | `server_error` | 500 | 会话/管理 API 的内部错误 |
 | `last_identity` | 409 | 解绑最后一个登录方式；账号会因此永久无法登录，改用注销账号 |
 | `bindings_not_revocable` | 409 | 注销账号时上游拒绝确认撤销，先重试再注销 |
+| `identity_already_bound` | 409 | 挂载的登录方式已属于另一个账号；不合并，也不透露是哪个账号 |
+| `login_requires_attach` | 409 | 已登录状态下用陌生凭证登录；改从账户页挂载 |
+| `login_requires_logout` | 409 | 已登录状态下换用另一个账号的凭证登录；先登出 |
 
 401 与 403 分开：401 表示 token 无效/过期（密码学上无法验证），403 表示 token 有效但权限不足。**混用会导致"重授权 → 仍然 403 → 再重授权"的死循环。**
 
@@ -120,6 +123,8 @@ GET    /api/me/bindings/upstreams
 POST   /api/me/bindings/begin
 GET    /api/me/bindings/callback
 DELETE /api/me/bindings/{id}
+GET    /api/me/identities
+POST   /api/me/identities/begin
 DELETE /api/me/identities/{id}
 DELETE /api/me/authorizations/{client_id}
 POST   /api/logout

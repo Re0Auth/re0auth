@@ -51,6 +51,8 @@ id_type!(BindingId);
 id_type!(SessionId);
 id_type!(FamilyId);
 id_type!(IdentityId);
+
+pub mod login;
 id_type!(AuthCodeId);
 id_type!(RefreshTokenId);
 id_type!(DeviceCodeId);

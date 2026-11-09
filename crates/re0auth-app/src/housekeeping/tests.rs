@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use re0auth_api::ports::{LoginTransaction, Session, Storage, User, UserRole};
+use re0auth_api::ports::{LoginPurpose, LoginTransaction, Session, Storage, User, UserRole};
 use re0auth_api::{Clock, SessionId, Unix, UserId};
 use re0auth_contract::memory::MemoryStore;
 
@@ -138,6 +138,8 @@ async fn each_table_keeps_its_own_window() {
             pkce_verifier: "verifier".to_string(),
             return_to: "/".to_string(),
             provider: "test".to_string(),
+            purpose: LoginPurpose::Login,
+            initiator: None,
             created_at: 1_000,
             expires_at: expired_at,
             consumed_at: None,

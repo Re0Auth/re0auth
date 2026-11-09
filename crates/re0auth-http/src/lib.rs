@@ -38,8 +38,8 @@ use routes::oauth::{
     userinfo,
 };
 use routes::session::{
-    auth_callback, authorizations, delete_account, detach_identity, login, logout, logout_all, me,
-    providers, revoke_authorization,
+    auth_callback, authorizations, begin_identity_attach, delete_account, detach_identity,
+    identities, login, logout, logout_all, me, providers, revoke_authorization,
 };
 use tower_http::timeout::TimeoutLayer;
 
@@ -173,6 +173,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/oauth/consent", post(oauth_consent))
         .route("/api/me", get(me).delete(delete_account))
         .route("/api/me/authorizations", get(authorizations))
+        // Static before `{id}`: registration order decides, and `begin` would be
+        // read as an identity id otherwise.
+        .route("/api/me/identities", get(identities))
+        .route("/api/me/identities/begin", post(begin_identity_attach))
         .route("/api/me/identities/{id}", delete(detach_identity))
         .route(
             "/api/me/bindings",

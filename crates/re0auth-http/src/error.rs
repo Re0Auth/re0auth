@@ -152,6 +152,21 @@ pub(crate) fn auth_error(error: AuthError) -> ApiError {
             "last_identity",
             "an account must keep at least one identity",
         ),
+        AuthError::IdentityAlreadyBound => problem_response(
+            StatusCode::CONFLICT,
+            "identity_already_bound",
+            "this login method is already attached to another account",
+        ),
+        AuthError::LoginRequiresAttach => problem_response(
+            StatusCode::CONFLICT,
+            "login_requires_attach",
+            "you are signed in; attach the login method from the account page",
+        ),
+        AuthError::LoginRequiresLogout => problem_response(
+            StatusCode::CONFLICT,
+            "login_requires_logout",
+            "sign out before signing in with another account",
+        ),
         AuthError::RateLimited => problem_response(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",

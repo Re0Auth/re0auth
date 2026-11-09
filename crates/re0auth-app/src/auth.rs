@@ -11,8 +11,8 @@ use uuid::Uuid;
 use re0auth_api::idp::{IdpClient, IdpError};
 use re0auth_api::oauth::{APPROVAL_TICKET_USE, ApprovalTicketClaims, TokenSigner};
 use re0auth_api::ports::{
-    ApprovalDecision, ApprovalTicket, Binding, BindingStatus, Identity, LoginTransaction,
-    RepoError, Session, Storage, User, UserRole, UserStatus,
+    ApprovalDecision, ApprovalTicket, Binding, BindingStatus, Identity, LoginPurpose,
+    LoginTransaction, RepoError, Session, Storage, User, UserRole, UserStatus,
 };
 use re0auth_api::{BindingId, ClientId, Clock, IdentityId, Random, SessionId, UserId};
 use re0auth_domain::{
@@ -66,6 +66,18 @@ pub enum AuthError {
     /// for good. Deleting the account is the operation that intent needs.
     #[error("an account must keep at least one identity")]
     LastIdentity,
+    /// The identity is already attached to a different account. There is no merge.
+    #[error("this identity is already bound to another account")]
+    IdentityAlreadyBound,
+    /// A login arrived while signed in with an identity this server has never
+    /// seen. Creating an account there is how one person gets two orphans, so the
+    /// only way forward is the account page.
+    #[error("you are signed in; attach the login method from the account page")]
+    LoginRequiresAttach,
+    /// A login arrived while signed in and would switch accounts. Switching is a
+    /// deliberate act, so it has to start from a signed-out state.
+    #[error("sign out before signing in with another account")]
+    LoginRequiresLogout,
     #[error("too many attempts")]
     RateLimited,
     #[error("internal error")]
@@ -185,6 +197,9 @@ pub enum LoginOutcome {
         client_id: ClientId,
         scopes: Vec<String>,
     },
+    /// The identity was attached to the account that started the flow. No session
+    /// is created: the caller already has one.
+    IdentityAttached,
 }
 
 #[derive(Clone)]
@@ -404,6 +419,32 @@ impl AuthService {
         return_to: &str,
         provider: Option<&str>,
     ) -> AuthResult<LoginStart> {
+        self.start(return_to, provider, LoginPurpose::Login, None)
+            .await
+    }
+
+    /// Starts an attach flow: the identity that comes back joins `user`.
+    ///
+    /// The intent travels in the transaction because an IdP has one configured
+    /// redirect URI: both flows land on `/auth/callback`, and only the stored
+    /// purpose can tell them apart (ADR-0050).
+    pub async fn start_attach(
+        &self,
+        user: UserId,
+        return_to: &str,
+        provider: Option<&str>,
+    ) -> AuthResult<LoginStart> {
+        self.start(return_to, provider, LoginPurpose::Attach, Some(user))
+            .await
+    }
+
+    async fn start(
+        &self,
+        return_to: &str,
+        provider: Option<&str>,
+        purpose: LoginPurpose,
+        initiator: Option<UserId>,
+    ) -> AuthResult<LoginStart> {
         if !return_to::is_safe(return_to) {
             return Err(AuthError::InvalidRequest("invalid return_to"));
         }
@@ -420,6 +461,8 @@ impl AuthService {
             return_to: return_to.to_string(),
             // INV-IDP-01: bound here, read back at the callback.
             provider: idp.name.clone(),
+            purpose,
+            initiator,
             created_at: now,
             expires_at: now + login_state_ttl(now),
             consumed_at: None,
@@ -434,7 +477,12 @@ impl AuthService {
         })
     }
 
-    pub async fn complete_login(&self, code: &str, state: &str) -> AuthResult<LoginOutcome> {
+    pub async fn complete_login(
+        &self,
+        code: &str,
+        state: &str,
+        current: Option<UserId>,
+    ) -> AuthResult<LoginOutcome> {
         // Checked before the state lookup on purpose: an instance with no provider
         // configured cannot complete any login, so saying so is more honest than
         // reporting the state as invalid and sending the user to retry.
@@ -468,7 +516,16 @@ impl AuthService {
             .client
             .exchange_code(code, &transaction.pkce_verifier, &transaction.nonce)
             .await?;
-        let user_id = self.upsert_identity(&identity, now).await?;
+
+        // Resolved before the device branch on purpose: an attach flow never
+        // approves a device, whatever its `return_to` says.
+        if transaction.purpose == LoginPurpose::Attach {
+            return self
+                .attach_identity(&identity, &transaction, current, now)
+                .await;
+        }
+
+        let user_id = self.upsert_identity(&identity, now, current).await?;
 
         if let Some(user_code) = device_user_code(&transaction.return_to)? {
             let normalized = device::normalize_user_code(&user_code);
@@ -587,6 +644,14 @@ impl AuthService {
             .sessions()
             .revoke_all(&user_id, self.clock.now())
             .await?)
+    }
+
+    /// The login methods attached to an account, oldest first.
+    ///
+    /// The subject never leaves the app layer: the portal only needs an id to act
+    /// on and something to show, and the subject is the IdP-side identifier.
+    pub async fn list_identities(&self, user_id: UserId) -> AuthResult<Vec<Identity>> {
+        Ok(self.storage.users().list_identities(&user_id).await?)
     }
 
     /// Detaches one login method from an account.
@@ -949,10 +1014,21 @@ impl AuthService {
         }
     }
 
+    /// Resolves the account behind a freshly exchanged identity.
+    ///
+    /// `current` is the account whose session is already present, if any. When it
+    /// is set, two refusals apply (ADR-0050):
+    ///
+    /// - an identity this server has never seen is **not** turned into a new
+    ///   account: that is exactly how one person ends up with two orphans, so the
+    ///   only way forward is the account page (`login_requires_attach`);
+    /// - an identity owned by somebody else is refused instead of switching the
+    ///   session behind the user's back (`login_requires_logout`).
     async fn upsert_identity(
         &self,
         identity: &re0auth_api::idp::IdpIdentity,
         now: i64,
+        current: Option<UserId>,
     ) -> AuthResult<UserId> {
         if let Some(user) = self
             .storage
@@ -960,11 +1036,18 @@ impl AuthService {
             .find_by_identity(&identity.issuer, &identity.subject)
             .await?
         {
+            if current.is_some_and(|current| current != user.id) {
+                return Err(AuthError::LoginRequiresLogout);
+            }
             // 封禁在登录入口就要拦住，不能等到会话建立之后。
             if user.status == UserStatus::Banned {
                 return Err(AuthError::AccountBanned);
             }
             return Ok(user.id);
+        }
+
+        if current.is_some() {
+            return Err(AuthError::LoginRequiresAttach);
         }
 
         let user = User {
@@ -997,6 +1080,52 @@ impl AuthService {
             }
             Err(error) => Err(AuthError::Repo(error)),
         }
+    }
+
+    /// Attaches a freshly exchanged identity to the account that started the flow.
+    ///
+    /// The callback only gets here with a live session: `complete_login` passes the
+    /// caller's account as `current`, and it must equal the initiator stored on the
+    /// transaction. Re-attaching an identity the account already owns is a no-op
+    /// rather than an error: the user asked for the end state, not an operation.
+    async fn attach_identity(
+        &self,
+        identity: &re0auth_api::idp::IdpIdentity,
+        transaction: &LoginTransaction,
+        current: Option<UserId>,
+        now: i64,
+    ) -> AuthResult<LoginOutcome> {
+        let initiator = transaction.initiator.ok_or(AuthError::StateInvalid)?;
+        if current != Some(initiator) {
+            return Err(AuthError::LoginRequiresLogout);
+        }
+        match self
+            .storage
+            .users()
+            .find_by_identity(&identity.issuer, &identity.subject)
+            .await?
+        {
+            Some(user) if user.id == initiator => {}
+            Some(_) => return Err(AuthError::IdentityAlreadyBound),
+            None => {
+                let linked = Identity {
+                    id: IdentityId::new(),
+                    user_id: initiator,
+                    issuer: identity.issuer.clone(),
+                    subject: identity.subject.clone(),
+                    created_at: now,
+                };
+                self.storage
+                    .users()
+                    .link_identity(&linked)
+                    .await
+                    .map_err(|error| match error {
+                        RepoError::Conflict(_) => AuthError::IdentityAlreadyBound,
+                        other => AuthError::Repo(other),
+                    })?;
+            }
+        }
+        Ok(LoginOutcome::IdentityAttached)
     }
 }
 

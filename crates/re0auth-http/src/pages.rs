@@ -120,8 +120,11 @@ fn user_message(error: &AuthError) -> &'static str {
         AuthError::IdentityProviderRequired => copy::IDP_REQUIRED,
         AuthError::RateLimited => copy::RATE_LIMITED,
         AuthError::NotFound => copy::NOT_FOUND,
-        // API-only refusal; the browser pages never reach it.
-        AuthError::LastIdentity => copy::BAD_REQUEST,
+        // API-only refusals; the browser pages never reach them.
+        AuthError::LastIdentity
+        | AuthError::IdentityAlreadyBound
+        | AuthError::LoginRequiresAttach
+        | AuthError::LoginRequiresLogout => copy::BAD_REQUEST,
         // 内部故障只给固定文案，具体原因留在日志里
         AuthError::Repo(_) | AuthError::Internal | AuthError::Idp(_) => copy::SERVER_ERROR,
     }

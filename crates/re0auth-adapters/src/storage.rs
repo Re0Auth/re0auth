@@ -12,9 +12,9 @@ use re0auth_api::audit::SecurityFact;
 use re0auth_api::ports::{
     ApprovalDecision, ApprovalTicket, ApprovalTicketRepo, AuthCode, AuthCodeRepo, AuthGrant,
     Binding, BindingStatus, Client, ClientRepo, ClientStatus, ConsumeAuthCode, DeviceCode,
-    DeviceCodeState, DeviceCodeStatus, LoginTransaction, LoginTransactionRepo, PendingBinding,
-    PendingBindingRepo, RefreshToken, RefreshTokenRepo, RepoError, RepoResult, RotateOutcome,
-    RotateRefreshToken, Session, SessionRepo,
+    DeviceCodeState, DeviceCodeStatus, LoginPurpose, LoginTransaction, LoginTransactionRepo,
+    PendingBinding, PendingBindingRepo, RefreshToken, RefreshTokenRepo, RepoError, RepoResult,
+    RotateOutcome, RotateRefreshToken, Session, SessionRepo,
 };
 use re0auth_api::secret::ClientSecretHash;
 use re0auth_api::{
@@ -234,12 +234,19 @@ fn row_to_session(row: &SqliteRow) -> RepoResult<Session> {
 }
 
 fn row_to_login_transaction(row: &SqliteRow) -> RepoResult<LoginTransaction> {
+    let purpose: String = row.try_get("purpose").map_err(db_error)?;
+    let initiator: Option<String> = row.try_get("initiator").map_err(db_error)?;
     Ok(LoginTransaction {
         state_hash: row.try_get("state_hash").map_err(db_error)?,
         nonce: row.try_get("nonce").map_err(db_error)?,
         pkce_verifier: row.try_get("pkce_verifier").map_err(db_error)?,
         return_to: row.try_get("return_to").map_err(db_error)?,
         provider: row.try_get("provider").map_err(db_error)?,
+        purpose: LoginPurpose::parse(&purpose)
+            .ok_or_else(|| RepoError::Backend(format!("unknown login purpose: {purpose}")))?,
+        initiator: initiator
+            .map(|value| parse_uuid(&value).map(UserId))
+            .transpose()?,
         created_at: row.try_get("created_at").map_err(db_error)?,
         expires_at: row.try_get("expires_at").map_err(db_error)?,
         consumed_at: row.try_get("consumed_at").map_err(db_error)?,
@@ -867,15 +874,17 @@ impl LoginTransactionRepo for SqliteStore {
     async fn insert(&self, transaction: &LoginTransaction) -> RepoResult<()> {
         sqlx::query(
             "INSERT INTO login_transactions \
-             (state_hash, nonce, pkce_verifier, return_to, provider, created_at, expires_at, \
-              consumed_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (state_hash, nonce, pkce_verifier, return_to, provider, purpose, initiator, \
+              created_at, expires_at, consumed_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(transaction.state_hash.as_slice())
         .bind(&transaction.nonce)
         .bind(&transaction.pkce_verifier)
         .bind(&transaction.return_to)
         .bind(&transaction.provider)
+        .bind(transaction.purpose.as_str())
+        .bind(transaction.initiator.map(|id| id.0.to_string()))
         .bind(transaction.created_at)
         .bind(transaction.expires_at)
         .bind(transaction.consumed_at)
@@ -889,8 +898,8 @@ impl LoginTransactionRepo for SqliteStore {
         let row = sqlx::query(
             "UPDATE login_transactions SET consumed_at = ? \
              WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > ? \
-             RETURNING state_hash, nonce, pkce_verifier, return_to, provider, created_at, \
-              expires_at, consumed_at",
+             RETURNING state_hash, nonce, pkce_verifier, return_to, provider, purpose, \
+              initiator, created_at, expires_at, consumed_at",
         )
         .bind(now)
         .bind(state_hash)

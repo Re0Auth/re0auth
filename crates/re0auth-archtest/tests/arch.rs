@@ -978,6 +978,11 @@ fn secret_bearing_types_redact_their_debug_output() {
     // the secret, so the gate is "the derive is absent", not "a test exists".
     let ports =
         fs::read_to_string(root().join("crates/re0auth-api/src/ports.rs")).expect("ports source");
+    // `LoginTransaction` now lives in `login.rs` to stay inside the line budget;
+    // the gate has to read both files or it would silently stop guarding it.
+    let login =
+        fs::read_to_string(root().join("crates/re0auth-api/src/login.rs")).expect("login source");
+    let ports = format!("{ports}\n{login}");
     let secret =
         fs::read_to_string(root().join("crates/re0auth-api/src/secret.rs")).expect("secret source");
     let oauth =

@@ -92,6 +92,17 @@ export const bindableUpstreamsSchema = z.object({
 	upstreams: z.array(z.string())
 });
 
+export const identitySchema = z.object({
+	id: z.string(),
+	issuer: z.string()
+});
+
+export const identitiesSchema = z.array(identitySchema);
+
+export const identityAttachStartSchema = z.object({
+	authorization_url: z.string().url()
+});
+
 export const failedRevocationSchema = z.object({
 	id: z.string(),
 	upstream: z.string(),
@@ -216,6 +227,7 @@ export type AdminAudit = z.infer<typeof adminAuditSchema>;
 export type Me = z.infer<typeof meSchema>;
 export type Authorization = z.infer<typeof authorizationSchema>;
 export type Binding = z.infer<typeof bindingSchema>;
+export type Identity = z.infer<typeof identitySchema>;
 
 // Two error shapes reach the SPA, and which one applies depends on the endpoint
 // rather than on the failure: the OAuth protocol endpoints answer RFC 6749

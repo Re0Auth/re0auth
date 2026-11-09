@@ -25,9 +25,9 @@ use re0auth_api::audit::{
 use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
     AuditFilter, AuthCode, Binding, BindingQuery, BindingStatus, Client, ClientStatus, Consent,
-    ConsumeAuthCode, DeviceCode, DeviceCodeState, LoginTransaction, PendingAuthorization,
-    PendingBinding, RefreshToken, RepoError, RotateOutcome, RotateRefreshToken, Session, Storage,
-    User, UserRole,
+    ConsumeAuthCode, DeviceCode, DeviceCodeState, LoginPurpose, LoginTransaction,
+    PendingAuthorization, PendingBinding, RefreshToken, RepoError, RotateOutcome,
+    RotateRefreshToken, Session, Storage, User, UserRole,
 };
 use re0auth_api::secret::ClientSecretHash;
 use re0auth_api::{
@@ -615,6 +615,8 @@ pub async fn login_transaction_contract<S: Storage>(store: &S) {
         pkce_verifier: "verifier".to_string(),
         return_to: "/oauth/authorize?client_id=x".to_string(),
         provider: "test-idp".to_string(),
+        purpose: LoginPurpose::Login,
+        initiator: None,
         created_at: 1_000,
         expires_at: 2_000,
         consumed_at: None,
@@ -644,12 +646,47 @@ pub async fn login_transaction_contract<S: Storage>(store: &S) {
         Err(RepoError::NotFound)
     ));
 
+    // An attach transaction carries the initiating account; both fields have to
+    // come back intact, because the callback decides on them.
+    let initiator = user(1_000);
+    store
+        .users()
+        .create(&initiator)
+        .await
+        .expect("create attach initiator");
+    let attach = LoginTransaction {
+        state_hash: vec![0x42; 32],
+        nonce: "nonce".to_string(),
+        pkce_verifier: "verifier".to_string(),
+        return_to: "/account".to_string(),
+        provider: "test-idp".to_string(),
+        purpose: LoginPurpose::Attach,
+        initiator: Some(initiator.id),
+        created_at: 1_000,
+        expires_at: 3_000,
+        consumed_at: None,
+    };
+    store
+        .login_transactions()
+        .insert(&attach)
+        .await
+        .expect("insert attach transaction");
+    let consumed_attach = store
+        .login_transactions()
+        .consume(&attach.state_hash, 1_001)
+        .await
+        .expect("consume attach transaction");
+    assert_eq!(consumed_attach.purpose, LoginPurpose::Attach);
+    assert_eq!(consumed_attach.initiator, Some(initiator.id));
+
     let expired = LoginTransaction {
         state_hash: vec![0x41; 32],
         nonce: "nonce".to_string(),
         pkce_verifier: "verifier".to_string(),
         return_to: "/".to_string(),
         provider: "test-idp".to_string(),
+        purpose: LoginPurpose::Login,
+        initiator: None,
         created_at: 1_000,
         expires_at: 1_000,
         consumed_at: None,

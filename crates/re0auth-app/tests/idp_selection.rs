@@ -190,7 +190,7 @@ async fn the_callback_uses_the_provider_recorded_at_start() {
     // callback did not silently pick the first provider.
     match harness
         .service
-        .complete_login("code", &state_of(&start.url))
+        .complete_login("code", &state_of(&start.url), None)
         .await
     {
         Err(AuthError::Idp(IdpError::Protocol(message))) => {
@@ -263,7 +263,7 @@ async fn a_vanished_provider_does_not_fall_back_to_the_first() {
         Arc::new(CounterRandom(AtomicUsize::new(0))),
         "https://issuer.example",
     );
-    match only_first.complete_login("code", &state).await {
+    match only_first.complete_login("code", &state, None).await {
         Err(AuthError::UnknownIdentityProvider) => {}
         other => panic!("expected UnknownIdentityProvider, got {other:?}"),
     }

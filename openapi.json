@@ -334,6 +334,108 @@
         ]
       }
     },
+    "/api/me/identities": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "operationId": "identities",
+        "responses": {
+          "200": {
+            "description": "Oldest first. The subject is not included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IdentityView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
+    "/api/me/identities/begin": {
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "operationId": "begin_identity_attach",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "description": "CSRF token from GET /api/me.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Where to send the browser to authorize the new login method.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachStartView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "identity_provider_required when several providers exist and none was chosen.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ]
+      }
+    },
     "/api/me/authorizations": {
       "get": {
         "tags": [
@@ -2801,6 +2903,29 @@
           }
         }
       },
+      "AttachBody": {
+        "type": "object",
+        "properties": {
+          "idp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Several providers need an explicit choice; one provider ignores this."
+          }
+        }
+      },
+      "AttachStartView": {
+        "type": "object",
+        "required": [
+          "authorization_url"
+        ],
+        "properties": {
+          "authorization_url": {
+            "type": "string"
+          }
+        }
+      },
       "AuthorizationView": {
         "type": "object",
         "required": [
@@ -3240,6 +3365,23 @@
           },
           "upstream": {
             "type": "string"
+          }
+        }
+      },
+      "IdentityView": {
+        "type": "object",
+        "description": "One login method as the account page sees it.",
+        "required": [
+          "id",
+          "issuer"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The IdP issuer. Shown instead of the subject, which never leaves the server."
           }
         }
       },

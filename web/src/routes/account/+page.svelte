@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { AlertCircle, Link2, LogOut, Plus, ShieldCheck, Unlink } from 'lucide-svelte';
+	import { AlertCircle, KeyRound, Link2, LogOut, Plus, ShieldCheck, Trash2, Unlink } from 'lucide-svelte';
 	import PortalLayout from '#lib/components/layouts/PortalLayout.svelte';
 	import { Alert, AlertDescription } from '#lib/components/ui/alert/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
 	import {
 		ApiError,
 		apiDelete,
@@ -17,11 +18,14 @@
 		bindingStartSchema,
 		bindingsSchema,
 		currentLocation,
+		identitiesSchema,
+		identityAttachStartSchema,
 		meSchema,
 		openLogin,
 		readQuery,
 		type Authorization,
 		type Binding,
+		type Identity,
 		type Me
 	} from '#lib/api.ts';
 	import { scopeSummary } from '#lib/scopes.ts';
@@ -31,6 +35,12 @@
 	let authorizations = $state<Authorization[]>([]);
 	let bindings = $state<Binding[]>([]);
 	let bindableUpstreams = $state<string[]>([]);
+	let identities = $state<Identity[]>([]);
+	let attaching = $state(false);
+	let detaching = $state('');
+	let deletingAccount = $state(false);
+	let confirmName = $state('');
+	let identityJustAdded = $state(false);
 	let loading = $state(true);
 	let error = $state('');
 	let revoking = $state('');
@@ -49,6 +59,10 @@
 	);
 
 	onMount(async () => {
+		if (readQuery('identity') === 'attached') {
+			identityJustAdded = true;
+			history.replaceState(null, '', '/account');
+		}
 		if (readQuery('login') === 'ok') {
 			justLoggedIn = true;
 			// Drop the flag from the address bar so a refresh does not repeat it.
@@ -58,6 +72,7 @@
 			me = await apiGet('/api/me', meSchema);
 			authorizations = await apiGet('/api/me/authorizations', authorizationsSchema);
 			bindings = await apiGet('/api/me/bindings', bindingsSchema);
+			identities = await apiGet('/api/me/identities', identitiesSchema);
 			try {
 				const available = await apiGet('/api/me/bindings/upstreams', bindableUpstreamsSchema);
 				bindableUpstreams = available.upstreams;
@@ -156,6 +171,55 @@
 		}
 	}
 
+	async function attachIdentity(): Promise<void> {
+		if (attaching) return;
+		attaching = true;
+		error = '';
+		try {
+			const started = await apiPost('/api/me/identities/begin', {}, identityAttachStartSchema);
+			window.location.assign(started.authorization_url);
+		} catch (cause) {
+			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
+				openLogin(currentLocation());
+				return;
+			}
+			error = describeError(cause);
+			attaching = false;
+		}
+	}
+
+	async function detachIdentity(id: string): Promise<void> {
+		if (detaching) return;
+		detaching = id;
+		error = '';
+		try {
+			await apiDelete(`/api/me/identities/${encodeURIComponent(id)}`);
+			identities = identities.filter((item) => item.id !== id);
+		} catch (cause) {
+			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
+				openLogin(currentLocation());
+				return;
+			}
+			error = describeError(cause);
+		} finally {
+			detaching = '';
+		}
+	}
+
+	async function deleteAccount(): Promise<void> {
+		if (deletingAccount || !me) return;
+		if (confirmName.trim() !== me.user.display_name) return;
+		deletingAccount = true;
+		error = '';
+		try {
+			await apiDelete('/api/me');
+			window.location.assign('/');
+		} catch (cause) {
+			error = describeError(cause);
+			deletingAccount = false;
+		}
+	}
+
 	async function logoutAll(): Promise<void> {
 		if (loggingOut) return;
 		loggingOut = true;
@@ -171,6 +235,14 @@
 
 	function describeError(cause: unknown): string {
 		if (cause instanceof ApiError) {
+			switch (cause.code) {
+				case 'identity_already_bound':
+					return copy.account.identityConflict;
+				case 'last_identity':
+					return copy.account.identityLastOne;
+				case 'bindings_not_revocable':
+					return copy.account.dangerBlocked;
+			}
 			switch (cause.status) {
 				case 403:
 					return copy.errors.checkFailed;
@@ -232,6 +304,60 @@
 			<AlertDescription>{copy.account.loggedIn}</AlertDescription>
 		</Alert>
 	{/if}
+
+	{#if identityJustAdded && me}
+		<Alert class="mt-4 rounded-md">
+			<ShieldCheck />
+			<AlertDescription>{copy.account.identityAdded}</AlertDescription>
+		</Alert>
+	{/if}
+
+	<section class="bindings">
+		<h2 class="section-title">{copy.account.identitiesTitle}</h2>
+		<p class="meta">{copy.account.identitiesHint}</p>
+		{#if identities.length === 0}
+			<p class="meta">{copy.account.noIdentities}</p>
+		{:else}
+			<div class="account-list">
+				{#each identities as identity (identity.id)}
+					{@const label = copy.account.identityIssuer(identity.issuer)}
+					<article class="auth-row">
+						<div class="auth-row-main">
+							<div class="auth-row-title">
+								<KeyRound size={17} strokeWidth={1.8} aria-hidden="true" />
+								<span>{label}</span>
+							</div>
+							{#if identities.length === 1}
+								<p class="meta">{copy.account.identityLastOne}</p>
+							{/if}
+						</div>
+						<Button
+							variant="outline"
+							class="h-9 shrink-0 rounded-sm px-3 text-sm text-fg-2 hover:border-danger/40 hover:text-danger"
+							type="button"
+							disabled={detaching === identity.id || identities.length === 1}
+							aria-label={copy.account.identityDetachLabel(label)}
+							onclick={() => detachIdentity(identity.id)}
+						>
+							{copy.account.identityDetach}
+						</Button>
+					</article>
+				{/each}
+			</div>
+		{/if}
+		<div class="auth-actions">
+			<Button
+				variant="outline"
+				class="h-11 w-full rounded-sm"
+				type="button"
+				disabled={attaching}
+				onclick={attachIdentity}
+			>
+				<Plus size={16} aria-hidden="true" />
+				{copy.account.identityAdd}
+			</Button>
+		</div>
+	</section>
 
 	{#if loading}
 		<p class="meta">{copy.account.loading}</p>
@@ -354,6 +480,27 @@
 			</div>
 		{/if}
 	</section>
+
+	{#if me}
+		<section class="bindings">
+			<h2 class="section-title">{copy.account.dangerTitle}</h2>
+			<p class="meta">{copy.account.dangerDeleteHint}</p>
+			<label class="meta" for="confirm-name">{copy.account.dangerTypeName(me.user.display_name)}</label>
+			<Input id="confirm-name" bind:value={confirmName} autocomplete="off" class="mt-2" />
+			<div class="auth-actions">
+				<Button
+					variant="outline"
+					class="h-11 w-full rounded-sm text-fg-2 hover:border-danger/40 hover:text-danger"
+					type="button"
+					disabled={deletingAccount || confirmName.trim() !== me.user.display_name}
+					onclick={deleteAccount}
+				>
+					<Trash2 size={16} aria-hidden="true" />
+					{deletingAccount ? copy.account.dangerDeleting : copy.account.dangerDelete}
+				</Button>
+			</div>
+		</section>
+	{/if}
 
 	<p class="meta"><a href="/">{copy.account.backHome}</a></p>
 </PortalLayout>

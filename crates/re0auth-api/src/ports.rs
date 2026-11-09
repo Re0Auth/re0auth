@@ -20,7 +20,7 @@ use crate::{
 /// A `&'static str` rather than a helper function so the same literal is used
 /// by every manual `Debug` impl; a test asserts that no such struct ever renders
 /// its bytes.
-const REDACTED: &str = "<redacted>";
+pub(crate) const REDACTED: &str = "<redacted>";
 
 /// Storage failure. Business-facing callers map these to protocol errors.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -356,6 +356,8 @@ mod redaction_tests {
             pkce_verifier: canary_string(),
             return_to: "/app".to_string(),
             provider: "test-idp".to_string(),
+            purpose: crate::login::LoginPurpose::Login,
+            initiator: None,
             created_at: 1,
             expires_at: 2,
             consumed_at: None,
@@ -602,38 +604,7 @@ pub enum DevicePoll {
     NotFound,
 }
 
-/// INV-NOLOG-01: `nonce` and `pkce_verifier` are secrets.
-#[derive(Clone, Eq, PartialEq)]
-pub struct LoginTransaction {
-    pub state_hash: Vec<u8>,
-    pub nonce: String,
-    pub pkce_verifier: String,
-    pub return_to: String,
-    /// INV-IDP-01: the provider this login started against.
-    ///
-    /// The callback must not choose a provider from the query string: the code
-    /// was issued by one specific IdP, and honouring a caller-supplied provider
-    /// would let a request present a code to the wrong one. Bound at start,
-    /// read back at callback.
-    pub provider: String,
-    pub created_at: Unix,
-    pub expires_at: Unix,
-    pub consumed_at: Option<Unix>,
-}
-
-impl std::fmt::Debug for LoginTransaction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoginTransaction")
-            .field("state_hash", &REDACTED)
-            .field("nonce", &REDACTED)
-            .field("pkce_verifier", &REDACTED)
-            .field("return_to", &self.return_to)
-            .field("created_at", &self.created_at)
-            .field("expires_at", &self.expires_at)
-            .field("consumed_at", &self.consumed_at)
-            .finish()
-    }
-}
+pub use crate::login::{LoginPurpose, LoginTransaction};
 
 /// INV-NOLOG-01: `jti` identifies a one-time approval ticket.
 #[derive(Clone, Eq, PartialEq)]

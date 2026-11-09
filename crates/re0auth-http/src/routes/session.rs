@@ -161,12 +161,30 @@ pub(crate) async fn auth_callback(
         return Err(auth_error_html(AuthError::StateInvalid));
     }
 
+    // The account already signed in, if any. An expired or revoked cookie is not
+    // a session, so its error is discarded rather than shown: the user asked to
+    // sign in, and the answer is about the identity, not the stale cookie.
+    let current = match session_cookie(&headers, state.auth.secure_cookies()) {
+        Some(raw) => state
+            .auth
+            .session_context(&raw)
+            .await
+            .ok()
+            .map(|context| context.user.id),
+        None => None,
+    };
+
     match state
         .auth
-        .complete_login(code, state_param)
+        .complete_login(code, state_param, current)
         .await
         .map_err(auth_error_html)?
     {
+        // A query flag rather than a flash cookie: the account page clears it from
+        // the address bar on first render.
+        LoginOutcome::IdentityAttached => {
+            Ok(Redirect::to("/account?identity=attached").into_response())
+        }
         LoginOutcome::Session { created, return_to } => {
             // 出口再验一次，不依赖写入时的把关
             let response =
@@ -424,6 +442,91 @@ pub(crate) async fn detach_identity(
         .await
         .map_err(auth_error)?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct AttachBody {
+    /// Several providers need an explicit choice; one provider ignores this.
+    #[serde(default)]
+    idp: Option<String>,
+}
+
+/// One login method as the account page sees it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct IdentityView {
+    pub id: String,
+    /// The IdP issuer. Shown instead of the subject, which never leaves the server.
+    pub issuer: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct AttachStartView {
+    pub authorization_url: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/me/identities",
+    tag = "session",
+    security(("session" = [])),
+    responses(
+        (status = 200, body = Vec<IdentityView>, description = "Oldest first. The subject is not included."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
+pub(crate) async fn identities(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let context = session_context_from_headers(&state, &headers).await?;
+    let views: Vec<IdentityView> = state
+        .auth
+        .list_identities(context.user.id)
+        .await
+        .map_err(auth_error)?
+        .into_iter()
+        .map(|identity| IdentityView {
+            id: identity.id.0.to_string(),
+            issuer: identity.issuer,
+        })
+        .collect();
+    Ok(no_store(Json(views).into_response()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/me/identities/begin",
+    tag = "session",
+    security(("session" = [])),
+    params(("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")),
+    request_body = AttachBody,
+    responses(
+        (status = 200, body = AttachStartView, description = "Where to send the browser to authorize the new login method."),
+        (status = 400, body = crate::ProblemBody, content_type = "application/problem+json", description = "identity_provider_required when several providers exist and none was chosen."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
+pub(crate) async fn begin_identity_attach(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AttachBody>,
+) -> Result<Response, ApiError> {
+    let context = session_context_from_headers(&state, &headers).await?;
+    require_csrf(&state, &context, &headers)?;
+    let start = state
+        .auth
+        .start_attach(context.user.id, "/account", body.idp.as_deref())
+        .await
+        .map_err(auth_error)?;
+    let mut response = Json(AttachStartView {
+        authorization_url: start.url,
+    })
+    .into_response();
+    append_set_cookie(
+        &mut response,
+        login_intent_cookie(state.auth.secure_cookies(), &start.state),
+    );
+    Ok(no_store(response))
 }
 
 pub(crate) async fn session_context_from_headers(
