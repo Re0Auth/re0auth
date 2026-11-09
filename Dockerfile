@@ -7,6 +7,8 @@ RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
 COPY web/package.json web/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod=false
 COPY web/ ./
+# i18n catalogs live at the repository root; the SPA imports them via ../../../locales.
+COPY locales /locales
 RUN pnpm run build
 
 FROM rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS builder
