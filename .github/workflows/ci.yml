@@ -59,6 +59,14 @@ jobs:
       - name: architecture checks
         run: cargo test -p re0auth-archtest -- --nocapture
 
+      # B24: the downstream sample is code too. Its own stdlib stub covers the
+      # polling rhythm (pending / slow_down) and both error shapes, so the file a
+      # stranger is told to trust cannot rot silently.
+      - name: python sample
+        run: |
+          python3 -m py_compile examples/python/re0auth_bot.py
+          python3 -m unittest discover -s examples/python -p 'test_*.py'
+
       # HR-06 / INV-CONFIG-01: every shipped config is a checked artifact.
       - name: config check
         run: |

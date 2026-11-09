@@ -18,3 +18,7 @@ lcov.info
 /config.toml
 docs
 /secrets
+
+# Python bytecode from examples/python
+examples/python/__pycache__/
+*.pyc

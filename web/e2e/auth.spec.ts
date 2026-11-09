@@ -34,6 +34,8 @@ let nonce = '';
 let callbacks: URLSearchParams[] = [];
 let callbackWaiters: Array<(params: URLSearchParams) => void> = [];
 let privateKey: KeyObject;
+// Swapped by the attach test: the same mock IdP has to answer as somebody else.
+let idpSubject = 'e2e-user';
 
 function b64url(value: Buffer | string): string {
 	return Buffer.from(value).toString('base64url');
@@ -45,7 +47,7 @@ function idToken(): string {
 	const claims = b64url(
 		JSON.stringify({
 			iss: IDP,
-			sub: 'e2e-user',
+			sub: idpSubject,
 			aud: CLIENT_ID,
 			exp: now + 300,
 			iat: now,
@@ -400,5 +402,39 @@ test('account connects an upstream and the binding comes back active', async ({ 
 	// state, which is what proves the button is wired, not just rendered.
 	await page.getByRole('button', { name: '解除全部绑定' }).click();
 	await expect(page.getByText('还没有绑定游戏账号。')).toBeVisible();
+	await context.close();
+});
+
+/// ADR-0050: attaching a second login method, and the refusal to leave an
+/// account with none. The mock IdP answers as a different subject for the second
+/// round trip, which is exactly the case where the old code would have created a
+/// second account instead.
+test('account attaches a second login method and keeps the last one', async ({ browser }) => {
+	const context = await browser.newContext();
+	const page = await context.newPage();
+
+	await page.goto('/login?return_to=/account');
+	await page.getByRole('button', { name: /继续登录/ }).click();
+	await expect(page).toHaveURL(`${APP}/account`);
+
+	const methods = page.locator('section', { has: page.getByRole('heading', { name: '登录方式' }) });
+	await expect(methods.locator('.auth-row')).toHaveCount(1);
+
+	// A second identity from the same IdP. Without the attach flow this login
+	// would create a second account and the portal would still show one method.
+	idpSubject = 'e2e-second';
+	await page.getByRole('button', { name: '添加登录方式' }).click();
+	await expect(page.getByText('已添加新的登录方式。')).toBeVisible();
+	await expect(methods.locator('.auth-row')).toHaveCount(2);
+	await expect(page).toHaveURL(`${APP}/account`);
+
+	// Removing one leaves the account usable; removing the last one must not be
+	// offered at all, because that would lock the account out for good.
+	await methods.getByRole('button', { name: /移除来自/ }).first().click();
+	await expect(methods.locator('.auth-row')).toHaveCount(1);
+	await expect(methods.getByText('这是唯一的登录方式')).toBeVisible();
+	await expect(methods.getByRole('button', { name: /移除来自/ })).toBeDisabled();
+
+	idpSubject = 'e2e-user';
 	await context.close();
 });
