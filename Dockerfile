@@ -21,6 +21,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY --from=web /web/build ./web/build
 COPY Cargo.toml Cargo.lock ./
+COPY locales ./locales
 COPY crates ./crates
 RUN cargo build --release --locked -p re0auth-server
 
