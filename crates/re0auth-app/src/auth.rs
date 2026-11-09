@@ -660,22 +660,22 @@ impl AuthService {
     /// entered again, so allowing it would be an irreversible self-lockout
     /// dressed up as cleanup. Deleting the account is the operation for that.
     pub async fn detach_identity(&self, user_id: UserId, identity: IdentityId) -> AuthResult<()> {
-        let identities = self.storage.users().list_identities(&user_id).await?;
-        if !identities.iter().any(|candidate| candidate.id == identity) {
-            return Err(AuthError::NotFound);
-        }
-        if identities.len() < 2 {
-            return Err(AuthError::LastIdentity);
-        }
-        if !self
+        // The store enforces the floor atomically; asking it first also closes
+        // the window where two detaches both read "two identities".
+        if self
             .storage
             .users()
             .unlink_identity(&user_id, &identity)
             .await?
         {
-            return Err(AuthError::NotFound);
+            return Ok(());
         }
-        Ok(())
+        let identities = self.storage.users().list_identities(&user_id).await?;
+        if identities.iter().any(|candidate| candidate.id == identity) {
+            Err(AuthError::LastIdentity)
+        } else {
+            Err(AuthError::NotFound)
+        }
     }
 
     /// Deletes the account and everything hanging off it.

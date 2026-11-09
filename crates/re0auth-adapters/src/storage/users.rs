@@ -125,12 +125,19 @@ impl UserRepo for SqliteStore {
     }
 
     async fn unlink_identity(&self, user: &UserId, id: &IdentityId) -> RepoResult<bool> {
-        let result = sqlx::query("DELETE FROM identities WHERE user_id = ? AND id = ?")
-            .bind(user.0.to_string())
-            .bind(id.0.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(db_error)?;
+        // The floor is enforced here, not by a caller-side count: two racing
+        // detaches would both see two identities and remove both.
+        let result = sqlx::query(
+            "DELETE FROM identities \
+             WHERE user_id = ? AND id = ? \
+             AND (SELECT COUNT(*) FROM identities WHERE user_id = ?) > 1",
+        )
+        .bind(user.0.to_string())
+        .bind(id.0.to_string())
+        .bind(user.0.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
         Ok(result.rows_affected() > 0)
     }
 

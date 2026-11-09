@@ -100,8 +100,26 @@ pub async fn user_contract<S: Storage>(store: &S) {
             .list_identities(&user.id)
             .await
             .expect("list after unlink"),
-        vec![second],
+        vec![second.clone()],
         "only the detached row is gone"
+    );
+
+    // The floor lives in the store, so a racing caller that already read
+    // "two identities" still cannot remove the last one.
+    let last = store
+        .users()
+        .unlink_identity(&user.id, &second.id)
+        .await
+        .expect("unlink the last identity");
+    assert!(!last, "the store must keep at least one identity");
+    assert_eq!(
+        store
+            .users()
+            .list_identities(&user.id)
+            .await
+            .expect("list after refused unlink"),
+        vec![second],
+        "a refused unlink must not change the row"
     );
 
     let session = session(user.id, 1, now, 2_000, 5_000);

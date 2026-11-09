@@ -221,6 +221,14 @@ impl UserRepo for MemoryStore {
             .get(&key)
             .is_some_and(|identity| identity.user_id == *user)
         {
+            let remaining = inner
+                .identities
+                .values()
+                .filter(|identity| identity.user_id == *user)
+                .count();
+            if remaining < 2 {
+                return Ok(false);
+            }
             inner.identities.remove(&key);
             return Ok(true);
         }
