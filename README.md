@@ -4,7 +4,7 @@
 
 上游凭据由 Connector 承担（可持有根凭证，只进独立加密存储或内存中转）；内核不存根凭证是工程卫生规则，不是安全承诺（ADR-0041）。
 
-当前状态：可运行的最小后端切片与最小 SvelteKit 静态 SPA。后端包含 SQLite 存储、授权码/同意/刷新/设备流、token introspection、外部 OIDC 登录、Session/CSRF、一次性设备批准票据与 14 条 `/api/admin/*` 管理接口；前端包含 `/login`、`/consent`、`/device`、`/account` 账号授权管理与 `/admin` 管理后台（总览、客户端、用户、绑定、审计、连接器）。Playwright 浏览器 E2E 覆盖登录、同意、设备批准、绑定上游、管理后台与挂载新登录方式六条真实路径（7 个用例）。
+当前状态：可运行的最小后端切片与最小 SvelteKit 静态 SPA。后端包含 SQLite 存储、授权码/同意/刷新/设备流、token introspection、外部 OIDC 登录、Session/CSRF、一次性设备批准票据与 14 条 `/api/admin/*` 管理接口；前端包含 `/login`、`/consent`、`/device`、`/account` 账号授权管理与 `/admin` 管理后台（总览、客户端、用户、绑定、审计、连接器）。界面与服务端页面支持 `zh-CN`/`en`；Prometheus `/metrics` 默认关闭。Playwright 浏览器 E2E 覆盖登录、同意、设备批准、绑定上游、管理后台与挂载新登录方式六条真实路径（7 个用例）。
 
 下游接入样例在 [`examples/python`](examples/python)：设备流 → 调网关 → 撤销，零依赖，只用标准库。
 

@@ -7,7 +7,10 @@
 //! （它们的稳定标识是 `code`），以及 `scopes.ts` 的权限描述表
 //! （那是按协议 scope 字符串索引的数据），和 `content/about.md` 长文。
 
-export const copy = {
+import { localize } from './i18n';
+
+const baseCopy = {
+	language: '语言',
 	site: {
 		name: 'Re0Auth',
 		footer: 'Re0Auth · 音游数据的授权中间层',
@@ -324,3 +327,5 @@ export const copy = {
 		authorizationGone: '这条授权已不存在，刷新页面后再试。'
 	}
 } as const;
+
+export const copy = localize(baseCopy) as typeof baseCopy;
