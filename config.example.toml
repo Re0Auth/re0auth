@@ -75,7 +75,8 @@ inbound_body_bytes = 1048576
 # 绑定凭证的惰性失效推断：超过该天数未刷新即视为失效。
 # 不探测上游，只按本地记录的刷新时间推断；0 表示关闭推断。
 # [binding_probe]
-# after_days = 6
+# 0 = 关闭推断（默认）。启用 refresh 时保持 0，以真实 401 为准。
+# after_days = 0
 
 # 保留期（天）。安全审计与访问流水分档，默认值即已定策略。
 # 三项都必须 > 0：0 天会让证据刚写入就被删，不是「关闭清理」。
@@ -239,6 +240,8 @@ inbound_body_bytes = 1048576
 # [connectors.oauth]
 # authorization_endpoint = "https://api.example.com/oauth/authorize"
 # token_endpoint = "https://api.example.com/oauth/token"
+# 可选：上游支持 refresh_token 时填写；不填则过期后重新授权。
+# refresh_endpoint = "https://api.example.com/oauth/token"
 # client_id = "re0auth"
 # 二选一；部署时优先 client_secret_file。
 # client_secret = "replace-me"
@@ -266,6 +269,16 @@ inbound_body_bytes = 1048576
 # idempotent = true
 # [connectors.resources.body]
 # delegation_token = "{credential}"
+# [connectors.resources.view]
+# data_path = "$.data"
+# [connectors.resources.view.fields]
+# player_id = "$.PlayerId"
+# updated_at = "$.updatedAt"
+# rks = "$.summary.rankingScore"
+# challenge_mode_rank = "$.summary.challengeModeRank"
+# avatar = "$.summary.avatar"
+# game_version = "$.summary.gameVersion"
+# save_version = "$.summary.saveVersion"
 # [[connectors.resources]]
 # name = "save"
 # path = "/get/cloud/saves"
@@ -274,9 +287,37 @@ inbound_body_bytes = 1048576
 # idempotent = true
 # [connectors.resources.body]
 # delegation_token = "{credential}"
+# [connectors.resources.view]
+# data_path = "$.data"
+# [connectors.resources.view.fields]
+# player_id = "$.saveInfo.PlayerId"
+# updated_at = "$.saveInfo.updatedAt"
+# rks = "$.saveInfo.summary.rankingScore"
+# challenge_mode_rank = "$.saveInfo.summary.challengeModeRank"
+# avatar = "$.saveInfo.summary.avatar"
+# game_user = "$.gameuser"
+# records = "$.gameRecord"
+# [[connectors.resources]]
+# name = "history"
+# path = "/get/history/historyV4"
+# scope = "phihub.save.read"
+# method = "post"
+# idempotent = true
+# [connectors.resources.body]
+# delegation_token = "{credential}"
+# [connectors.resources.view]
+# data_path = "$.data"
+# [connectors.resources.view.fields]
+# version = "$.version"
+# timezone = "$.timezone"
+# rks = "$.rks"
+# data = "$.data"
+# challenge_mode_rank = "$.challengeModeRank"
+# score_history = "$.scoreHistory"
 # [connectors.oauth]
 # authorization_endpoint = "https://phi.example.com/delegations/authorize"
 # token_endpoint = "https://phib19.top:8080/delegations/token"
+# refresh_endpoint = "https://phib19.top:8080/delegations/refresh"
 # client_id = "re0auth"
 # client_secret_file = "/run/secrets/phihub-delegation-secret"
 # scopes = ["phihub.save.read"]

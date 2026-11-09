@@ -249,6 +249,23 @@ impl BindingRepo for MemoryStore {
         Ok(())
     }
 
+    async fn replace_sub_credential(
+        &self,
+        binding: &BindingId,
+        expect: &SealedSecret,
+        new: &SealedSecret,
+        _now: Unix,
+    ) -> RepoResult<bool> {
+        let mut inner = self.lock();
+        match inner.sub_credentials.get(binding) {
+            Some(current) if current.same_payload_as(expect) => {
+                inner.sub_credentials.insert(*binding, new.clone());
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     async fn load_sub_credential(&self, binding: &BindingId) -> RepoResult<Option<SealedSecret>> {
         Ok(self.lock().sub_credentials.get(binding).cloned())
     }

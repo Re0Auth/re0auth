@@ -1280,17 +1280,19 @@ pub trait BindingRepo: Send + Sync {
         sealed: &SealedSecret,
         now: Unix,
     ) -> RepoResult<()>;
+
+    /// Replaces the payload only when the stored ciphertext is still `expect`.
+    async fn replace_sub_credential(
+        &self,
+        binding: &BindingId,
+        expect: &SealedSecret,
+        new: &SealedSecret,
+        now: Unix,
+    ) -> RepoResult<bool>;
     async fn load_sub_credential(&self, binding: &BindingId) -> RepoResult<Option<SealedSecret>>;
     async fn delete_sub_credential(&self, binding: &BindingId) -> RepoResult<()>;
 
-    /// Replaces only the key envelope of a stored credential.
-    ///
-    /// Applies only when the stored value still equals `expect`, and reports
-    /// whether it did. Not assembled from a load-then-store in the caller: the
-    /// window between those two is where a credential enrolled concurrently gets
-    /// silently rolled back, because a rotation would write back the payload it
-    /// read while reporting success. Comparing on the wrapped DEK makes the
-    /// update a swap — a concurrent enrol or a concurrent re-wrap both change it.
+    /// Replaces the DEK envelope only when the stored one still matches.
     async fn rewrap_sub_credential(
         &self,
         binding: &BindingId,
@@ -1300,11 +1302,7 @@ pub trait BindingRepo: Send + Sync {
     ) -> RepoResult<bool>;
 
     /// Every stored credential, oldest binding id first, after `after`.
-    ///
-    /// Exists for the key rotation, which has to visit records it did not create
-    /// and has no reason to know about. Paged by binding id rather than offset so
-    /// a rotation that re-wraps rows mid-scan cannot skip anything: the cursor is
-    /// the last id seen, and re-wrapping never changes an id.
+    /// Paged by binding id so a concurrent re-wrap cannot skip rows.
     async fn scan_sub_credentials(
         &self,
         after: Option<&BindingId>,

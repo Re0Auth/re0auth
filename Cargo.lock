@@ -2606,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-adapters"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-api"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "secrecy",
@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-app"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -2657,6 +2657,7 @@ dependencies = [
  "re0auth-api",
  "re0auth-contract",
  "re0auth-domain",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -2671,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-archtest"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "re0auth-api",
  "re0auth-app",
@@ -2683,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-connectors"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2706,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-contract"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "re0auth-api",
@@ -2716,7 +2717,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-domain"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "base64 0.23.1",
  "proptest",
@@ -2726,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-http"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -2753,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-idp"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2770,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-runtime"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2793,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-server"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2827,7 +2828,7 @@ dependencies = [
 
 [[package]]
 name = "re0auth-upstream-kit"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-trait",
  "axum",

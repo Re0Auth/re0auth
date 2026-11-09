@@ -102,6 +102,10 @@ impl ConnectorConfig {
 pub struct ConnectorOAuthConfig {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
+    /// Optional: when absent, the client cannot refresh and an expired
+    /// credential requires reauthorization.
+    #[serde(default)]
+    pub refresh_endpoint: Option<String>,
     pub client_id: String,
     /// Prefer `client_secret_file` in deployment; see `IDP-SETUP.md`.
     #[serde(default)]
@@ -440,7 +444,9 @@ impl Default for BindingProbeConfig {
 }
 
 fn default_binding_probe_after_days() -> u64 {
-    6
+    // 0 disables the inference. With rotating refresh tokens, a real 401 is the
+    // authoritative signal; a six-day idle period is not.
+    0
 }
 
 fn default_cache_ttl_secs() -> u64 {

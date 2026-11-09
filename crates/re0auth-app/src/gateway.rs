@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use secrecy::ExposeSecret;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -23,6 +24,7 @@ use re0auth_domain::gateway::{self, InvalidResource, ResourceField};
 use uuid::Uuid;
 
 use crate::circuit::{Admission, CircuitKey, CircuitTracker, Outcome};
+use crate::credentials::{CredentialError, CredentialSource};
 
 #[derive(Clone, Debug)]
 pub struct GatewayRequest<'a> {
@@ -292,6 +294,9 @@ pub struct GatewayService {
     /// Lossy access telemetry (ADR-0025). Defaults to a discarding sink, so an
     /// unwired deployment has no ledger rather than a silent half-one.
     telemetry: Arc<dyn TelemetrySink>,
+    /// Optional credential provider. When absent (tests, legacy wiring), the
+    /// gateway reads the sealed access token directly and cannot refresh.
+    credentials: Option<Arc<dyn CredentialSource>>,
 }
 
 impl GatewayService {
@@ -316,7 +321,15 @@ impl GatewayService {
             cache: Arc::new(re0auth_api::cache::NoCache),
             cache_ttl: std::time::Duration::from_secs(300),
             telemetry: Arc::new(NoTelemetry),
+            credentials: None,
         }
+    }
+
+    /// Enables on-demand upstream refresh.
+    #[must_use]
+    pub fn with_credentials(mut self, credentials: Arc<dyn CredentialSource>) -> Self {
+        self.credentials = Some(credentials);
+        self
     }
 
     /// Enables access telemetry (ADR-0025).
@@ -471,21 +484,13 @@ impl GatewayService {
             return self.normalized(&request, &endpoint, list_view, snapshot);
         }
 
-        let sealed = self
-            .storage
-            .bindings()
-            .load_sub_credential(&binding.id)
-            .await
-            .map_err(|_| GatewayError::Internal)?
-            .ok_or(GatewayError::BindingNeedsReauth)?;
+        let now = self.clock.now();
         let sub_token = self
-            .sealer
-            .open(&binding.id, &sealed)
-            .map_err(|_| GatewayError::Internal)?;
+            .access_token(&binding, now, request.correlation_id)
+            .await?;
 
         let connector_key = CircuitKey::Connector(endpoint.id);
         let binding_key = CircuitKey::Binding(endpoint.id, binding.id);
-        let now = self.clock.now();
         // `admit` claims the single half-open probe slot as a side effect, so
         // every early exit below has to give back whatever it took. Otherwise
         // the key stays half-open with the slot held forever and rejects every
@@ -505,47 +510,94 @@ impl GatewayService {
             .await
         {
             Ok(payload) => {
-                if payload.body.len() > self.max_response_bytes {
-                    // An oversized response is an upstream-wide condition, so it
-                    // counts against the connector only. Opening the binding
-                    // breaker as well would refuse that one binding for 30
-                    // minutes over a problem that is not specific to it.
-                    self.circuit.settle(&connector_key, Outcome::Internal, now);
-                    return Err(UpstreamError::Truncated.into());
-                }
-                self.circuit.settle(&connector_key, Outcome::Success, now);
-                self.circuit.settle(&binding_key, Outcome::Success, now);
-                if request.raw {
-                    // Recorded only on a served read: a failure is an error, not
-                    // a read, and inventing a ledger row for it would blur the two.
-                    let latency_ms =
-                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    self.record_access(&request, &endpoint, AccessSource::Upstream, latency_ms);
-                    return Ok(payload);
-                }
-                // The upstream itself answered fine, so the success is settled
-                // above; a view mismatch is business-class and never feeds the
-                // breaker (ADR-0049).
-                let snapshot = CachedView::from_body(&payload.body, spec.view.as_ref(), now)?;
-                let encoded = snapshot.encode()?;
-                // Only a complete response is cached. A truncated one is
-                // rejected above, so reaching here means the body is whole.
-                self.cache
-                    .put(
-                        &cache_key,
-                        &re0auth_api::cache::CachedResponse {
-                            content_type: "application/json".to_string(),
-                            body: encoded,
-                            stale: false,
-                        },
-                        self.cache_ttl,
-                    )
-                    .await;
-                let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                self.record_access(&request, &endpoint, AccessSource::Upstream, latency_ms);
-                self.normalized(&request, &endpoint, list_view, snapshot)
+                self.finish_fetch(
+                    &request,
+                    &endpoint,
+                    spec,
+                    list_view,
+                    payload,
+                    started,
+                    &connector_key,
+                    &binding_key,
+                    &cache_key,
+                    now,
+                )
+                .await
             }
             Err(error) => {
+                if matches!(error, UpstreamError::CredentialExpired)
+                    && let Some(credentials) = &self.credentials
+                {
+                    match credentials
+                        .refresh(&binding, sub_token.expose_secret())
+                        .await
+                    {
+                        Ok(token) => {
+                            match self
+                                .fetch_with_retry(&endpoint, &token, &resource, spec.idempotent)
+                                .await
+                            {
+                                Ok(payload) => {
+                                    return self
+                                        .finish_fetch(
+                                            &request,
+                                            &endpoint,
+                                            spec,
+                                            list_view,
+                                            payload,
+                                            started,
+                                            &connector_key,
+                                            &binding_key,
+                                            &cache_key,
+                                            now,
+                                        )
+                                        .await;
+                                }
+                                Err(retry_error) => {
+                                    self.apply_failure(
+                                        &binding,
+                                        &connector_key,
+                                        &binding_key,
+                                        &retry_error,
+                                        now,
+                                        request.correlation_id,
+                                    )
+                                    .await?;
+                                    return Err(retry_error.into());
+                                }
+                            }
+                        }
+                        Err(CredentialError::NeedsReauth) => {
+                            self.circuit.settle(&connector_key, Outcome::Business, now);
+                            self.circuit.settle(&binding_key, Outcome::Business, now);
+                            self.mark_needs_reauth(
+                                &binding,
+                                "refresh_invalid_grant",
+                                now,
+                                request.correlation_id,
+                            )
+                            .await?;
+                            return Err(error.into());
+                        }
+                        Err(CredentialError::Unavailable) => {
+                            self.apply_failure(
+                                &binding,
+                                &connector_key,
+                                &binding_key,
+                                &UpstreamError::Unavailable,
+                                now,
+                                request.correlation_id,
+                            )
+                            .await?;
+                            return Err(UpstreamError::Unavailable.into());
+                        }
+                        Err(CredentialError::Internal) => {
+                            self.circuit.settle(&connector_key, Outcome::Internal, now);
+                            self.circuit.settle(&binding_key, Outcome::Internal, now);
+                            return Err(GatewayError::Internal);
+                        }
+                    }
+                }
                 self.apply_failure(
                     &binding,
                     &connector_key,
@@ -558,6 +610,117 @@ impl GatewayService {
                 Err(error.into())
             }
         }
+    }
+
+    async fn access_token(
+        &self,
+        binding: &Binding,
+        now: re0auth_api::Unix,
+        correlation_id: Option<&str>,
+    ) -> Result<re0auth_api::SecretString, GatewayError> {
+        let Some(credentials) = &self.credentials else {
+            let sealed = self
+                .storage
+                .bindings()
+                .load_sub_credential(&binding.id)
+                .await
+                .map_err(|_| GatewayError::Internal)?
+                .ok_or(GatewayError::BindingNeedsReauth)?;
+            return self
+                .sealer
+                .open(&binding.id, &sealed)
+                .map_err(|_| GatewayError::Internal);
+        };
+        match credentials.access_token(binding).await {
+            Ok(token) => Ok(token),
+            Err(CredentialError::NeedsReauth) => {
+                self.mark_needs_reauth(binding, "refresh_invalid_grant", now, correlation_id)
+                    .await?;
+                Err(GatewayError::BindingNeedsReauth)
+            }
+            Err(CredentialError::Unavailable) => Err(UpstreamError::Unavailable.into()),
+            Err(CredentialError::Internal) => Err(GatewayError::Internal),
+        }
+    }
+
+    async fn mark_needs_reauth(
+        &self,
+        binding: &Binding,
+        reason: &str,
+        now: re0auth_api::Unix,
+        correlation_id: Option<&str>,
+    ) -> Result<(), GatewayError> {
+        self.storage
+            .bindings()
+            .mark_needs_reauth(
+                &binding.id,
+                reason,
+                &SecurityFact::new(
+                    AuditAction::BindingNeedsReauth,
+                    now,
+                    format!("binding:{}", binding.id.0),
+                )
+                .actor(binding.user_id)
+                .with_request_id(correlation_id),
+                now,
+            )
+            .await
+            .map_err(|_| GatewayError::Internal)
+    }
+
+    // Shared by the first attempt and the post-refresh retry; keeping one path
+    // is what guarantees they settle breakers, cache, and telemetry identically.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_fetch(
+        &self,
+        request: &GatewayRequest<'_>,
+        endpoint: &ConnectorEndpoint,
+        spec: &re0auth_api::connector::ResourceSpec,
+        list_view: bool,
+        payload: UpstreamPayload,
+        started: std::time::Instant,
+        connector_key: &CircuitKey,
+        binding_key: &CircuitKey,
+        cache_key: &str,
+        now: re0auth_api::Unix,
+    ) -> Result<UpstreamPayload, GatewayError> {
+        if payload.body.len() > self.max_response_bytes {
+            // An oversized response is an upstream-wide condition, so it counts
+            // against the connector only. Opening the binding breaker as well
+            // would refuse that one binding for 30 minutes over a problem that
+            // is not specific to it.
+            self.circuit.settle(connector_key, Outcome::Internal, now);
+            return Err(UpstreamError::Truncated.into());
+        }
+        self.circuit.settle(connector_key, Outcome::Success, now);
+        self.circuit.settle(binding_key, Outcome::Success, now);
+        if request.raw {
+            // Recorded only on a served read: a failure is an error, not a read,
+            // and inventing a ledger row for it would blur the two.
+            let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            self.record_access(request, endpoint, AccessSource::Upstream, latency_ms);
+            return Ok(payload);
+        }
+        // The upstream itself answered fine, so the success is settled above; a
+        // view mismatch is business-class and never feeds the breaker (ADR-0049).
+        let snapshot = CachedView::from_body(&payload.body, spec.view.as_ref(), now)?;
+        let encoded = snapshot.encode()?;
+        // Only a complete response is cached. A truncated one is rejected above,
+        // so reaching here means the body is whole.
+        self.cache
+            .put(
+                cache_key,
+                &re0auth_api::cache::CachedResponse {
+                    content_type: "application/json".to_string(),
+                    body: encoded,
+                    stale: false,
+                },
+                self.cache_ttl,
+            )
+            .await;
+        let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.record_access(request, endpoint, AccessSource::Upstream, latency_ms);
+        self.normalized(request, endpoint, list_view, snapshot)
     }
 
     /// Retries an idempotent read on transport failures (F-4).
@@ -669,22 +832,8 @@ impl GatewayService {
                 self.circuit.settle(connector_key, Outcome::Business, now);
                 self.circuit.settle(binding_key, Outcome::Business, now);
                 if error.binding_action() == BindingAction::NeedsReauth {
-                    self.storage
-                        .bindings()
-                        .mark_needs_reauth(
-                            &binding.id,
-                            "upstream_401",
-                            &SecurityFact::new(
-                                AuditAction::BindingNeedsReauth,
-                                now,
-                                format!("binding:{}", binding.id.0),
-                            )
-                            .actor(binding.user_id)
-                            .with_request_id(correlation_id),
-                            now,
-                        )
-                        .await
-                        .map_err(|_| GatewayError::Internal)?;
+                    self.mark_needs_reauth(binding, "upstream_401", now, correlation_id)
+                        .await?;
                 }
             }
             FaultClass::Internal => {

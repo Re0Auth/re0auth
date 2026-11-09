@@ -19,7 +19,8 @@ use url::Url;
 use crate::connector::ConnectorClients;
 use re0auth_api::SecretString;
 use re0auth_api::connector::{
-    ConnectorAuth, ConnectorEndpoint, ExchangedCredential, UpstreamError,
+    ConnectorAuth, ConnectorEndpoint, ConnectorRefresh, ExchangedCredential, RefreshedCredential,
+    UpstreamError,
 };
 
 /// One connector's authorization-code endpoints and client identity.
@@ -27,6 +28,9 @@ use re0auth_api::connector::{
 pub struct ConnectorOAuthConfig {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
+    /// Optional refresh endpoint. Without it, the connector never issues a
+    /// refresh token and an expired credential requires reauthorization.
+    pub refresh_endpoint: Option<String>,
     pub client_id: String,
     pub client_secret: SecretString,
     pub scopes: Vec<String>,
@@ -76,12 +80,15 @@ impl ConfiguredConnectorAuth {
 }
 
 /// The token response, as far as we care.
-///
-/// `access_token` only: a refresh token is a separate concern (`OPEN-014`), and
-/// pretending to store one we cannot use would be worse than not storing it.
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<u64>,
+    #[serde(default)]
+    refresh_expires_in: Option<u64>,
 }
 
 /// Builds the browser-facing authorization URL.
@@ -168,6 +175,7 @@ impl ConnectorAuth for ConfiguredConnectorAuth {
             .await
             .map_err(|_| UpstreamError::Unavailable)?;
         let credential = SecretString::from(response.access_token);
+        let refresh_token = response.refresh_token.map(SecretString::from);
 
         let subject = self
             .subject(
@@ -179,6 +187,9 @@ impl ConnectorAuth for ConfiguredConnectorAuth {
             .await?;
         Ok(ExchangedCredential {
             credential,
+            refresh_token,
+            expires_in: response.expires_in,
+            refresh_expires_in: response.refresh_expires_in,
             subject,
         })
     }
@@ -213,6 +224,57 @@ impl ConnectorAuth for ConfiguredConnectorAuth {
             .await
             .map_err(|_| UpstreamError::Unavailable)?;
         Ok(())
+    }
+}
+
+fn refresh_transport_error(error: anyhow::Error) -> UpstreamError {
+    use re0auth_runtime::http_client::UpstreamStatus;
+    let Some(status) = error.downcast_ref::<UpstreamStatus>() else {
+        return UpstreamError::Unavailable;
+    };
+    match status.status {
+        // invalid_grant / invalid_client: reauthorization will not fix a bad
+        // client secret, but it is not a transient upstream outage either.
+        400 | 401 | 403 => UpstreamError::Rejected,
+        429 => UpstreamError::RateLimited {
+            retry_after_secs: status.retry_after_secs,
+        },
+        500 => UpstreamError::Internal,
+        _ => UpstreamError::Unavailable,
+    }
+}
+
+#[async_trait]
+impl ConnectorRefresh for ConfiguredConnectorAuth {
+    async fn refresh_token(
+        &self,
+        endpoint: &ConnectorEndpoint,
+        refresh_token: &SecretString,
+    ) -> Result<Option<RefreshedCredential>, UpstreamError> {
+        let config = self.config(endpoint)?;
+        let Some(url) = config.refresh_endpoint.as_deref() else {
+            return Ok(None);
+        };
+        let form = vec![
+            ("grant_type", "refresh_token".to_string()),
+            ("refresh_token", refresh_token.expose_secret().to_string()),
+            ("client_id", config.client_id.clone()),
+            (
+                "client_secret",
+                config.client_secret.expose_secret().to_string(),
+            ),
+        ];
+        let client = self.clients.get(endpoint)?;
+        let response: TokenResponse = client
+            .post_form(url, &form)
+            .await
+            .map_err(refresh_transport_error)?;
+        Ok(Some(RefreshedCredential {
+            credential: SecretString::from(response.access_token),
+            refresh_token: response.refresh_token.map(SecretString::from),
+            expires_in: response.expires_in,
+            refresh_expires_in: response.refresh_expires_in,
+        }))
     }
 }
 
@@ -396,5 +458,105 @@ mod tests {
         // otherwise start binding by handle.
         let document = parse(r#"{"login": "someone"}"#);
         assert_eq!(document.read("id"), None);
+    }
+
+    #[tokio::test]
+    async fn refresh_exchanges_a_form_and_returns_the_rotated_pair() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        use re0auth_api::ConnectorId;
+        use re0auth_api::connector::EgressPolicy;
+        use re0auth_runtime::tls::TlsConfig;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let seen = Arc::new(Mutex::new(String::new()));
+        let server_seen = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut chunk).expect("read");
+                if read == 0 {
+                    panic!("request ended before headers");
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    break position + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_lowercase();
+            let content_length = headers
+                .split("\r\n")
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut chunk).expect("body");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+            }
+            *server_seen.lock().expect("seen") = String::from_utf8_lossy(&request).to_string();
+            let body = r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600,"refresh_expires_in":86400}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let endpoint = ConnectorEndpoint {
+            id: ConnectorId::new(),
+            name: "phihub".to_string(),
+            base_url: format!("http://{address}"),
+            egress: EgressPolicy::Loopback,
+            resources: Vec::new(),
+        };
+        let clients = ConnectorClients::new(
+            std::slice::from_ref(&endpoint),
+            TlsConfig::default(),
+            Duration::from_secs(5),
+        )
+        .expect("clients");
+        let config = ConnectorOAuthConfig {
+            authorization_endpoint: "http://example.invalid/authorize".to_string(),
+            token_endpoint: "http://example.invalid/token".to_string(),
+            refresh_endpoint: Some(format!("http://{address}/refresh")),
+            client_id: "re0auth".to_string(),
+            client_secret: SecretString::from("secret"),
+            scopes: vec!["phihub.save.read".to_string()],
+            userinfo_endpoint: "http://example.invalid/me".to_string(),
+            revocation_endpoint: None,
+            subject_field: "id".to_string(),
+        };
+        let auth =
+            ConfiguredConnectorAuth::new(clients, HashMap::from([("phihub".to_string(), config)]));
+        let refreshed = auth
+            .refresh_token(&endpoint, &SecretString::from("old-refresh"))
+            .await
+            .expect("refresh")
+            .expect("configured");
+        assert_eq!(refreshed.credential.expose_secret(), "new-access");
+        assert_eq!(
+            refreshed
+                .refresh_token
+                .as_ref()
+                .map(secrecy::ExposeSecret::expose_secret),
+            Some("new-refresh")
+        );
+        assert_eq!(refreshed.expires_in, Some(3_600));
+        assert_eq!(refreshed.refresh_expires_in, Some(86_400));
+        let seen = seen.lock().expect("seen");
+        assert!(seen.contains("refresh_token=old-refresh"), "{seen}");
+        assert!(seen.contains("client_id=re0auth"), "{seen}");
+        assert!(seen.contains("client_secret=secret"), "{seen}");
     }
 }

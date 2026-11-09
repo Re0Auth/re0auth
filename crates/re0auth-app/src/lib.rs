@@ -9,6 +9,7 @@ pub mod admin_service;
 pub mod auth;
 pub mod binding;
 pub mod circuit;
+pub mod credentials;
 pub mod gateway;
 pub mod hints;
 pub mod housekeeping;

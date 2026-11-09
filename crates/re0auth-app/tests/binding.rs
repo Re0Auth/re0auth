@@ -19,6 +19,7 @@ use re0auth_api::{
     BindingId, Clock, ConnectorId, Random, Re0Error, Re0Result, SecretString, Unix, UserId,
 };
 use re0auth_contract::{ClockedCache, MemoryCache, MemoryStore};
+use secrecy::ExposeSecret;
 
 use re0auth_app::binding::{BindingError, BindingService};
 use re0auth_app::return_to::{self, FALLBACK};
@@ -148,6 +149,9 @@ impl ConnectorAuth for RecordingAuth {
         }
         Ok(ExchangedCredential {
             credential: SecretString::from("upstream-token".to_string()),
+            refresh_token: Some(SecretString::from("refresh-token".to_string())),
+            expires_in: Some(3_600),
+            refresh_expires_in: Some(86_400),
             // Deliberately not the local user id: this is the value the gateway
             // will address every later read by, and a test that reused the local
             // id would pass on the old defect.
@@ -158,12 +162,15 @@ impl ConnectorAuth for RecordingAuth {
     async fn revoke_token(
         &self,
         _endpoint: &ConnectorEndpoint,
-        _credential: &SecretString,
+        credential: &SecretString,
     ) -> Result<(), UpstreamError> {
         if self.fail_revoke {
             return Err(UpstreamError::Unavailable);
         }
-        self.revoked.lock().expect("lock").push(String::new());
+        self.revoked
+            .lock()
+            .expect("lock")
+            .push(credential.expose_secret().to_string());
         Ok(())
     }
 }
@@ -176,8 +183,15 @@ const UPSTREAM_SUBJECT: &str = "upstream-player-42";
 struct PlainSealer;
 
 impl SecretSealer for PlainSealer {
-    fn seal(&self, _binding: &BindingId, _plaintext: &SecretString) -> Re0Result<SealedSecret> {
-        Ok(SealedSecret::new(1, vec![1; 12], vec![2; 44], vec![3; 12], Vec::new()).expect("shape"))
+    fn seal(&self, _binding: &BindingId, plaintext: &SecretString) -> Re0Result<SealedSecret> {
+        Ok(SealedSecret::new(
+            1,
+            vec![1; 12],
+            vec![2; 44],
+            vec![3; 12],
+            plaintext.expose_secret().as_bytes().to_vec(),
+        )
+        .expect("shape"))
     }
 
     fn open(&self, _binding: &BindingId, sealed: &SealedSecret) -> Re0Result<SecretString> {
@@ -619,6 +633,11 @@ async fn revoking_a_binding_tells_the_upstream() {
         auth.revoked().len(),
         1,
         "one binding means exactly one upstream revocation"
+    );
+    assert_eq!(
+        auth.revoked(),
+        vec!["refresh-token".to_string()],
+        "unbind must revoke the durable refresh token, not the rotating access token"
     );
 }
 

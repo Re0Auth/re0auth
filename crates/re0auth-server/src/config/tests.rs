@@ -1,5 +1,6 @@
 use super::*;
 use re0auth_adapters::storage::SqliteSynchronous;
+use re0auth_api::view::ViewOutput;
 
 fn example_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.example.toml")
@@ -497,6 +498,7 @@ fn connector_oauth() -> ConnectorOAuthConfig {
     ConnectorOAuthConfig {
         authorization_endpoint: "https://upstream.example.com/authorize".into(),
         token_endpoint: "https://upstream.example.com/token".into(),
+        refresh_endpoint: None,
         client_id: "client".into(),
         client_secret: "secret".into(),
         client_secret_file: String::new(),
@@ -802,4 +804,157 @@ fn an_invalid_view_path_is_rejected_at_load() {
     }));
     let error = resource.to_spec().expect_err("bad path");
     assert!(error.to_string().contains("invalid view path"), "{error}");
+}
+
+fn phihub_resource(name: &str, path: &str, fields: &[(&str, &str)]) -> ResourceConfig {
+    ResourceConfig {
+        name: name.to_string(),
+        path: path.to_string(),
+        scope: Some("phihub.save.read".to_string()),
+        method: Some("post".to_string()),
+        idempotent: Some(true),
+        body: Some(std::collections::BTreeMap::from([(
+            "delegation_token".to_string(),
+            "{credential}".to_string(),
+        )])),
+        view: Some(ViewConfig {
+            data_path: Some("$.data".to_string()),
+            items_path: None,
+            fields: Some(
+                fields
+                    .iter()
+                    .map(|(name, path)| ((*name).to_string(), (*path).to_string()))
+                    .collect(),
+            ),
+        }),
+    }
+}
+
+#[test]
+fn phihub_save_info_view_maps_documented_fields() {
+    let resource = phihub_resource(
+        "save_info",
+        "/get/cloud/saveInfo",
+        &[
+            ("player_id", "$.PlayerId"),
+            ("updated_at", "$.updatedAt"),
+            ("rks", "$.summary.rankingScore"),
+            ("challenge_mode_rank", "$.summary.challengeModeRank"),
+            ("avatar", "$.summary.avatar"),
+            ("game_version", "$.summary.gameVersion"),
+            ("save_version", "$.summary.saveVersion"),
+        ],
+    );
+    let spec = resource.to_spec().expect("valid save_info resource");
+    let body = serde_json::json!({
+        "data": {
+            "PlayerId": "1502788182",
+            "updatedAt": "2026-11-09T00:00:00.000Z",
+            "summary": {
+                "rankingScore": 15.1234,
+                "challengeModeRank": 1234,
+                "avatar": "avatar.png",
+                "gameVersion": 3,
+                "saveVersion": 5
+            }
+        }
+    });
+    assert_eq!(
+        spec.view.expect("view").apply(&body).expect("view applies"),
+        ViewOutput::Single(serde_json::json!({
+            "player_id": "1502788182",
+            "updated_at": "2026-11-09T00:00:00.000Z",
+            "rks": 15.1234,
+            "challenge_mode_rank": 1234,
+            "avatar": "avatar.png",
+            "game_version": 3,
+            "save_version": 5
+        }))
+    );
+}
+
+#[test]
+fn phihub_save_view_maps_profile_and_records() {
+    let resource = phihub_resource(
+        "save",
+        "/get/cloud/saves",
+        &[
+            ("player_id", "$.saveInfo.PlayerId"),
+            ("updated_at", "$.saveInfo.updatedAt"),
+            ("rks", "$.saveInfo.summary.rankingScore"),
+            (
+                "challenge_mode_rank",
+                "$.saveInfo.summary.challengeModeRank",
+            ),
+            ("avatar", "$.saveInfo.summary.avatar"),
+            ("game_user", "$.gameuser"),
+            ("records", "$.gameRecord"),
+        ],
+    );
+    let spec = resource.to_spec().expect("valid save resource");
+    let body = serde_json::json!({
+        "data": {
+            "saveInfo": {
+                "PlayerId": "1502788182",
+                "updatedAt": "2026-11-09T00:00:00.000Z",
+                "summary": {
+                    "rankingScore": 15.1234,
+                    "challengeModeRank": 1234,
+                    "avatar": "avatar.png"
+                }
+            },
+            "gameuser": {"name": "player", "avatar": "avatar.png"},
+            "gameRecord": {"song.0": [{"score": 1000000, "acc": 100, "fc": true}]}
+        }
+    });
+    assert_eq!(
+        spec.view.expect("view").apply(&body).expect("view applies"),
+        ViewOutput::Single(serde_json::json!({
+            "player_id": "1502788182",
+            "updated_at": "2026-11-09T00:00:00.000Z",
+            "rks": 15.1234,
+            "challenge_mode_rank": 1234,
+            "avatar": "avatar.png",
+            "game_user": {"name": "player", "avatar": "avatar.png"},
+            "records": {"song.0": [{"score": 1000000, "acc": 100, "fc": true}]}
+        }))
+    );
+}
+
+#[test]
+fn phihub_history_view_maps_v4_sections() {
+    let resource = phihub_resource(
+        "history",
+        "/get/history/historyV4",
+        &[
+            ("version", "$.version"),
+            ("timezone", "$.timezone"),
+            ("rks", "$.rks"),
+            ("data", "$.data"),
+            ("challenge_mode_rank", "$.challengeModeRank"),
+            ("score_history", "$.scoreHistory"),
+        ],
+    );
+    let spec = resource.to_spec().expect("valid history resource");
+    let body = serde_json::json!({
+        "data": {
+            "version": 4,
+            "timezone": "+08:00",
+            "rks": [[2026, [11, [9, [0, 15.1234]]]]],
+            "data": [[2026, [11, [9, [0, [1, 2, 3, 4, 5]]]]]],
+            "challengeModeRank": [[2026, [11, [9, [0, 1234]]]]],
+            "scoreHistory": {"song.0": {"IN": [[2026, [11, [9, [0, [100, 1000000, 1]]]]]]}}
+        }
+    });
+    assert_eq!(
+        spec.view.expect("view").apply(&body).expect("view applies"),
+        ViewOutput::Single(serde_json::json!({
+            "version": 4,
+            "timezone": "+08:00",
+            "rks": [[2026, [11, [9, [0, 15.1234]]]]],
+            "data": [[2026, [11, [9, [0, [1, 2, 3, 4, 5]]]]]],
+            "challenge_mode_rank": [[2026, [11, [9, [0, 1234]]]]],
+            "score_history": {"song.0": {"IN": [[2026, [11, [9, [0, [100, 1000000, 1]]]]]]}}
+        }))
+    );
 }

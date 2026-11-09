@@ -504,8 +504,23 @@ pub trait ConnectorBroker: Send + Sync {
 pub struct ExchangedCredential {
     /// The credential to store, sealed at rest.
     pub credential: SecretString,
+    /// The rotating refresh token, when the upstream issues one.
+    pub refresh_token: Option<SecretString>,
+    /// Access-token lifetime in seconds, as returned by the upstream.
+    pub expires_in: Option<u64>,
+    /// Refresh-token lifetime in seconds, as returned by the upstream.
+    pub refresh_expires_in: Option<u64>,
     /// The upstream account this credential speaks for, as the source names it.
     pub subject: String,
+}
+
+/// A rotated credential pair. The subject is already known from the binding.
+#[derive(Clone, Debug)]
+pub struct RefreshedCredential {
+    pub credential: SecretString,
+    pub refresh_token: Option<SecretString>,
+    pub expires_in: Option<u64>,
+    pub refresh_expires_in: Option<u64>,
 }
 
 /// Turns an upstream authorization code into a credential.
@@ -551,6 +566,20 @@ pub trait ConnectorAuth: Send + Sync {
     ) -> Result<(), UpstreamError> {
         Ok(())
     }
+}
+
+/// Rotates an upstream refresh token.
+///
+/// Deliberately separate from [`ConnectorAuth`]: the data plane asks a
+/// credential provider for a usable token, and only that provider may reach a
+/// token-minting call. `None` means this connector has no refresh endpoint.
+#[async_trait]
+pub trait ConnectorRefresh: Send + Sync {
+    async fn refresh_token(
+        &self,
+        endpoint: &ConnectorEndpoint,
+        refresh_token: &SecretString,
+    ) -> Result<Option<RefreshedCredential>, UpstreamError>;
 }
 
 /// Connector-owned vault for upstream root credentials (INV-CONN-02).

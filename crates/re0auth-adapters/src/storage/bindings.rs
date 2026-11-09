@@ -304,6 +304,33 @@ impl BindingRepo for SqliteStore {
         Ok(())
     }
 
+    async fn replace_sub_credential(
+        &self,
+        binding: &BindingId,
+        expect: &SealedSecret,
+        new: &SealedSecret,
+        now: Unix,
+    ) -> RepoResult<bool> {
+        let result = sqlx::query(
+            "UPDATE sub_credentials \
+             SET key_version = ?, dek_nonce = ?, wrapped_dek = ?, nonce = ?, \
+                 ciphertext = ?, updated_at = ? \
+             WHERE binding_id = ? AND ciphertext = ?",
+        )
+        .bind(i64::from(new.key_version()))
+        .bind(new.dek_nonce())
+        .bind(new.wrapped_dek())
+        .bind(new.nonce())
+        .bind(new.ciphertext())
+        .bind(now)
+        .bind(binding.0.to_string())
+        .bind(expect.ciphertext())
+        .execute(&self.pool)
+        .await
+        .map_err(db_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
     async fn load_sub_credential(&self, binding: &BindingId) -> RepoResult<Option<SealedSecret>> {
         let row = sqlx::query(
             "SELECT key_version, dek_nonce, wrapped_dek, nonce, ciphertext \

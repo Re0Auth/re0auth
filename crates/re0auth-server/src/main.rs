@@ -287,7 +287,7 @@ async fn build_data_plane(
     // Binding is opt-in per connector: a connector without endpoints can still
     // serve data for bindings issued elsewhere, but the routes stay 404 rather
     // than sending a user to an authorization page we cannot redeem.
-    let binding = build_binding(
+    let (binding, refresh_auth) = build_binding(
         cfg,
         store.clone(),
         registry.clone(),
@@ -298,6 +298,10 @@ async fn build_data_plane(
         Arc::clone(&cache),
     )?;
 
+    let credential_store = store.clone();
+    let credential_registry = registry.clone();
+    let credential_sealer = sealer.clone();
+    let credential_clock = clock.clone();
     let gateway = GatewayService::new(
         store,
         registry,
@@ -311,8 +315,26 @@ async fn build_data_plane(
     // sweeps it on revoke; sharing is what makes INV-CACHE-02 hold.
     .with_cache(cache, std::time::Duration::from_secs(cfg.cache.ttl_secs))
     .with_telemetry(telemetry);
+    let gateway = match refresh_auth {
+        Some(auth) => {
+            let credentials = re0auth_app::credentials::BindingCredentialService::new(
+                credential_store,
+                credential_registry,
+                auth,
+                credential_sealer,
+                credential_clock,
+            );
+            gateway.with_credentials(Arc::new(credentials))
+        }
+        None => gateway,
+    };
     Ok((gateway, binding))
 }
+
+type BuiltBinding = (
+    Option<BindingService>,
+    Option<Arc<dyn re0auth_api::connector::ConnectorRefresh>>,
+);
 
 /// Builds the binding service when at least one connector declares endpoints.
 #[allow(clippy::too_many_arguments)]
@@ -325,7 +347,7 @@ fn build_binding(
     random: &Arc<OsRandom>,
     clients: re0auth_connectors::connector::ConnectorClients,
     cache: Arc<dyn re0auth_api::cache::Cache>,
-) -> anyhow::Result<Option<BindingService>> {
+) -> anyhow::Result<BuiltBinding> {
     let mut configs = std::collections::HashMap::new();
     for connector in &cfg.connectors {
         let Some(oauth) = &connector.oauth else {
@@ -335,7 +357,7 @@ fn build_binding(
         configs.insert(id, oauth);
     }
     if configs.is_empty() {
-        return Ok(None);
+        return Ok((None, None));
     }
 
     // The only place that can enumerate bindable upstreams: the registry resolves
@@ -346,22 +368,22 @@ fn build_binding(
     let auth = Arc::new(re0auth_connectors::oauth::ConfiguredConnectorAuth::new(
         clients, configs,
     ));
-    Ok(Some(
-        BindingService::new(
-            store,
-            registry,
-            auth,
-            sealer,
-            clock.clone(),
-            random.clone(),
-            format!(
-                "{}/api/me/bindings/callback",
-                cfg.server.issuer.trim_end_matches('/')
-            ),
-        )
-        .with_bindable_upstreams(bindable)
-        .with_cache(cache),
-    ))
+    let refresh: Arc<dyn re0auth_api::connector::ConnectorRefresh> = auth.clone();
+    let binding = BindingService::new(
+        store,
+        registry,
+        auth,
+        sealer,
+        clock.clone(),
+        random.clone(),
+        format!(
+            "{}/api/me/bindings/callback",
+            cfg.server.issuer.trim_end_matches('/')
+        ),
+    )
+    .with_bindable_upstreams(bindable)
+    .with_cache(cache);
+    Ok((Some(binding), Some(refresh)))
 }
 
 /// Converts one connector's config into the adapter's, reading every field.
@@ -381,6 +403,7 @@ fn binding_config(
         re0auth_connectors::oauth::ConnectorOAuthConfig {
             authorization_endpoint: oauth.authorization_endpoint.clone(),
             token_endpoint: oauth.token_endpoint.clone(),
+            refresh_endpoint: oauth.refresh_endpoint.clone(),
             client_id: oauth.client_id.clone(),
             client_secret: secret,
             scopes: oauth.scopes.clone(),

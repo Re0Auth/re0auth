@@ -31,6 +31,7 @@ use re0auth_domain::gateway;
 use re0auth_domain::pkce;
 
 use crate::auth::{AuthError, BindingRevocationSummary, FailedRevocation};
+use crate::credentials::StoredCredential;
 use crate::gateway::connector_id_for_name;
 use crate::return_to;
 
@@ -279,6 +280,7 @@ impl BindingService {
             .as_ref()
             .is_some_and(|binding| binding.status != BindingStatus::Revoked);
         let id = existing.as_ref().map_or_else(BindingId::new, |b| b.id);
+        let stored_credential = StoredCredential::from_exchange(&exchanged, now);
 
         let binding = Binding {
             id,
@@ -313,7 +315,10 @@ impl BindingService {
         // write, so a sealer failure leaves nothing behind.
         let sealed = self
             .sealer
-            .seal(&id, &exchanged.credential)
+            .seal(
+                &id,
+                &re0auth_api::SecretString::from(stored_credential.encode()),
+            )
             .map_err(|error| BindingError::Internal(error.to_string()))?;
         let stored = self
             .storage
@@ -568,10 +573,11 @@ impl BindingService {
         else {
             return Ok(None);
         };
-        self.sealer
+        let raw = self
+            .sealer
             .open(binding_id, &sealed)
-            .map(Some)
-            .map_err(|error| BindingError::Internal(error.to_string()))
+            .map_err(|error| BindingError::Internal(error.to_string()))?;
+        Ok(Some(StoredCredential::decode(&raw).revocation_token()))
     }
 }
 

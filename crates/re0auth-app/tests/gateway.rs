@@ -14,8 +14,10 @@ use re0auth_api::ports::{
 use re0auth_api::secret::SecretSealer;
 use re0auth_api::{BindingId, Clock, ConnectorId, Re0Error, SecretString, UserId};
 use re0auth_app::circuit::{CircuitPolicy, CircuitTracker};
+use re0auth_app::credentials::{CredentialError, CredentialSource};
 use re0auth_app::gateway::{GatewayError, GatewayRequest, GatewayService, Pagination};
 use re0auth_contract::{ConnectorFixture, MemoryStore, MockConnector, MockSealer};
+use secrecy::ExposeSecret;
 
 struct FixedClock(std::sync::Mutex<i64>);
 
@@ -1219,4 +1221,159 @@ async fn a_banned_account_is_refused_before_any_upstream_call() {
     assert!(matches!(error, GatewayError::AccountBanned), "{error:?}");
     assert_eq!(error.code(), "account_banned");
     assert!(app.connector.calls().is_empty());
+}
+
+struct FakeCredentials {
+    refresh_result: Result<&'static str, CredentialError>,
+    refreshes: AtomicUsize,
+}
+
+#[async_trait]
+impl CredentialSource for FakeCredentials {
+    async fn access_token(&self, _binding: &Binding) -> Result<SecretString, CredentialError> {
+        Ok(SecretString::from("stale-token"))
+    }
+
+    async fn refresh(
+        &self,
+        _binding: &Binding,
+        stale_access: &str,
+    ) -> Result<SecretString, CredentialError> {
+        assert_eq!(stale_access, "stale-token");
+        self.refreshes.fetch_add(1, Ordering::SeqCst);
+        self.refresh_result
+            .map(|token| SecretString::from(token.to_string()))
+    }
+}
+
+struct TokenBroker {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl ConnectorBroker for TokenBroker {
+    async fn fetch_raw_data(
+        &self,
+        _endpoint: &ConnectorEndpoint,
+        sub_token: &SecretString,
+        _resource: &ResourceRequest,
+    ) -> Result<UpstreamPayload, UpstreamError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if sub_token.expose_secret() == "fresh-token" {
+            Ok(payload(br#"{"ok":true}"#))
+        } else {
+            Err(UpstreamError::CredentialExpired)
+        }
+    }
+}
+
+fn service_with_credentials(
+    app: &Harness,
+    credentials: Arc<FakeCredentials>,
+    broker: Arc<TokenBroker>,
+) -> GatewayService {
+    GatewayService::new(
+        app.store.clone(),
+        app.connector.clone(),
+        broker,
+        Arc::new(MockSealer::new()),
+        app.clock.clone(),
+        Arc::new(CircuitTracker::new(CircuitPolicy {
+            failure_threshold: 2,
+            open_for_secs: 60,
+            probe_retry_secs: 1,
+        })),
+        1024,
+    )
+    .with_credentials(credentials)
+}
+
+#[tokio::test]
+async fn a_401_refreshes_once_and_retries_the_read() {
+    let app = harness().await;
+    let credentials = Arc::new(FakeCredentials {
+        refresh_result: Ok("fresh-token"),
+        refreshes: AtomicUsize::new(0),
+    });
+    let broker = Arc::new(TokenBroker {
+        calls: AtomicUsize::new(0),
+    });
+    let service = service_with_credentials(&app, credentials.clone(), broker.clone());
+
+    let granted = scopes();
+    let result = service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect("refresh retry succeeds");
+    assert_eq!(broker.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(credentials.refreshes.load(Ordering::SeqCst), 1);
+    assert!(String::from_utf8_lossy(&result.body).contains("\"ok\":true"));
+}
+
+#[tokio::test]
+async fn invalid_refresh_marks_the_binding_needs_reauth() {
+    let app = harness().await;
+    let credentials = Arc::new(FakeCredentials {
+        refresh_result: Err(CredentialError::NeedsReauth),
+        refreshes: AtomicUsize::new(0),
+    });
+    let broker = Arc::new(TokenBroker {
+        calls: AtomicUsize::new(0),
+    });
+    let service = service_with_credentials(&app, credentials, broker.clone());
+
+    let granted = scopes();
+    let error = service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect_err("invalid refresh");
+    assert!(matches!(
+        error,
+        GatewayError::Upstream(UpstreamError::CredentialExpired)
+    ));
+    assert_eq!(broker.calls.load(Ordering::SeqCst), 1);
+    let binding = app
+        .store
+        .bindings()
+        .get(&app.binding.id)
+        .await
+        .expect("get")
+        .expect("binding");
+    assert_eq!(binding.status, BindingStatus::NeedsReauth);
+    assert_eq!(
+        binding.last_error_code.as_deref(),
+        Some("refresh_invalid_grant")
+    );
+}
+
+#[tokio::test]
+async fn transient_refresh_failure_keeps_the_binding_active() {
+    let app = harness().await;
+    let credentials = Arc::new(FakeCredentials {
+        refresh_result: Err(CredentialError::Unavailable),
+        refreshes: AtomicUsize::new(0),
+    });
+    let broker = Arc::new(TokenBroker {
+        calls: AtomicUsize::new(0),
+    });
+    let service = service_with_credentials(&app, credentials, broker.clone());
+
+    let granted = scopes();
+    let error = service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect_err("transient refresh");
+    assert!(matches!(
+        error,
+        GatewayError::Upstream(UpstreamError::Unavailable)
+    ));
+    assert_eq!(broker.calls.load(Ordering::SeqCst), 1);
+    let binding = app
+        .store
+        .bindings()
+        .get(&app.binding.id)
+        .await
+        .expect("get")
+        .expect("binding");
+    assert_eq!(binding.status, BindingStatus::Active);
 }

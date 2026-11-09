@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 rust-version = "1.98"
 license = "AGPL-3.0-or-later"
@@ -63,7 +63,7 @@ sha2 = "0.11"
 subtle = "2.6"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tokio-util = "0.7"
 toml = "0.8"
 tower = "0.5"
