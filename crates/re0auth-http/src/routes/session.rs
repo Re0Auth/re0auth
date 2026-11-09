@@ -566,8 +566,77 @@ pub(crate) fn require_csrf(
 }
 
 pub(crate) fn login_redirect(original: &axum::http::Uri) -> Response {
-    let return_to = original.path_and_query().map_or("/", |path| path.as_str());
+    let return_to = reauth_return_to(original);
     let mut serializer = form_urlencoded::Serializer::new(String::new());
-    serializer.append_pair("return_to", return_to);
+    serializer.append_pair("return_to", &return_to);
     Redirect::to(&format!("/login?{}", serializer.finish())).into_response()
+}
+
+/// The authorize URI to return to after a forced re-login, with the parameters
+/// that forced it removed.
+///
+/// Returning the original URI untouched put `prompt=login` and `max_age=0` back
+/// in front of a fresh session, which asked for another login and looped until
+/// the `/auth/login` rate limiter answered 429.
+fn reauth_return_to(original: &axum::http::Uri) -> String {
+    let path = original.path();
+    let Some(query) = original.query() else {
+        return path.to_string();
+    };
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            // The login just happened; asking again would loop.
+            "max_age" => {}
+            "prompt" => {
+                let kept: Vec<&str> = value
+                    .split_whitespace()
+                    .filter(|token| *token != "login" && *token != "select_account")
+                    .collect();
+                if !kept.is_empty() {
+                    serializer.append_pair("prompt", &kept.join(" "));
+                }
+            }
+            _ => {
+                serializer.append_pair(&key, &value);
+            }
+        }
+    }
+    let query = serializer.finish();
+    if query.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{query}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s06_reauth_return_to_drops_prompt_login_and_max_age() {
+        let uri: axum::http::Uri = "/oauth/authorize?response_type=code&client_id=x\
+            &scope=openid&prompt=login%20consent&max_age=0&state=s"
+            .parse()
+            .expect("uri");
+
+        let returned = reauth_return_to(&uri);
+
+        assert!(!returned.contains("max_age=0"), "{returned}");
+        assert!(returned.contains("prompt=consent"), "{returned}");
+        assert!(!returned.contains("login"), "{returned}");
+        assert!(returned.contains("state=s"), "{returned}");
+    }
+
+    #[test]
+    fn s06_prompt_none_is_preserved() {
+        let uri: axum::http::Uri = "/oauth/authorize?prompt=none&max_age=0&state=s"
+            .parse()
+            .expect("uri");
+
+        let returned = reauth_return_to(&uri);
+
+        assert_eq!(returned, "/oauth/authorize?prompt=none&state=s");
+    }
 }

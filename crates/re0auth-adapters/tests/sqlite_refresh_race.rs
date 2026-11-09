@@ -198,3 +198,74 @@ async fn different_families_refresh_without_false_reuse() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+/// Reuse detection must also stop the access tokens already issued under the
+/// family; revoking only the refresh rows leaves them valid until expiry.
+#[tokio::test]
+async fn s02_reuse_detection_denies_the_family_access_tokens() {
+    let path = std::env::temp_dir().join(format!("re0auth-refresh-{}.db", uuid::Uuid::now_v7()));
+    let url = format!("sqlite://{}", path.display());
+    let store = SqliteStore::connect(&url).await.expect("file store");
+
+    let user = User {
+        id: UserId::new(),
+        display_name: "refresh-reuse".to_string(),
+        role: UserRole::User,
+        status: re0auth_api::ports::UserStatus::Active,
+        created_at: 1_000,
+        updated_at: 1_000,
+    };
+    store.users().create(&user).await.expect("user");
+    let client = ClientId::new();
+    let family = FamilyId::new();
+    let old = token(user.id, client, family, 0x30);
+    store
+        .refresh_tokens()
+        .insert(&old)
+        .await
+        .expect("old token");
+
+    let fact = SecurityFact::new(AuditAction::RefreshTokenRotated, 1_000, "refresh:reuse");
+    let rotated = store
+        .refresh_tokens()
+        .rotate(
+            RotateRefreshToken {
+                old_hash: &old.token_hash,
+                new: token(user.id, client, family, 0x31),
+            },
+            &fact,
+            1_000,
+        )
+        .await
+        .expect("first rotation");
+    assert!(matches!(rotated, RotateOutcome::Rotated(_)));
+
+    let replay = store
+        .refresh_tokens()
+        .rotate(
+            RotateRefreshToken {
+                old_hash: &old.token_hash,
+                new: token(user.id, client, family, 0x32),
+            },
+            &fact,
+            1_000,
+        )
+        .await
+        .expect("replay");
+    assert!(matches!(replay, RotateOutcome::ReuseDetected { .. }));
+
+    assert!(
+        store
+            .access_tokens()
+            .is_denied("any-jti", &family, 1_000)
+            .await
+            .expect("denial check"),
+        "reuse detection must deny the family's already-issued access tokens"
+    );
+
+    store.users().delete(&user.id).await.expect("cleanup");
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}

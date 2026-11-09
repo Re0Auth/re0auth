@@ -181,6 +181,9 @@ impl BindingRepo for MemoryStore {
         let Some(binding) = inner.bindings.get_mut(id) else {
             return Err(RepoError::NotFound);
         };
+        if binding.status == BindingStatus::Revoked {
+            return Ok(());
+        }
         binding.status = BindingStatus::Revoked;
         binding.updated_at = now;
         inner.sub_credentials.remove(id);

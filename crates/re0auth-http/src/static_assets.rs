@@ -108,7 +108,13 @@ fn asset_response(path: &str, file: rust_embed::EmbeddedFile, head: bool) -> Res
     if path == INDEX {
         builder = builder
             .header(header::X_FRAME_OPTIONS, "DENY")
-            .header(header::REFERRER_POLICY, "no-referrer");
+            .header(header::REFERRER_POLICY, "no-referrer")
+            // The shell is the one HTML document the SPA ships. A CSP here
+            // bounds what a future injection could load or execute.
+            .header(
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; form-action 'self'",
+            );
     }
 
     builder
@@ -196,5 +202,30 @@ mod tests {
     async fn non_read_methods_are_rejected() {
         let response = serve(request(Method::POST, "/login")).await;
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+}
+
+#[cfg(test)]
+mod s19_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+
+    #[tokio::test]
+    async fn s19_the_spa_shell_carries_a_content_security_policy() {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/")
+            .body(Body::empty())
+            .expect("request");
+        let response = serve(request).await;
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .expect("the shell must carry a CSP")
+            .to_str()
+            .expect("ascii");
+        assert!(csp.contains("default-src 'self'"), "{csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
     }
 }

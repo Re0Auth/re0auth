@@ -700,6 +700,7 @@ mod tests {
         UpstreamStatus {
             status,
             retry_after_secs: None,
+            error_code: None,
         }
         .into()
     }

@@ -61,6 +61,12 @@ pub struct UpstreamStatus {
     /// a form nothing we talk to uses — so a date is left as "no hint", which is
     /// what the field already means.
     pub retry_after_secs: Option<u64>,
+    /// The OAuth `error` member, when the body carried one.
+    ///
+    /// `invalid_grant` (the grant is dead) and `invalid_client` (our
+    /// configuration is wrong) are both 400s; without this distinction every
+    /// one of them would flip the user's binding to "needs reauthorization".
+    pub error_code: Option<String>,
 }
 
 impl std::fmt::Display for UpstreamStatus {
@@ -257,7 +263,8 @@ impl GuardedClient {
                 .header(reqwest::header::ACCEPT, "application/json")
                 .send()
                 .await?,
-        )?;
+        )
+        .await?;
         self.read_json(response).await
     }
 
@@ -365,7 +372,8 @@ impl GuardedClient {
                 .form(form)
                 .send()
                 .await?,
-        )?;
+        )
+        .await?;
         self.read_json(response).await
     }
 
@@ -396,7 +404,8 @@ impl GuardedClient {
                 .form(&pairs)
                 .send()
                 .await?,
-        )?;
+        )
+        .await?;
         self.read_json(response).await
     }
 
@@ -444,7 +453,8 @@ impl GuardedClient {
                 .form(form)
                 .send()
                 .await?,
-        )?;
+        )
+        .await?;
         self.read_text(response).await
     }
 
@@ -461,7 +471,8 @@ impl GuardedClient {
                 .header(reqwest::header::ACCEPT, accept)
                 .send()
                 .await?,
-        )?;
+        )
+        .await?;
         self.read_text(response).await
     }
 
@@ -487,7 +498,8 @@ impl GuardedClient {
                 .bearer_auth(token)
                 .send()
                 .await?,
-        )?;
+        )
+        .await?;
         self.read_json(response).await
     }
 
@@ -537,22 +549,40 @@ async fn read_limited(mut response: reqwest::Response, limit: usize) -> anyhow::
 /// authorization code answered with `400 invalid_grant` then reaches the user as
 /// `503 idp_unavailable` — the client is told to retry a request that will never
 /// succeed, because the fault was theirs.
-fn ensure_success(response: reqwest::Response) -> anyhow::Result<reqwest::Response> {
+async fn ensure_success(response: reqwest::Response) -> anyhow::Result<reqwest::Response> {
     if response.status().is_success() {
         return Ok(response);
     }
-    Err(status_error(&response).into())
+    let retry_after_secs = retry_after_secs(&response);
+    let status = response.status().as_u16();
+    // Read a bounded prefix: the body is attacker-controlled and the only thing
+    // wanted from it is the OAuth `error` member.
+    let body = read_limited(response, 8 * 1024).await.unwrap_or_default();
+    let error_code = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    Err(UpstreamStatus {
+        status,
+        retry_after_secs,
+        error_code,
+    }
+    .into())
 }
 
-/// Turns a non-success response into the error every caller classifies on.
+/// Non-success status without a body read.
 ///
-/// One constructor rather than one per call site: the fields have to stay in sync
-/// across the paths that read a response, and a site that forgot `Retry-After`
-/// would be a 429 that silently loses its hint.
+/// Used by the paths that only need the code (`get_with_bearer` and friends),
+/// and by tests. `ensure_success` is the body-aware path.
 fn status_error(response: &reqwest::Response) -> UpstreamStatus {
     UpstreamStatus {
         status: response.status().as_u16(),
         retry_after_secs: retry_after_secs(response),
+        error_code: None,
     }
 }
 

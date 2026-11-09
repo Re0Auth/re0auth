@@ -268,7 +268,14 @@ pub(crate) async fn endpoint(
     if !state.metrics_enabled {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if !addr.ip().is_loopback() && crate::admin::admin_session(&state, &headers).await.is_err() {
+    // A same-host reverse proxy makes every request arrive from loopback, so
+    // the peer address alone cannot separate "direct local scrape" from "public
+    // request through the proxy". Forwarding headers are the discriminator: a
+    // proxied call always needs an admin session.
+    let proxied = headers.contains_key("x-forwarded-for") || headers.contains_key("forwarded");
+    if (!addr.ip().is_loopback() || proxied)
+        && crate::admin::admin_session(&state, &headers).await.is_err()
+    {
         return StatusCode::FORBIDDEN.into_response();
     }
     (

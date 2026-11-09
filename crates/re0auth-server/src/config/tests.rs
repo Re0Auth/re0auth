@@ -580,10 +580,12 @@ fn a_connector_token_endpoint_obeys_the_outbound_policy() {
     assert!(error.to_string().contains("allow_loopback"), "{error}");
 
     cfg.tls.allow_loopback = true;
-    validate(&cfg).expect("loopback token endpoint with the switch");
+    cfg.connectors[0].allow_loopback = true;
+    validate(&cfg).expect("loopback token endpoint with the connector switch");
 
     // The browser-facing endpoint stays exempt even with the switch off.
     cfg.tls.allow_loopback = false;
+    cfg.connectors[0].allow_loopback = false;
     let oauth = cfg.connectors[0].oauth.as_mut().expect("oauth");
     oauth.token_endpoint = "https://upstream.example.com/token".into();
     oauth.authorization_endpoint = "http://127.0.0.1:9000/authorize".into();
@@ -602,6 +604,7 @@ fn a_connector_revocation_endpoint_obeys_the_outbound_policy() {
     assert!(error.to_string().contains("revocation_endpoint"), "{error}");
 
     cfg.tls.allow_loopback = true;
+    cfg.connectors[0].allow_loopback = true;
     validate(&cfg).expect("loopback revocation endpoint with the switch");
 }
 
@@ -980,4 +983,81 @@ fn phihub_history_view_maps_v4_sections() {
             "score_history": {"song.0": {"IN": [[2026, [11, [9, [0, [100, 1000000, 1]]]]]]}}
         }))
     );
+}
+
+#[test]
+fn s10_unknown_config_keys_are_rejected() {
+    let dir = std::env::temp_dir().join(format!("re0auth-unknown-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let base = std::fs::read_to_string(example_path()).expect("example");
+
+    let top = dir.join("top.toml");
+    std::fs::write(&top, format!("unknown_key = 1\n{base}")).expect("write");
+    assert!(
+        load_config(&top).is_err(),
+        "an unknown top-level key must not be silently ignored"
+    );
+
+    let nested = dir.join("nested.toml");
+    std::fs::write(
+        &nested,
+        base.replace("[server]", "[server]\ntrusehd_proxies = []"),
+    )
+    .expect("write");
+    assert!(
+        load_config(&nested).is_err(),
+        "an unknown nested key must not be silently ignored"
+    );
+}
+
+#[test]
+fn s25_connector_oauth_http_uses_its_own_loopback_flag() {
+    fn connector(allow_loopback: bool) -> ConnectorConfig {
+        let toml = format!(
+            r#"
+id = "local"
+base_url = "https://api.example.com"
+allow_loopback = {allow_loopback}
+[oauth]
+authorization_endpoint = "https://idp.example/authorize"
+token_endpoint = "http://127.0.0.1:9000/token"
+userinfo_endpoint = "https://idp.example/userinfo"
+client_id = "client"
+client_secret = "secret"
+scopes = ["openid"]
+subject_field = "id"
+"#
+        );
+        Figment::new()
+            .merge(figment::providers::Toml::string(&toml))
+            .extract()
+            .expect("connector")
+    }
+
+    let closed = connector(false);
+    let oauth = closed.oauth.as_ref().expect("oauth");
+    assert!(
+        validate_connector_oauth(&closed, oauth).is_err(),
+        "a connector without allow_loopback must not accept an http token endpoint"
+    );
+
+    let open = connector(true);
+    let oauth = open.oauth.as_ref().expect("oauth");
+    validate_connector_oauth(&open, oauth).expect("connector-loopback http is allowed");
+}
+
+#[test]
+fn s26_inflight_budget_must_cover_one_response() {
+    let dir = std::env::temp_dir().join(format!("re0auth-budget-{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let base = std::fs::read_to_string(example_path()).expect("example");
+    let patched = base.replace(
+        "upstream_inflight_bytes = 67108864",
+        "upstream_inflight_bytes = 1024",
+    );
+    assert_ne!(patched, base, "the example must contain the budget line");
+    let path = dir.join("config.toml");
+    std::fs::write(&path, patched).expect("write");
+    let error = load_config(&path).expect_err("budget below one response");
+    assert!(error.to_string().contains("inflight"), "{error}");
 }

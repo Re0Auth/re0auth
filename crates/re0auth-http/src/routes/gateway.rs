@@ -1,8 +1,9 @@
 //! Data-plane gateway routes.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use re0auth_api::rate::Lane;
@@ -10,7 +11,7 @@ use re0auth_app::gateway::{GatewayRequest, Pagination};
 use re0auth_app::oauth::OAuthError;
 
 use crate::parsers::bearer_token;
-use crate::rate::charge;
+use crate::rate::{charge, charge_unauthenticated};
 use crate::request_id;
 use crate::{
     ApiError, AppState, Shape, error_response, gateway_error, invalid_request, no_store,
@@ -44,10 +45,16 @@ use crate::{
 )]
 pub(crate) async fn fetch_upstream(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path((connector, resource)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Problem,
+    )?;
     fetch(state, connector, resource, headers, false, &params).await
 }
 
@@ -72,10 +79,16 @@ pub(crate) async fn fetch_upstream(
 )]
 pub(crate) async fn fetch_raw(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path((connector, resource)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Problem,
+    )?;
     fetch(state, connector, resource, headers, true, &params).await
 }
 
@@ -156,6 +169,12 @@ async fn fetch(
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, content_type);
+    // Raw bodies carry the upstream's bytes; `nosniff` stops a browser from
+    // treating them as active content on this origin.
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
     Ok(no_store(response))
 }
 

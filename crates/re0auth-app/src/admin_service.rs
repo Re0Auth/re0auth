@@ -311,6 +311,10 @@ impl AdminService {
         if let Some(status) = patch.status {
             client.status = status;
         }
+        // The version must actually advance even within one wall-clock second,
+        // or the SQL `updated_at = ?` guard cannot tell the two writes apart.
+        let expected = client.updated_at;
+        client.updated_at = now.max(expected.saturating_add(1));
         let fact = SecurityFact::new(
             AuditAction::ClientUpdated,
             now,
@@ -318,7 +322,11 @@ impl AdminService {
         )
         .actor(actor)
         .with_request_id(correlation_id);
-        self.storage.clients().update(&client, &fact, now).await?;
+        self.storage
+            .clients()
+            .update(&client, expected, &fact, now)
+            .await
+            .map_err(repo_error)?;
         Ok(client_view(client))
     }
 
@@ -444,25 +452,29 @@ impl AdminService {
                         &status_fact,
                         now,
                     )
-                    .await?;
+                    .await
+                    .map_err(repo_error)?;
             }
             (Some(role_fact), None) => {
                 self.storage
                     .users()
                     .set_role(&target, new_role, &role_fact, now)
-                    .await?;
+                    .await
+                    .map_err(repo_error)?;
             }
             (None, Some(status_fact)) if new_status == UserStatus::Banned => {
                 self.storage
                     .users()
                     .set_status_and_revoke_sessions(&target, new_status, &status_fact, now)
-                    .await?;
+                    .await
+                    .map_err(repo_error)?;
             }
             (None, Some(status_fact)) => {
                 self.storage
                     .users()
                     .set_status(&target, new_status, &status_fact, now)
-                    .await?;
+                    .await
+                    .map_err(repo_error)?;
             }
             (None, None) => {}
         }
@@ -856,6 +868,15 @@ fn binding_status_str(status: re0auth_api::ports::BindingStatus) -> &'static str
         BindingStatus::Active => "active",
         BindingStatus::NeedsReauth => "needs_reauth",
         BindingStatus::Revoked => "revoked",
+    }
+}
+
+/// Storage conflicts are business outcomes, not 500s. The last-admin and
+/// optimistic-lock guards live in SQL and report through `Conflict`.
+fn repo_error(error: RepoError) -> AdminError {
+    match error {
+        RepoError::Conflict(message) => AdminError::Conflict(message),
+        other => AdminError::Repo(other),
     }
 }
 

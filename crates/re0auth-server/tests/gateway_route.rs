@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Request, StatusCode};
 use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::crypto::RsaTokenSigner;
@@ -224,7 +225,10 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
         .with_rate_limiter(rate);
 
     Fixture {
-        router: re0auth_http::router(state),
+        router: re0auth_http::router(state).layer(MockConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            1234,
+        )))),
         signer,
         user,
         client_id,
@@ -599,4 +603,37 @@ async fn a_missing_view_path_is_upstream_contract_changed() {
     );
     let error: serde_json::Value = serde_json::from_slice(&body).expect("problem body");
     assert_eq!(error["code"], "upstream_contract_changed");
+}
+
+/// The anonymous budget must be charged before the JWT is verified; otherwise a
+/// caller over quota still costs a signature check plus three queries.
+struct DenyAll;
+
+impl re0auth_api::rate::RateLimiter for DenyAll {
+    fn check(&self, _lane: re0auth_api::rate::Lane, _key: &str) -> re0auth_api::rate::RateDecision {
+        re0auth_api::rate::RateDecision::Deny {
+            retry_after_secs: 7,
+            limit: 1,
+            window_secs: 60,
+        }
+    }
+
+    fn prune(&self) -> usize {
+        0
+    }
+}
+
+#[tokio::test]
+async fn s12_over_quota_callers_are_rejected_before_token_verification() {
+    let fixture = fixture_with_rate(Arc::new(DenyAll)).await;
+    // A forged token would normally be rejected as 401; the point is that the
+    // limiter answers first.
+    let (status, _) = get(
+        &fixture,
+        "/api/v1/upstreams/probe/scores",
+        Some("not-a-real-token"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(fixture.connector.calls().is_empty());
 }

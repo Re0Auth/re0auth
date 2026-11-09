@@ -32,6 +32,7 @@ use re0auth_api::{
 mod audit;
 mod bindings;
 mod clients;
+mod sessions;
 
 #[derive(Default)]
 struct Inner {
@@ -126,9 +127,16 @@ impl UserRepo for MemoryStore {
         now: Unix,
     ) -> RepoResult<()> {
         let mut inner = self.lock();
-        let Some(user) = inner.users.get_mut(id) else {
+        let Some(snapshot) = inner.users.get(id).cloned() else {
             return Err(RepoError::NotFound);
         };
+        if snapshot.role == UserRole::Admin
+            && role != UserRole::Admin
+            && other_active_admins(&inner, id) == 0
+        {
+            return Err(RepoError::Conflict("the last admin cannot be demoted"));
+        }
+        let user = inner.users.get_mut(id).expect("checked above");
         user.role = role;
         user.updated_at = now;
         Self::push_fact(&mut inner, fact);
@@ -142,9 +150,16 @@ impl UserRepo for MemoryStore {
         now: Unix,
     ) -> RepoResult<()> {
         let mut inner = self.lock();
-        let Some(user) = inner.users.get_mut(id) else {
+        let Some(snapshot) = inner.users.get(id).cloned() else {
             return Err(RepoError::NotFound);
         };
+        if snapshot.role == UserRole::Admin
+            && status == UserStatus::Banned
+            && other_active_admins(&inner, id) == 0
+        {
+            return Err(RepoError::Conflict("the last admin cannot be banned"));
+        }
+        let user = inner.users.get_mut(id).expect("checked above");
         user.status = status;
         user.updated_at = now;
         Self::push_fact(&mut inner, fact);
@@ -158,9 +173,16 @@ impl UserRepo for MemoryStore {
         now: Unix,
     ) -> RepoResult<()> {
         let mut inner = self.lock();
-        let Some(user) = inner.users.get_mut(id) else {
+        let Some(snapshot) = inner.users.get(id).cloned() else {
             return Err(RepoError::NotFound);
         };
+        if snapshot.role == UserRole::Admin
+            && status == UserStatus::Banned
+            && other_active_admins(&inner, id) == 0
+        {
+            return Err(RepoError::Conflict("the last admin cannot be banned"));
+        }
+        let user = inner.users.get_mut(id).expect("checked above");
         user.status = status;
         user.updated_at = now;
         Self::push_fact(&mut inner, fact);
@@ -181,9 +203,18 @@ impl UserRepo for MemoryStore {
         now: Unix,
     ) -> RepoResult<()> {
         let mut inner = self.lock();
-        let Some(user) = inner.users.get_mut(id) else {
+        let Some(snapshot) = inner.users.get(id).cloned() else {
             return Err(RepoError::NotFound);
         };
+        if snapshot.role == UserRole::Admin
+            && (role != UserRole::Admin || status == UserStatus::Banned)
+            && other_active_admins(&inner, id) == 0
+        {
+            return Err(RepoError::Conflict(
+                "the last admin cannot be demoted or banned",
+            ));
+        }
+        let user = inner.users.get_mut(id).expect("checked above");
         user.role = role;
         user.status = status;
         user.updated_at = now;
@@ -203,7 +234,7 @@ impl UserRepo for MemoryStore {
         Ok(inner
             .users
             .values()
-            .filter(|user| user.role == UserRole::Admin)
+            .filter(|user| user.role == UserRole::Admin && user.status == UserStatus::Active)
             .count() as u64)
     }
     async fn create(&self, user: &User) -> RepoResult<()> {
@@ -346,82 +377,6 @@ impl UserRepo for MemoryStore {
 }
 
 #[async_trait]
-impl SessionRepo for MemoryStore {
-    async fn create(&self, session: &Session) -> RepoResult<()> {
-        let mut inner = self.lock();
-        if !inner.users.contains_key(&session.user_id) {
-            return Err(RepoError::NotFound);
-        }
-        if inner.sessions.contains_key(&session.id_hash) {
-            return Err(RepoError::Conflict("session hash"));
-        }
-        inner
-            .sessions
-            .insert(session.id_hash.clone(), session.clone());
-        Ok(())
-    }
-
-    async fn find_active(&self, id_hash: &[u8], now: Unix) -> RepoResult<Option<Session>> {
-        let inner = self.lock();
-        let Some(session) = inner.sessions.get(id_hash) else {
-            return Ok(None);
-        };
-        let active = session.revoked_at.is_none()
-            && now < session.idle_expires_at
-            && now < session.absolute_expires_at;
-        Ok(active.then(|| session.clone()))
-    }
-
-    async fn touch(&self, id_hash: &[u8], now: Unix, idle_expires_at: Unix) -> RepoResult<()> {
-        let mut inner = self.lock();
-        let Some(session) = inner.sessions.get_mut(id_hash) else {
-            return Err(RepoError::NotFound);
-        };
-        if session.revoked_at.is_some() {
-            return Err(RepoError::Revoked);
-        }
-        if now >= session.idle_expires_at || now >= session.absolute_expires_at {
-            return Err(RepoError::NotFound);
-        }
-        session.last_seen_at = now;
-        session.idle_expires_at = idle_expires_at;
-        Ok(())
-    }
-
-    async fn revoke(&self, id_hash: &[u8], now: Unix) -> RepoResult<()> {
-        let mut inner = self.lock();
-        let Some(session) = inner.sessions.get_mut(id_hash) else {
-            return Err(RepoError::NotFound);
-        };
-        session.revoked_at = Some(now);
-        Ok(())
-    }
-
-    async fn revoke_all(&self, user: &UserId, now: Unix) -> RepoResult<u64> {
-        let mut inner = self.lock();
-        let mut revoked = 0;
-        for session in inner.sessions.values_mut() {
-            if session.user_id == *user && session.revoked_at.is_none() {
-                session.revoked_at = Some(now);
-                revoked += 1;
-            }
-        }
-        Ok(revoked)
-    }
-
-    async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {
-        let mut inner = self.lock();
-        let previous = inner.sessions.len();
-        inner.sessions.retain(|_, session| {
-            !(session.idle_expires_at <= before
-                || session.absolute_expires_at <= before
-                || session.revoked_at.is_some_and(|at| at <= before))
-        });
-        Ok((previous - inner.sessions.len()) as u64)
-    }
-}
-
-#[async_trait]
 impl AuthCodeRepo for MemoryStore {
     async fn insert(&self, code: &AuthCode, fact: &SecurityFact) -> RepoResult<()> {
         let mut inner = self.lock();
@@ -533,6 +488,9 @@ impl RefreshTokenRepo for MemoryStore {
                     family_revoked += 1;
                 }
             }
+            // Same contract as the SQLite store: reuse denies the family's
+            // access tokens too, not just the refresh rows.
+            inner.revoked_families.insert(old.family_id.0.to_string());
             Self::push_fact(&mut inner, &fact.as_reuse());
             return Ok(RotateOutcome::ReuseDetected { family_revoked });
         }
@@ -1491,4 +1449,19 @@ impl SigningKeyRepo for MemoryStore {
             None => Err(RepoError::NotFound),
         }
     }
+}
+
+/// Active admins other than `id`.
+///
+/// Both stores use this floor: the target may leave the admin set only when
+/// somebody else is still an active admin. Counting banned admins would let a
+/// banned account prop the invariant up.
+fn other_active_admins(inner: &Inner, id: &UserId) -> u64 {
+    inner
+        .users
+        .values()
+        .filter(|user| {
+            user.id != *id && user.role == UserRole::Admin && user.status == UserStatus::Active
+        })
+        .count() as u64
 }

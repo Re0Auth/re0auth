@@ -2775,6 +2775,27 @@ async fn metrics_is_hidden_by_default() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// A same-host reverse proxy makes every public request arrive from loopback.
+/// The forwarding header is what marks the call as proxied, so it must require
+/// an admin session rather than inheriting the local-scrape exception.
+#[tokio::test]
+async fn s04_metrics_behind_a_proxy_requires_admin() {
+    let app = app_with_metrics().await;
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .header("x-forwarded-for", "203.0.113.9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn form_post_page_honours_query_and_header_locale() {
     let app = app().await;

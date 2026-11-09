@@ -9,3 +9,9 @@ spikes
 backups
 conformance/results
 *.log
+/data
+/config.toml
+/config.*.toml
+/secrets
+*.bat
+/tmp

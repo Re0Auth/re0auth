@@ -281,8 +281,7 @@ impl AuthService {
         random: Arc<dyn Random>,
         issuer: impl Into<String>,
     ) -> Self {
-        let issuer = issuer.into().trim_end_matches('/').to_string();
-        let secure_cookies = issuer.starts_with("https://");
+        let (issuer, secure_cookies) = canonical_issuer(&issuer.into());
         Self {
             storage,
             idps,
@@ -1265,6 +1264,21 @@ fn csrf_matches(token: &str, stored: &[u8]) -> bool {
     bool::from(subtle::ConstantTimeEq::ct_eq(digest.as_slice(), stored))
 }
 
+/// Canonicalises the issuer once, so the cookie flag and the `iss` claim agree.
+///
+/// A literal `starts_with("https://")` disagreed with the URL-based config
+/// validation: `HTTPS://host` passed validation but silently produced cookies
+/// without `Secure`/`__Host-`, letting a sibling subdomain plant them.
+fn canonical_issuer(raw: &str) -> (String, bool) {
+    match url::Url::parse(raw.trim()) {
+        Ok(url) => (
+            url.as_str().trim_end_matches('/').to_string(),
+            url.scheme() == "https",
+        ),
+        Err(_) => (raw.trim().trim_end_matches('/').to_string(), false),
+    }
+}
+
 fn display_name(identity: &re0auth_api::idp::IdpIdentity) -> String {
     if identity.display_name.trim().is_empty() {
         identity.subject.clone()
@@ -1312,5 +1326,27 @@ mod tests {
             attempts.entry(client).or_insert_with(|| vec![1]);
         }
         assert!(attempts.len() <= MAX_DEVICE_ATTEMPT_KEYS);
+    }
+}
+
+#[cfg(test)]
+mod issuer_tests {
+    use super::canonical_issuer;
+
+    #[test]
+    fn s03_issuer_scheme_is_parsed_not_prefix_matched() {
+        for raw in [
+            "https://auth.example.com",
+            "HTTPS://auth.example.com",
+            " https://auth.example.com ",
+            "https://auth.example.com/",
+        ] {
+            let (issuer, secure) = canonical_issuer(raw);
+            assert!(secure, "{raw:?} must be recognised as https");
+            assert_eq!(issuer, "https://auth.example.com", "{raw:?}");
+        }
+        let (issuer, secure) = canonical_issuer("http://127.0.0.1:8080");
+        assert!(!secure);
+        assert_eq!(issuer, "http://127.0.0.1:8080");
     }
 }

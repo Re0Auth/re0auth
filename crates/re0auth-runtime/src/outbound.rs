@@ -25,6 +25,9 @@ const ALWAYS_DENIED: &[(&str, &str)] = &[
     ("240.0.0.0/4", "reserved"),
     ("::/128", "unspecified"),
     ("::1/128", "loopback"),
+    ("64:ff9b::/96", "NAT64 well-known prefix"),
+    ("64:ff9b:1::/48", "NAT64 local-use prefix"),
+    ("2002::/16", "6to4"),
     ("fc00::/7", "unique local"),
     ("fe80::/10", "link-local"),
     ("ff00::/8", "multicast"),
@@ -88,7 +91,11 @@ impl std::fmt::Display for OutboundDenied {
 #[must_use]
 pub fn normalize(address: IpAddr) -> IpAddr {
     match address {
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+        // `to_ipv4` covers both `::ffff:a.b.c.d` and the deprecated
+        // IPv4-compatible `::a.b.c.d`. `::1` must stay IPv6: converting it
+        // would turn loopback into 0.0.0.1 and lose the loopback exception.
+        IpAddr::V6(v6) if v6.is_loopback() => IpAddr::V6(v6),
+        IpAddr::V6(v6) => match v6.to_ipv4() {
             Some(v4) => IpAddr::V4(v4),
             None => IpAddr::V6(v6),
         },
@@ -428,5 +435,29 @@ mod tests {
     fn carrier_grade_nat_is_treated_as_private() {
         assert_eq!(classify(ip("100.64.0.1")), AddressClass::Private);
         assert!(check_literal("100.64.0.1", policy()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod s13_tests {
+    use super::*;
+
+    #[test]
+    fn s13_nat64_6to4_and_compatible_forms_are_denied() {
+        for text in [
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b:1::a9fe:a9fe",
+            "2002:a9fe:a9fe::",
+            "::a9fe:a9fe",
+        ] {
+            assert!(
+                check_literal(text, OutboundPolicy::PublicOnly).is_err(),
+                "{text} must not be treated as public"
+            );
+        }
+        assert!(
+            check_literal("2001:db8::1", OutboundPolicy::PublicOnly).is_ok(),
+            "a plain global address stays reachable"
+        );
     }
 }

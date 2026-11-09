@@ -209,7 +209,12 @@ pub async fn run(cfg: &Config, command: AdminCommand) -> anyhow::Result<()> {
             let created = admin::create_session(&store, &clock, &random, UserId(user_id))
                 .await
                 .context("create session")?;
-            println!("session_cookie=re0auth_session={}", created.cookie);
+            println!(
+                "session_cookie={}={}",
+                session_cookie_name(&cfg.server.issuer),
+                created.cookie
+            );
+            println!("session_cookie_is_shown_once=true");
             println!("csrf_token={}", created.csrf_token);
             println!("idle_expires_at={}", created.session.idle_expires_at);
             println!(
@@ -398,5 +403,37 @@ fn parse_client_status(raw: &str) -> anyhow::Result<ClientStatus> {
         other => {
             bail!("unknown client status {other:?}; expected pending, approved, suspended, revoked")
         }
+    }
+}
+
+/// The cookie name the server will actually read.
+///
+/// A secure deployment only accepts the `__Host-` name; printing the plain one
+/// made the README's manual-login flow fail with no explanation.
+fn session_cookie_name(issuer: &str) -> &'static str {
+    match url::Url::parse(issuer.trim()) {
+        Ok(url) if url.scheme() == "https" => "__Host-re0auth_session",
+        _ => "re0auth_session",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_cookie_name;
+
+    #[test]
+    fn s20_session_cookie_name_follows_the_issuer_scheme() {
+        assert_eq!(
+            session_cookie_name("https://auth.example.com"),
+            "__Host-re0auth_session"
+        );
+        assert_eq!(
+            session_cookie_name("HTTPS://auth.example.com"),
+            "__Host-re0auth_session"
+        );
+        assert_eq!(
+            session_cookie_name("http://127.0.0.1:8080"),
+            "re0auth_session"
+        );
     }
 }

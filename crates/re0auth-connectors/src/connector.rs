@@ -551,6 +551,7 @@ mod tests {
         re0auth_runtime::http_client::UpstreamStatus {
             status,
             retry_after_secs: None,
+            error_code: None,
         }
         .into()
     }
@@ -592,6 +593,7 @@ mod tests {
         let error = re0auth_runtime::http_client::UpstreamStatus {
             status: 429,
             retry_after_secs: Some(42),
+            error_code: None,
         };
         assert_eq!(
             map_transport_error(&error.into()),

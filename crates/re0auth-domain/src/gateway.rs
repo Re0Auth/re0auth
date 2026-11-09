@@ -57,9 +57,10 @@ fn validate(value: &str, max: usize) -> Result<(), ResourceError> {
     if value.len() > max {
         return Err(ResourceError::TooLong);
     }
-    if value.bytes().all(|byte| {
-        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
-    }) {
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
         Ok(())
     } else {
         Err(ResourceError::IllegalCharacter)
@@ -108,12 +109,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_uppercase_subjects() {
+    fn s29_accepts_mixed_case_subjects() {
+        // GitHub logins may contain uppercase; the path encoder handles them,
+        // so rejecting them would bind an account that can never be read.
+        assert!(validate_subject("Player-1").is_ok());
+        assert!(validate_subject("player-1").is_ok());
         assert_eq!(
-            validate_subject("Player-1"),
+            validate_subject("player/1"),
             Err(ResourceError::IllegalCharacter)
         );
-        assert!(validate_subject("player-1").is_ok());
     }
 
     #[test]
@@ -147,9 +151,9 @@ mod properties {
         }
 
         #[test]
-        fn ascii_outside_the_alphabet_is_rejected(value in r"[a-z0-9_-]{0,63}", bad in 0u8..=127) {
+        fn ascii_outside_the_alphabet_is_rejected(value in r"[A-Za-z0-9_-]{0,63}", bad in 0u8..=127) {
             prop_assume!(
-                !(bad.is_ascii_lowercase() || bad.is_ascii_digit() || bad == b'-' || bad == b'_')
+                !(bad.is_ascii_alphanumeric() || bad == b'-' || bad == b'_')
             );
             let mut candidate = value;
             candidate.push(char::from(bad));

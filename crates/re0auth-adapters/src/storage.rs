@@ -743,6 +743,17 @@ impl RefreshTokenRepo for SqliteStore {
             .execute(&mut *tx)
             .await
             .map_err(db_error)?;
+            // Same-transaction family denial: access tokens already issued under
+            // this family must stop verifying, not just the refresh rows.
+            sqlx::query(
+                "INSERT INTO revoked_families (family_id, revoked_at) VALUES (?, ?) \
+                 ON CONFLICT(family_id) DO NOTHING",
+            )
+            .bind(old.family_id.0.to_string())
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
             record_fact(&mut tx, &fact.as_reuse()).await?;
             tx.commit().await.map_err(db_error)?;
             return Ok(RotateOutcome::ReuseDetected {
@@ -777,6 +788,15 @@ impl RefreshTokenRepo for SqliteStore {
             )
             .bind(now)
             .bind(old.family_id.0.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+            sqlx::query(
+                "INSERT INTO revoked_families (family_id, revoked_at) VALUES (?, ?) \
+                 ON CONFLICT(family_id) DO NOTHING",
+            )
+            .bind(old.family_id.0.to_string())
+            .bind(now)
             .execute(&mut *tx)
             .await
             .map_err(db_error)?;
@@ -1276,24 +1296,41 @@ impl ClientRepo for SqliteStore {
             .map_err(db_error)
     }
 
-    async fn update(&self, client: &Client, fact: &SecurityFact, now: Unix) -> RepoResult<()> {
+    async fn update(
+        &self,
+        client: &Client,
+        expected_updated_at: Unix,
+        fact: &SecurityFact,
+        _now: Unix,
+    ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         let result = sqlx::query(
             "UPDATE clients SET name = ?, redirect_uris = ?, allowed_scopes = ?, \
-             raw_access = ?, status = ?, updated_at = ? WHERE id = ?",
+             raw_access = ?, status = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
         )
         .bind(&client.name)
         .bind(scopes_json(&client.redirect_uris)?)
         .bind(scopes_json(&client.allowed_scopes)?)
         .bind(i64::from(client.raw_access))
         .bind(client_status_to_str(client.status))
-        .bind(now)
+        .bind(client.updated_at)
         .bind(client.id.0.to_string())
+        .bind(expected_updated_at)
         .execute(&mut *tx)
         .await
         .map_err(db_error)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::NotFound);
+            let exists = sqlx::query("SELECT 1 FROM clients WHERE id = ?")
+                .bind(client.id.0.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db_error)?
+                .is_some();
+            return Err(if exists {
+                RepoError::Conflict("client was modified")
+            } else {
+                RepoError::NotFound
+            });
         }
         record_fact(&mut tx, fact).await?;
         tx.commit().await.map_err(db_error)?;

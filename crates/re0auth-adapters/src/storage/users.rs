@@ -233,15 +233,22 @@ impl UserRepo for SqliteStore {
         now: Unix,
     ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let result = sqlx::query("UPDATE users SET role = ?, updated_at = ? WHERE id = ?")
-            .bind(role_to_str(role))
-            .bind(now)
-            .bind(id.0.to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
+        let guard = role_to_str(role);
+        let result = sqlx::query(
+            "UPDATE users SET role = ?, updated_at = ? WHERE id = ? \
+             AND (role != 'admin' OR ? = 'admin' \
+                  OR (SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active' AND id != ?) >= 1)",
+        )
+        .bind(guard)
+        .bind(now)
+        .bind(id.0.to_string())
+        .bind(guard)
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::NotFound);
+            return Err(user_update_error(&mut tx, id, "the last admin cannot be demoted").await);
         }
         record_fact(&mut tx, fact).await?;
         tx.commit().await.map_err(db_error)?;
@@ -256,15 +263,22 @@ impl UserRepo for SqliteStore {
         now: Unix,
     ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let result = sqlx::query("UPDATE users SET status = ?, updated_at = ? WHERE id = ?")
-            .bind(user_status_to_str(status))
-            .bind(now)
-            .bind(id.0.to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
+        let guard = user_status_to_str(status);
+        let result = sqlx::query(
+            "UPDATE users SET status = ?, updated_at = ? WHERE id = ? \
+             AND (role != 'admin' OR ? != 'banned' \
+                  OR (SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active' AND id != ?) >= 1)",
+        )
+        .bind(guard)
+        .bind(now)
+        .bind(id.0.to_string())
+        .bind(guard)
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::NotFound);
+            return Err(user_update_error(&mut tx, id, "the last admin cannot be banned").await);
         }
         record_fact(&mut tx, fact).await?;
         tx.commit().await.map_err(db_error)?;
@@ -279,15 +293,22 @@ impl UserRepo for SqliteStore {
         now: Unix,
     ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let result = sqlx::query("UPDATE users SET status = ?, updated_at = ? WHERE id = ?")
-            .bind(user_status_to_str(status))
-            .bind(now)
-            .bind(id.0.to_string())
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
+        let guard = user_status_to_str(status);
+        let result = sqlx::query(
+            "UPDATE users SET status = ?, updated_at = ? WHERE id = ? \
+             AND (role != 'admin' OR ? != 'banned' \
+                  OR (SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active' AND id != ?) >= 1)",
+        )
+        .bind(guard)
+        .bind(now)
+        .bind(id.0.to_string())
+        .bind(guard)
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::NotFound);
+            return Err(user_update_error(&mut tx, id, "the last admin cannot be banned").await);
         }
         record_fact(&mut tx, fact).await?;
         sqlx::query("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL")
@@ -310,17 +331,31 @@ impl UserRepo for SqliteStore {
         now: Unix,
     ) -> RepoResult<()> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let result =
-            sqlx::query("UPDATE users SET role = ?, status = ?, updated_at = ? WHERE id = ?")
-                .bind(role_to_str(role))
-                .bind(user_status_to_str(status))
-                .bind(now)
-                .bind(id.0.to_string())
-                .execute(&mut *tx)
-                .await
-                .map_err(db_error)?;
+        let role_guard = role_to_str(role);
+        let status_guard = user_status_to_str(status);
+        let result = sqlx::query(
+            "UPDATE users SET role = ?, status = ?, updated_at = ? WHERE id = ? \
+             AND (role != 'admin' \
+                  OR (? = 'admin' AND ? != 'banned') \
+                  OR (SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active' AND id != ?) >= 1)",
+        )
+        .bind(role_guard)
+        .bind(status_guard)
+        .bind(now)
+        .bind(id.0.to_string())
+        .bind(role_guard)
+        .bind(status_guard)
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::NotFound);
+            return Err(user_update_error(
+                &mut tx,
+                id,
+                "the last admin cannot be demoted or banned",
+            )
+            .await);
         }
         record_fact(&mut tx, role_fact).await?;
         record_fact(&mut tx, status_fact).await?;
@@ -339,12 +374,33 @@ impl UserRepo for SqliteStore {
     }
 
     async fn count_admins(&self) -> RepoResult<u64> {
-        let row = sqlx::query("SELECT COUNT(*) AS n FROM users WHERE role = ?")
-            .bind(role_to_str(UserRole::Admin))
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db_error)?;
+        let row =
+            sqlx::query("SELECT COUNT(*) AS n FROM users WHERE role = ? AND status = 'active'")
+                .bind(role_to_str(UserRole::Admin))
+                .fetch_one(&self.pool)
+                .await
+                .map_err(db_error)?;
         let count: i64 = row.try_get("n").map_err(db_error)?;
         Ok(u64::try_from(count).unwrap_or(0))
+    }
+}
+
+/// Maps a zero-row guarded update to NotFound or Conflict.
+///
+/// The SQL guard is what makes the last-admin check atomic; this only decides
+/// which error the caller sees, so a missing row is not reported as a rule
+/// violation and a surviving row is not reported as missing.
+async fn user_update_error(
+    executor: &mut sqlx::SqliteConnection,
+    id: &UserId,
+    conflict: &'static str,
+) -> RepoError {
+    let row = sqlx::query("SELECT 1 FROM users WHERE id = ?")
+        .bind(id.0.to_string())
+        .fetch_optional(executor)
+        .await;
+    match row {
+        Ok(Some(_)) => RepoError::Conflict(conflict),
+        _ => RepoError::NotFound,
     }
 }

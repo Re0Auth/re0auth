@@ -1106,9 +1106,9 @@ pub trait ClientRepo: Send + Sync {
     /// Clients, newest first, strictly older than `before` when it is given.
     async fn list(&self, before: Option<&ClientId>, limit: u32) -> RepoResult<Vec<Client>>;
     async fn count(&self) -> RepoResult<u64>;
-    /// Replaces the mutable fields (`name`, `redirect_uris`, `allowed_scopes`,
-    /// `raw_access`, `status`). `id`, `created_at` and the secret are untouched.
-    async fn update(&self, client: &Client, fact: &SecurityFact, now: Unix) -> RepoResult<()>;
+    /// Replaces the mutable fields; `id`, `created_at` and the secret are untouched.
+    #[rustfmt::skip]
+    async fn update(&self, client: &Client, expected_updated_at: Unix, fact: &SecurityFact, now: Unix) -> RepoResult<()>;
     /// Replaces the secret hash (rotation). `None` makes the client public.
     async fn set_secret_hash(
         &self,

@@ -233,9 +233,13 @@ fn refresh_transport_error(error: anyhow::Error) -> UpstreamError {
         return UpstreamError::Unavailable;
     };
     match status.status {
-        // invalid_grant / invalid_client: reauthorization will not fix a bad
-        // client secret, but it is not a transient upstream outage either.
-        400 | 401 | 403 => UpstreamError::Rejected,
+        // Only `invalid_grant` means the user must reauthorize. A 401/403 or an
+        // `invalid_client` from a rotated secret is an operator problem, and
+        // flipping the binding to `needs_reauth` would make it permanent.
+        400 | 401 | 403 => match status.error_code.as_deref() {
+            Some("invalid_grant") => UpstreamError::Rejected,
+            _ => UpstreamError::Unavailable,
+        },
         429 => UpstreamError::RateLimited {
             retry_after_secs: status.retry_after_secs,
         },
@@ -558,5 +562,34 @@ mod tests {
         assert!(seen.contains("refresh_token=old-refresh"), "{seen}");
         assert!(seen.contains("client_id=re0auth"), "{seen}");
         assert!(seen.contains("client_secret=secret"), "{seen}");
+    }
+}
+
+#[cfg(test)]
+mod s11_tests {
+    use super::*;
+    use re0auth_runtime::http_client::UpstreamStatus;
+
+    fn status(code: Option<&str>) -> UpstreamStatus {
+        UpstreamStatus {
+            status: 400,
+            retry_after_secs: None,
+            error_code: code.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn s11_only_invalid_grant_forces_reauthorization() {
+        assert_eq!(
+            refresh_transport_error(status(Some("invalid_grant")).into()),
+            UpstreamError::Rejected
+        );
+        for code in [Some("invalid_client"), Some("invalid_request"), None] {
+            assert_eq!(
+                refresh_transport_error(status(code).into()),
+                UpstreamError::Unavailable,
+                "{code:?} must not flip the binding"
+            );
+        }
     }
 }

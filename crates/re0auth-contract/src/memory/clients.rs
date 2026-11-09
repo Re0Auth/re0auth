@@ -52,18 +52,26 @@ impl ClientRepo for MemoryStore {
         Ok(self.lock().clients.len() as u64)
     }
 
-    async fn update(&self, client: &Client, fact: &SecurityFact, now: Unix) -> RepoResult<()> {
+    async fn update(
+        &self,
+        client: &Client,
+        expected_updated_at: Unix,
+        fact: &SecurityFact,
+        _now: Unix,
+    ) -> RepoResult<()> {
         let mut inner = self.lock();
         let Some(stored) = inner.clients.get_mut(&client.id) else {
             return Err(RepoError::NotFound);
         };
+        if stored.updated_at != expected_updated_at {
+            return Err(RepoError::Conflict("client was modified"));
+        }
         // `created_at` and the secret are not part of an edit.
         let created_at = stored.created_at;
         let secret_hash = stored.secret_hash.clone();
         *stored = Client {
             created_at,
             secret_hash,
-            updated_at: now,
             ..client.clone()
         };
         Self::push_fact(&mut inner, fact);

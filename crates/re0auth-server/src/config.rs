@@ -7,6 +7,7 @@ use re0auth_adapters::storage::{DatabaseOptions, SqliteSynchronous};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -55,6 +56,7 @@ pub struct Config {
 /// One upstream connector. Path templates live here, never in a request
 /// (ADR-0032), so a caller can never choose the URL.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectorConfig {
     /// Stable identifier, e.g. `phigros`. Also the bindings' `upstream_id`.
     pub id: String,
@@ -276,6 +278,7 @@ fn body_value(raw: &str) -> re0auth_api::connector::BodyValue {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub bind: String,
     pub issuer: String,
@@ -284,6 +287,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     pub url: String,
     /// SQLite 同步模式，默认 normal。
@@ -326,6 +330,7 @@ fn default_pool_size() -> u32 {
 
 /// 超时上限；限流另由 `[rate_limit]` 负责。
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TimeoutsConfig {
     /// 单个入站请求的处理上限（秒）。
     #[serde(default = "default_request_secs")]
@@ -357,6 +362,7 @@ fn default_master_key_version() -> u32 {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CryptoConfig {
     pub master_key_file: String,
     /// Version stamped on newly sealed records and client-secret hashes.
@@ -387,6 +393,7 @@ pub struct RetiredKeyConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LimitsConfig {
     pub upstream_response_bytes: u64,
     pub upstream_inflight_bytes: u64,
@@ -395,6 +402,7 @@ pub struct LimitsConfig {
 
 /// Prometheus exposition settings.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -405,6 +413,7 @@ pub struct MetricsConfig {
 /// Off unless `enabled = true`: caching changes what callers observe during an
 /// outage, so it is an explicit operator decision rather than a default.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CacheConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -429,6 +438,7 @@ impl Default for CacheConfig {
 /// 绑定凭证的惰性推断阈值。
 /// 不探测上游，只按未刷新时长推断
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BindingProbeConfig {
     /// 超过该天数未刷新即视为失效
     #[serde(default = "default_binding_probe_after_days")]
@@ -460,6 +470,7 @@ fn default_cache_ttl_secs() -> u64 {
 /// as it is written, which reads like "cleanup is off" but behaves like
 /// "everything is expired".
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetentionConfig {
     /// Security facts, kept for post-incident review.
     #[serde(default = "default_audit_fact_days")]
@@ -509,6 +520,7 @@ fn default_cache_max_bytes() -> u64 {
 /// so a client ceiling alone would let them spend a single player's allowance
 /// without limit.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     #[serde(default = "default_unauth_burst")]
     pub unauthenticated_burst: u32,
@@ -568,6 +580,7 @@ fn default_user_period() -> u64 {
 
 /// Outbound TLS trust. `extra_ca_file` is appended to Mozilla's bundle (§6.9).
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TlsSettings {
     #[serde(default)]
     pub extra_ca_file: Option<String>,
@@ -940,6 +953,17 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
     if cfg.limits.upstream_inflight_bytes == 0 {
         anyhow::bail!("limits.upstream_inflight_bytes must be > 0");
     }
+    // One request reserves the whole response cap before the upstream is
+    // contacted. A budget below that cap admits nothing, so every fetch would
+    // fail with `upstream_capacity_exhausted`.
+    if cfg.limits.upstream_inflight_bytes < cfg.limits.upstream_response_bytes {
+        anyhow::bail!(
+            "limits.upstream_inflight_bytes ({}) must be >= limits.upstream_response_bytes ({}); \
+             a single fetch reserves the whole response cap",
+            cfg.limits.upstream_inflight_bytes,
+            cfg.limits.upstream_response_bytes
+        );
+    }
     if cfg.limits.inbound_body_bytes == 0 {
         anyhow::bail!("limits.inbound_body_bytes must be > 0");
     }
@@ -1096,7 +1120,7 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
                 .map_err(|error| anyhow::anyhow!("connector {}: {error}", connector.id))?;
         }
         if let Some(oauth) = &connector.oauth {
-            validate_connector_oauth(cfg, &connector.id, oauth)?;
+            validate_connector_oauth(connector, oauth)?;
         }
     }
     Ok(())
@@ -1110,11 +1134,10 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
 /// this pairing exists to prevent. `authorization_endpoint` is the exception: the
 /// browser navigates to it, the server never requests it.
 fn validate_connector_oauth(
-    cfg: &Config,
-    id: &str,
+    connector: &ConnectorConfig,
     oauth: &ConnectorOAuthConfig,
 ) -> anyhow::Result<()> {
-    let label = format!("connector {id}.oauth");
+    let label = format!("connector {}.oauth", connector.id);
     // Required-ness first: an empty endpoint would otherwise fail the scheme
     // check below and report "must be https", which sends the reader looking for
     // a scheme problem instead of a missing field.
@@ -1151,20 +1174,20 @@ fn validate_connector_oauth(
         anyhow::bail!("{label}.authorization_endpoint must be an absolute https URL");
     }
     for endpoint in [&oauth.token_endpoint, &oauth.userinfo_endpoint] {
-        if !is_https_or_local_http(endpoint, cfg.tls.allow_loopback) {
+        if !is_https_or_local_http(endpoint, connector.allow_loopback) {
             anyhow::bail!(
                 "{label} endpoints must be https URLs \
-                 (http only for loopback with tls.allow_loopback): {endpoint}"
+                 (http only for loopback with connector allow_loopback): {endpoint}"
             );
         }
     }
     // 这个地址我们也会请求，所以受同一条出网策略约束。
     if let Some(endpoint) = oauth.revocation_endpoint.as_deref()
-        && !is_https_or_local_http(endpoint, cfg.tls.allow_loopback)
+        && !is_https_or_local_http(endpoint, connector.allow_loopback)
     {
         anyhow::bail!(
             "{label}.revocation_endpoint must be an https URL \
-             (http only for loopback with tls.allow_loopback): {endpoint}"
+             (http only for loopback with connector allow_loopback): {endpoint}"
         );
     }
     Ok(())

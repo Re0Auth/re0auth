@@ -1329,10 +1329,13 @@ pub async fn admin_query_contract<S: Storage>(store: &S) {
     let mut edited = client.clone();
     edited.name = "renamed".to_string();
     edited.raw_access = true;
+    let expected_updated_at = edited.updated_at;
+    edited.updated_at = now + 3;
     store
         .clients()
         .update(
             &edited,
+            expected_updated_at,
             &fact(AuditAction::ClientUpdated, now + 3, "client"),
             now + 3,
         )

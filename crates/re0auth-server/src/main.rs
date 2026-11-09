@@ -142,6 +142,16 @@ fn init_tracing() {
 async fn sync_connectors(cfg: &config::Config, store: &SqliteStore) -> anyhow::Result<()> {
     let now = SystemClock.now();
     let existing = store.connectors().list().await?;
+    // An empty list is the "configuration lost its mount" case, not an
+    // instruction to wipe every connector (and cascade their secrets). Only an
+    // explicit non-empty config may prune rows.
+    if cfg.connectors.is_empty() {
+        tracing::warn!(
+            existing = existing.len(),
+            "no connectors are configured; keeping the database rows instead of deleting them"
+        );
+        return Ok(());
+    }
     let mut configured = std::collections::HashSet::new();
 
     for connector in &cfg.connectors {
@@ -621,7 +631,6 @@ async fn load_signer(
 async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     let store =
         Arc::new(SqliteStore::connect_with(&cfg.database.url, cfg.database.options()).await?);
-    sync_connectors(&cfg, &store).await?;
     let clock = Arc::new(SystemClock);
     let signer = Arc::new(load_signer(&cfg, &store, clock.as_ref()).await?);
     let random = Arc::new(OsRandom);
@@ -634,6 +643,7 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     // must be derived from the same entries, or the hint can name a scope the read
     // path does not require, or miss one it does.
     let endpoints = connector_endpoints(&cfg)?;
+    sync_connectors(&cfg, &store).await?;
     let oauth = OAuthService::new(
         store.clone(),
         signer.clone(),

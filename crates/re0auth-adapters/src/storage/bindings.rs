@@ -203,7 +203,8 @@ impl BindingRepo for SqliteStore {
     async fn revoke(&self, id: &BindingId, fact: &SecurityFact, now: Unix) -> RepoResult<()> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         let result = sqlx::query(
-            "UPDATE bindings SET status = 'revoked', updated_at = ?, revoked_at = ? WHERE id = ?",
+            "UPDATE bindings SET status = 'revoked', updated_at = ?, revoked_at = ? \
+             WHERE id = ? AND status != 'revoked'",
         )
         .bind(now)
         .bind(now)
@@ -212,7 +213,20 @@ impl BindingRepo for SqliteStore {
         .await
         .map_err(db_error)?;
         if result.rows_affected() == 0 {
-            return Err(RepoError::NotFound);
+            // Already revoked (a retry, a second tab, a replayed request): the
+            // state is what the caller asked for, but no second fact is written.
+            let exists = sqlx::query("SELECT 1 FROM bindings WHERE id = ?")
+                .bind(id.0.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db_error)?
+                .is_some();
+            return if exists {
+                tx.commit().await.map_err(db_error)?;
+                Ok(())
+            } else {
+                Err(RepoError::NotFound)
+            };
         }
         // The row is kept for audit and for the user's history, but the sealed
         // sub-credential must go: leaving it behind would let a revoked binding
