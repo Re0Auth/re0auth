@@ -62,6 +62,14 @@ test.beforeAll(async () => {
 		'utf8'
 	);
 
+	server = spawn(binary, ['--config', config], {
+		cwd: work,
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
+	server.stdout?.on('data', () => {});
+	server.stderr?.on('data', () => {});
+	await waitForServer();
+
 	const created = spawnSync(
 		binary,
 		['--config', config, 'admin', 'create-user', '--display-name', 'Admin', '--role', 'admin'],
@@ -78,14 +86,6 @@ test.beforeAll(async () => {
 	if (session.status !== 0) throw new Error(`create-session failed: ${session.stderr}`);
 	sessionCookie = field(session.stdout, 'session_cookie=re0auth_session');
 	csrfToken = field(session.stdout, 'csrf_token');
-
-	server = spawn(binary, ['--config', config], {
-		cwd: work,
-		stdio: ['ignore', 'pipe', 'pipe']
-	});
-	server.stdout?.on('data', () => {});
-	server.stderr?.on('data', () => {});
-	await waitForServer();
 });
 
 test.afterAll(async () => {

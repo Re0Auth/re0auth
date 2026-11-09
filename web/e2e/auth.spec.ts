@@ -237,6 +237,14 @@ master_key_version = 1\nsigning_key_file = "data/signing-key.pem"\n\n` +
 		'utf8'
 	);
 
+	server = spawn(binary, ['--config', config], {
+		cwd: work,
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
+	server.stdout?.on('data', () => {});
+	server.stderr?.on('data', () => {});
+	await waitForServer();
+
 	const created = spawnSync(
 		binary,
 		[
@@ -262,14 +270,6 @@ master_key_version = 1\nsigning_key_file = "data/signing-key.pem"\n\n` +
 		.split('\n')
 		.find((line) => line.startsWith('client_id='))!
 		.slice('client_id='.length);
-
-	server = spawn(binary, ['--config', config], {
-		cwd: work,
-		stdio: ['ignore', 'pipe', 'pipe']
-	});
-	server.stdout?.on('data', () => {});
-	server.stderr?.on('data', () => {});
-	await waitForServer();
 }
 
 test.beforeAll(async () => {
