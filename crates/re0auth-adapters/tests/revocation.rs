@@ -5,9 +5,9 @@
 //! that point.
 
 use re0auth_adapters::storage::SqliteStore;
-use re0auth_api::UserId;
 use re0auth_api::audit::{AuditAction, SecurityFact};
 use re0auth_api::ports::{Storage, User, UserRole};
+use re0auth_api::{FamilyId, UserId};
 
 fn fact() -> SecurityFact {
     SecurityFact::new(
@@ -172,5 +172,60 @@ async fn a_failed_revocation_write_leaves_no_audit_row() {
         store.audits().recent(10).await.expect("audits").len(),
         1,
         "only the first fact should exist"
+    );
+}
+
+#[tokio::test]
+async fn denied_covers_token_and_family_in_one_read() {
+    let (store, user) = store_with_user().await;
+    let family = FamilyId::new();
+    let other = FamilyId::new();
+
+    store
+        .access_tokens()
+        .revoke("jti-denied", None, Some(user), 2_000, &fact(), 1_000)
+        .await
+        .expect("revoke token");
+    assert!(
+        store
+            .access_tokens()
+            .is_denied("jti-denied", &other, 1_500)
+            .await
+            .expect("token denied"),
+        "a revoked jti denies the token"
+    );
+    assert!(
+        !store
+            .access_tokens()
+            .is_denied("jti-denied", &other, 2_001)
+            .await
+            .expect("expired"),
+        "an expired revocation no longer denies"
+    );
+
+    store
+        .refresh_tokens()
+        .revoke_family(
+            &family,
+            &SecurityFact::new(AuditAction::RefreshTokenRevoked, 1_000, "family"),
+            1_000,
+        )
+        .await
+        .expect("revoke family");
+    assert!(
+        store
+            .access_tokens()
+            .is_denied("jti-unknown", &family, 1_500)
+            .await
+            .expect("family denied"),
+        "a revoked family denies even an unknown jti"
+    );
+    assert!(
+        !store
+            .access_tokens()
+            .is_denied("jti-unknown", &other, 1_500)
+            .await
+            .expect("clean"),
+        "an unrelated family leaves the token alone"
     );
 }

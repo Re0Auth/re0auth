@@ -79,6 +79,18 @@ cargo bench -p re0auth-server --bench token_paths -- exchange_code
 
 中位数由 **131.45 µs** 降至 **93.7 µs（−28.7%）**，两侧置信区间不重叠。
 
+## 第 3 轮优化：撤销检查合并为单次查询
+
+`verify_gateway_token` 原先分别调用 `is_revoked` 与 `is_family_revoked`，两条 SQL 判一个决定。新增 `AccessTokenRepo::is_denied`，SQLite 实现用一条 `SELECT EXISTS(...) OR EXISTS(...)` 完成，并在同一快照上判定。
+
+| 配对 | OLD | NEW |
+|---|---:|---:|
+| 1 | 22.68 µs | 22.91 µs |
+| 2 | 26.36 µs | 26.49 µs |
+| 3 | 24.97 µs | 25.92 µs |
+
+结论：**无可检出差异**。该基准自身在 20–29 µs 间波动，单次查询约 1 µs，小于噪声。改动保留（少一次往返、判定使用同一快照），但不宣称性能收益。
+
 ## 尚未处理
 
 - 删除三条 token 流程中重复的 `require_approved_client`（对 token 基准 <1%，但每次少一次查询）。

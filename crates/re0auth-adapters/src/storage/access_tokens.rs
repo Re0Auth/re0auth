@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use re0auth_api::audit::SecurityFact;
 use re0auth_api::ports::{AccessTokenRepo, RepoResult};
 use re0auth_api::{ClientId, FamilyId, Unix, UserId};
+use sqlx::Row;
 
 use super::audit::record_fact;
 use super::{SqliteStore, db_error};
@@ -65,6 +66,21 @@ impl AccessTokenRepo for SqliteStore {
             .await
             .map_err(db_error)?;
         Ok(row.is_some())
+    }
+
+    async fn is_denied(&self, jti: &str, family: &FamilyId, now: Unix) -> RepoResult<bool> {
+        let row = sqlx::query(
+            "SELECT EXISTS(SELECT 1 FROM access_revocations WHERE jti = ? AND expires_at > ?) \
+             OR EXISTS(SELECT 1 FROM revoked_families WHERE family_id = ?)",
+        )
+        .bind(jti)
+        .bind(now)
+        .bind(family.0.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_error)?;
+        let denied: i64 = row.try_get(0).map_err(db_error)?;
+        Ok(denied != 0)
     }
 
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {

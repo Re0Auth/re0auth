@@ -1052,18 +1052,16 @@ impl OAuthService {
     /// *why* it was rejected would confirm the token was once valid.
     async fn reject_if_revoked(&self, claims: &AccessTokenClaims) -> Result<(), OAuthError> {
         let now = self.clock.now();
-        let tokens = self.storage.access_tokens();
-        if tokens
-            .is_revoked(&claims.jti, now)
-            .await
-            .map_err(map_repo)?
-        {
-            return Err(OAuthError::InvalidToken);
-        }
         let family = Uuid::parse_str(&claims.family_id)
             .map(FamilyId)
             .map_err(|_| OAuthError::InvalidToken)?;
-        if tokens.is_family_revoked(&family).await.map_err(map_repo)? {
+        if self
+            .storage
+            .access_tokens()
+            .is_denied(&claims.jti, &family, now)
+            .await
+            .map_err(map_repo)?
+        {
             return Err(OAuthError::InvalidToken);
         }
         Ok(())

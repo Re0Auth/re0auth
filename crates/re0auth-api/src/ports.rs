@@ -1390,6 +1390,13 @@ pub trait AccessTokenRepo: Send + Sync {
     async fn is_revoked(&self, jti: &str, now: Unix) -> RepoResult<bool>;
     /// 家族是否已撤销
     async fn is_family_revoked(&self, family: &FamilyId) -> RepoResult<bool>;
+    /// True when either the token or its family is revoked, judged in one read.
+    ///
+    /// The request path only needs the combined answer; asking twice would be
+    /// two round trips for one decision.
+    async fn is_denied(&self, jti: &str, family: &FamilyId, now: Unix) -> RepoResult<bool> {
+        Ok(self.is_revoked(jti, now).await? || self.is_family_revoked(family).await?)
+    }
     /// Deletes rows whose tokens have expired anyway; they can no longer be
     /// presented, so keeping them only grows the table.
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64>;
