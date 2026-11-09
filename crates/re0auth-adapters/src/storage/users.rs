@@ -97,7 +97,8 @@ impl UserRepo for SqliteStore {
         row.as_ref().map(row_to_user).transpose()
     }
 
-    async fn link_identity(&self, identity: &Identity) -> RepoResult<()> {
+    async fn link_identity(&self, identity: &Identity, fact: &SecurityFact) -> RepoResult<()> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
         sqlx::query(
             "INSERT INTO identities (id, user_id, issuer, subject, created_at) VALUES (?, ?, ?, ?, ?)",
         )
@@ -106,9 +107,11 @@ impl UserRepo for SqliteStore {
         .bind(&identity.issuer)
         .bind(&identity.subject)
         .bind(identity.created_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db_error)?;
+        record_fact(&mut tx, fact).await?;
+        tx.commit().await.map_err(db_error)?;
         Ok(())
     }
 
@@ -124,9 +127,15 @@ impl UserRepo for SqliteStore {
         rows.iter().map(row_to_identity).collect()
     }
 
-    async fn unlink_identity(&self, user: &UserId, id: &IdentityId) -> RepoResult<bool> {
+    async fn unlink_identity(
+        &self,
+        user: &UserId,
+        id: &IdentityId,
+        fact: &SecurityFact,
+    ) -> RepoResult<bool> {
         // The floor is enforced here, not by a caller-side count: two racing
         // detaches would both see two identities and remove both.
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
         let result = sqlx::query(
             "DELETE FROM identities \
              WHERE user_id = ? AND id = ? \
@@ -135,10 +144,15 @@ impl UserRepo for SqliteStore {
         .bind(user.0.to_string())
         .bind(id.0.to_string())
         .bind(user.0.to_string())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db_error)?;
-        Ok(result.rows_affected() > 0)
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        record_fact(&mut tx, fact).await?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(true)
     }
 
     async fn delete_with_fact(&self, id: &UserId, fact: &SecurityFact) -> RepoResult<bool> {

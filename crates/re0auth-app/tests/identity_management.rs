@@ -88,7 +88,14 @@ async fn attach(store: &MemoryStore, user: UserId, issuer: &str) -> IdentityId {
     };
     store
         .users()
-        .link_identity(&identity)
+        .link_identity(
+            &identity,
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::IdentityAttached,
+                NOW,
+                "identity",
+            ),
+        )
         .await
         .expect("link identity");
     identity.id

@@ -77,6 +77,10 @@ pub enum AuditAction {
     AuthCodeReuseDetected,
     /// 设备码被重放，其家族已撤销
     DeviceCodeReuseDetected,
+    /// 账号新增了一个登录方式。
+    IdentityAttached,
+    /// 账号移除了一个登录方式。
+    IdentityDetached,
     /// An admin banned a user; every admission point must refuse them.
     UserBanned,
     /// An admin lifted a ban.
@@ -103,6 +107,8 @@ impl AuditAction {
             Self::RefreshTokenReuseDetected => "refresh_token_reuse_detected",
             Self::AuthCodeReuseDetected => "auth_code_reuse_detected",
             Self::DeviceCodeReuseDetected => "device_code_reuse_detected",
+            Self::IdentityAttached => "identity_attached",
+            Self::IdentityDetached => "identity_detached",
             Self::RefreshTokenRevoked => "refresh_token_revoked",
             Self::ConsentGranted => "consent_granted",
             Self::ConsentRevoked => "consent_revoked",
@@ -136,6 +142,8 @@ impl AuditAction {
             "refresh_token_reuse_detected" => Self::RefreshTokenReuseDetected,
             "auth_code_reuse_detected" => Self::AuthCodeReuseDetected,
             "device_code_reuse_detected" => Self::DeviceCodeReuseDetected,
+            "identity_attached" => Self::IdentityAttached,
+            "identity_detached" => Self::IdentityDetached,
             "refresh_token_revoked" => Self::RefreshTokenRevoked,
             "consent_granted" => Self::ConsentGranted,
             "consent_revoked" => Self::ConsentRevoked,

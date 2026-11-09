@@ -786,7 +786,8 @@ pub trait UserRepo: Send + Sync {
     /// user nor moves an identity. The unique constraint on `(issuer, subject)`
     /// is what keeps one identity from belonging to two accounts, and a second
     /// link of the same pair reports [`RepoError::Conflict`].
-    async fn link_identity(&self, identity: &Identity) -> RepoResult<()>;
+    /// Attaches an identity and records the fact in the same transaction.
+    async fn link_identity(&self, identity: &Identity, fact: &SecurityFact) -> RepoResult<()>;
     async fn find_by_identity(&self, issuer: &str, subject: &str) -> RepoResult<Option<User>>;
     /// Every identity attached to one account, oldest first.
     ///
@@ -797,9 +798,14 @@ pub trait UserRepo: Send + Sync {
     ///
     /// Scoped by `user` on purpose: the id comes from a request, and a delete
     /// without the owner in the WHERE clause would let a caller detach somebody
-    /// else's login. Keeping at least one identity is the caller's rule, not the
-    /// port's — the port only deletes what it is told.
-    async fn unlink_identity(&self, user: &UserId, id: &IdentityId) -> RepoResult<bool>;
+    /// else's login. The store also enforces the last-identity floor. The fact
+    /// is written only when a row was removed.
+    async fn unlink_identity(
+        &self,
+        user: &UserId,
+        id: &IdentityId,
+        fact: &SecurityFact,
+    ) -> RepoResult<bool>;
     /// Deletes an account and records the fact in the same transaction.
     ///
     /// [`Self::delete`] stays fact-free on purpose: the contract suite uses it as

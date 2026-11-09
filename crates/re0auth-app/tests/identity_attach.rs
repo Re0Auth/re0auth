@@ -117,13 +117,20 @@ async fn seed_user(store: &MemoryStore, name: &str) -> UserId {
 async fn attach_directly(store: &MemoryStore, user: UserId, issuer: &str, subject: &str) {
     store
         .users()
-        .link_identity(&Identity {
-            id: IdentityId::new(),
-            user_id: user,
-            issuer: issuer.to_string(),
-            subject: subject.to_string(),
-            created_at: NOW,
-        })
+        .link_identity(
+            &Identity {
+                id: IdentityId::new(),
+                user_id: user,
+                issuer: issuer.to_string(),
+                subject: subject.to_string(),
+                created_at: NOW,
+            },
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::IdentityAttached,
+                NOW,
+                "identity",
+            ),
+        )
         .await
         .expect("link identity");
 }

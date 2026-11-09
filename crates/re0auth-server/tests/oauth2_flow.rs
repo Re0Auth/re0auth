@@ -400,7 +400,14 @@ async fn subjects_from_different_providers_do_not_collide() {
     store.users().create(&user).await.expect("user");
     store
         .users()
-        .link_identity(&github)
+        .link_identity(
+            &github,
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::IdentityAttached,
+                now,
+                "identity",
+            ),
+        )
         .await
         .expect("github link");
 
@@ -415,7 +422,14 @@ async fn subjects_from_different_providers_do_not_collide() {
     store.users().create(&other).await.expect("user");
     store
         .users()
-        .link_identity(&qq)
+        .link_identity(
+            &qq,
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::IdentityAttached,
+                now,
+                "identity",
+            ),
+        )
         .await
         .expect("the same numeric subject under another namespace must be allowed");
 

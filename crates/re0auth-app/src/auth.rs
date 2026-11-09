@@ -666,10 +666,16 @@ impl AuthService {
     pub async fn detach_identity(&self, user_id: UserId, identity: IdentityId) -> AuthResult<()> {
         // The store enforces the floor atomically; asking it first also closes
         // the window where two detaches both read "two identities".
+        let fact = SecurityFact::new(
+            AuditAction::IdentityDetached,
+            self.clock.now(),
+            format!("identity:{}", identity.0),
+        )
+        .actor(user_id);
         if self
             .storage
             .users()
-            .unlink_identity(&user_id, &identity)
+            .unlink_identity(&user_id, &identity, &fact)
             .await?
         {
             return Ok(());
@@ -1096,7 +1102,13 @@ impl AuthService {
             subject: identity.subject.clone(),
             created_at: now,
         };
-        match self.storage.users().link_identity(&linked).await {
+        let fact = SecurityFact::new(
+            AuditAction::IdentityAttached,
+            now,
+            format!("identity:{}", linked.id.0),
+        )
+        .actor(user.id);
+        match self.storage.users().link_identity(&linked, &fact).await {
             Ok(()) => Ok(user.id),
             Err(RepoError::Conflict(_)) => {
                 let existing = self
@@ -1145,9 +1157,15 @@ impl AuthService {
                     subject: identity.subject.clone(),
                     created_at: now,
                 };
+                let fact = SecurityFact::new(
+                    AuditAction::IdentityAttached,
+                    now,
+                    format!("identity:{}", linked.id.0),
+                )
+                .actor(initiator);
                 self.storage
                     .users()
-                    .link_identity(&linked)
+                    .link_identity(&linked, &fact)
                     .await
                     .map_err(|error| match error {
                         RepoError::Conflict(_) => AuthError::IdentityAlreadyBound,

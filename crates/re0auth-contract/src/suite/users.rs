@@ -33,7 +33,10 @@ pub async fn user_contract<S: Storage>(store: &S) {
     };
     store
         .users()
-        .link_identity(&identity)
+        .link_identity(
+            &identity,
+            &fact(AuditAction::IdentityAttached, now, "identity"),
+        )
         .await
         .expect("link identity");
     assert_eq!(
@@ -45,7 +48,13 @@ pub async fn user_contract<S: Storage>(store: &S) {
         Some(user.clone())
     );
     assert!(matches!(
-        store.users().link_identity(&identity).await,
+        store
+            .users()
+            .link_identity(
+                &identity,
+                &fact(AuditAction::IdentityAttached, now, "identity")
+            )
+            .await,
         Err(RepoError::Conflict(_))
     ));
 
@@ -60,7 +69,10 @@ pub async fn user_contract<S: Storage>(store: &S) {
     };
     store
         .users()
-        .link_identity(&second)
+        .link_identity(
+            &second,
+            &fact(AuditAction::IdentityAttached, now, "identity"),
+        )
         .await
         .expect("attach a second identity to an existing account");
     assert_eq!(
@@ -75,14 +87,22 @@ pub async fn user_contract<S: Storage>(store: &S) {
 
     let detached = store
         .users()
-        .unlink_identity(&UserId::new(), &identity.id)
+        .unlink_identity(
+            &UserId::new(),
+            &identity.id,
+            &fact(AuditAction::IdentityDetached, now, "identity"),
+        )
         .await
         .expect("unlink from the wrong account");
     assert!(!detached, "an unlink is scoped to its owner");
     assert!(
         store
             .users()
-            .unlink_identity(&user.id, &identity.id)
+            .unlink_identity(
+                &user.id,
+                &identity.id,
+                &fact(AuditAction::IdentityDetached, now, "identity")
+            )
             .await
             .expect("unlink identity")
     );
@@ -108,7 +128,11 @@ pub async fn user_contract<S: Storage>(store: &S) {
     // "two identities" still cannot remove the last one.
     let last = store
         .users()
-        .unlink_identity(&user.id, &second.id)
+        .unlink_identity(
+            &user.id,
+            &second.id,
+            &fact(AuditAction::IdentityDetached, now, "identity"),
+        )
         .await
         .expect("unlink the last identity");
     assert!(!last, "the store must keep at least one identity");

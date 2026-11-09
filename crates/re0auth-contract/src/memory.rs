@@ -170,7 +170,7 @@ impl UserRepo for MemoryStore {
         Ok(self.lock().users.get(id).cloned())
     }
 
-    async fn link_identity(&self, identity: &Identity) -> RepoResult<()> {
+    async fn link_identity(&self, identity: &Identity, fact: &SecurityFact) -> RepoResult<()> {
         let mut inner = self.lock();
         if !inner.users.contains_key(&identity.user_id) {
             return Err(RepoError::NotFound);
@@ -180,6 +180,7 @@ impl UserRepo for MemoryStore {
             return Err(RepoError::Conflict("identity"));
         }
         inner.identities.insert(key, identity.clone());
+        Self::push_fact(&mut inner, fact);
         Ok(())
     }
 
@@ -206,7 +207,12 @@ impl UserRepo for MemoryStore {
         Ok(identities)
     }
 
-    async fn unlink_identity(&self, user: &UserId, id: &IdentityId) -> RepoResult<bool> {
+    async fn unlink_identity(
+        &self,
+        user: &UserId,
+        id: &IdentityId,
+        fact: &SecurityFact,
+    ) -> RepoResult<bool> {
         let mut inner = self.lock();
         let key = inner
             .identities
@@ -230,6 +236,7 @@ impl UserRepo for MemoryStore {
                 return Ok(false);
             }
             inner.identities.remove(&key);
+            Self::push_fact(&mut inner, fact);
             return Ok(true);
         }
         Ok(false)
