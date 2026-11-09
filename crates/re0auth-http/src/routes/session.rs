@@ -157,7 +157,7 @@ pub(crate) async fn auth_callback(
     // INV-LOGIN-05: the state must have been issued to this browser. A callback
     // URL captured in another browser would otherwise create a session for the
     // identity that completed the IdP login (login CSRF).
-    if login_intent_from(&headers).as_deref() != Some(state_param) {
+    if login_intent_from(&headers, state.auth.secure_cookies()).as_deref() != Some(state_param) {
         return Err(auth_error_html(AuthError::StateInvalid));
     }
 

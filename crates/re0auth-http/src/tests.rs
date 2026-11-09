@@ -1153,3 +1153,40 @@ async fn the_error_page_neutralises_the_message() {
     assert!(!body.contains("<script>"), "{body}");
     assert!(body.contains("&lt;script&gt;"), "{body}");
 }
+
+#[test]
+fn the_login_intent_cookie_is_read_from_the_name_that_was_written() {
+    use axum::http::HeaderValue;
+
+    let with_cookie = |value: &'static str| {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", HeaderValue::from_static(value));
+        headers
+    };
+
+    let plain_only = with_cookie("re0auth_login=plain");
+    assert_eq!(
+        crate::cookies::login_intent_from(&plain_only, false).as_deref(),
+        Some("plain")
+    );
+    assert_eq!(crate::cookies::login_intent_from(&plain_only, true), None);
+
+    let host_only = with_cookie("__Host-re0auth_login=host");
+    assert_eq!(
+        crate::cookies::login_intent_from(&host_only, true).as_deref(),
+        Some("host")
+    );
+    assert_eq!(crate::cookies::login_intent_from(&host_only, false), None);
+
+    // Both present: the deployment mode decides which one the callback trusts,
+    // so a sibling-domain cookie cannot win in secure mode.
+    let both = with_cookie("re0auth_login=plain; __Host-re0auth_login=host");
+    assert_eq!(
+        crate::cookies::login_intent_from(&both, true).as_deref(),
+        Some("host")
+    );
+    assert_eq!(
+        crate::cookies::login_intent_from(&both, false).as_deref(),
+        Some("plain")
+    );
+}

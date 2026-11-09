@@ -116,9 +116,8 @@ pub(crate) fn login_intent_cookie(secure: bool, state: &str) -> Cookie<'static> 
 }
 
 /// INV-LOGIN-05: the callback must present the state this browser was issued.
-pub(crate) fn login_intent_from(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, LOGIN_INTENT_COOKIE_HOST)
-        .or_else(|| cookie_value(headers, LOGIN_INTENT_COOKIE))
+pub(crate) fn login_intent_from(headers: &HeaderMap, secure: bool) -> Option<String> {
+    cookie_value(headers, login_intent_name(secure))
 }
 
 /// Builds a session-family cookie.
