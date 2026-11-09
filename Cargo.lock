@@ -2653,9 +2653,7 @@ version = "0.1.9"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "criterion",
  "hex",
- "re0auth-adapters",
  "re0auth-api",
  "re0auth-contract",
  "re0auth-domain",
@@ -2801,6 +2799,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "clap",
+ "criterion",
  "figment",
  "jsonwebtoken",
  "re0auth-adapters",

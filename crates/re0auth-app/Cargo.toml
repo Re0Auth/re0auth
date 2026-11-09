@@ -22,11 +22,5 @@ utoipa.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-criterion.workspace = true
-re0auth-adapters = { version = "0.1.0", path = "../re0auth-adapters" }
 re0auth-contract = { version = "0.1.0", path = "../re0auth-contract" }
 tokio.workspace = true
-
-[[bench]]
-name = "token_paths"
-harness = false

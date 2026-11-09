@@ -40,4 +40,9 @@ serde_json.workspace = true
 tower.workspace = true
 url.workspace = true
 uuid.workspace = true
+criterion.workspace = true
 re0auth-contract = { version = "0.1.0", path = "../re0auth-contract" }
+
+[[bench]]
+name = "token_paths"
+harness = false

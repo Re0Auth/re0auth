@@ -1,15 +1,15 @@
 # Token 路径基准
 
-`cargo bench -p re0auth-app --bench token_paths` 测量四条真实服务路径的单次成本：授权码兑换、刷新轮换、设备码轮询、网关令牌校验，外加一次裸的 RS256 签名作为归因基线。
+`cargo bench -p re0auth-server --bench token_paths` 测量四条真实服务路径的单次成本：授权码兑换、刷新轮换、设备码轮询、网关令牌校验，外加一次裸的 RS256 签名作为归因基线。
 
 ## 运行
 
 ```sh
 # 全部基准
-cargo bench -p re0auth-app --bench token_paths
+cargo bench -p re0auth-server --bench token_paths
 
 # 只看某一条（Criterion 按子串过滤）
-cargo bench -p re0auth-app --bench token_paths -- exchange_code
+cargo bench -p re0auth-server --bench token_paths -- exchange_code
 ```
 
 基线对比必须同机、同命令、同 profile。`bench` profile 默认继承 `release`（`lto = "thin"`、`codegen-units = 1`），因此数字接近发布构建。
