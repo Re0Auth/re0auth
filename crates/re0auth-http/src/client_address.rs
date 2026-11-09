@@ -46,6 +46,13 @@ impl ProxyRange {
         })
     }
 
+    /// The prefix length after parsing, so callers can reject a range that
+    /// trusts the whole address family instead of comparing its spelling.
+    #[must_use]
+    pub fn prefix_len(&self) -> u8 {
+        self.net.prefix_len()
+    }
+
     /// Whether `address` falls inside the range.
     ///
     /// `ipnet` deliberately does not match across families, so the two mapped

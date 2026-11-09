@@ -140,9 +140,32 @@ scopes = ["openid", "profile"]
 
 #[test]
 fn wildcard_trusted_proxy_is_rejected() {
+    for proxy in ["0.0.0.0/0", " 0.0.0.0/0", "0.0.0.1/0", "0.0.0.0/00", "::/0"] {
+        let mut cfg = example();
+        cfg.server.trusted_proxies = vec![proxy.to_string()];
+        assert!(validate(&cfg).is_err(), "{proxy:?} must be rejected");
+    }
+}
+
+#[test]
+fn an_invalid_trusted_proxy_is_rejected_before_startup() {
     let mut cfg = example();
-    cfg.server.trusted_proxies = vec!["0.0.0.0/0".to_string()];
+    cfg.server.trusted_proxies = vec!["not-a-range".to_string()];
     assert!(validate(&cfg).is_err());
+}
+
+#[test]
+fn loopback_classification_uses_address_semantics() {
+    for url in [
+        "http://127.0.0.1:9000",
+        "http://127.0.0.2:9000",
+        "http://[::1]:9000",
+        "http://localhost:9000",
+    ] {
+        assert!(is_https_or_local_http(url, true), "{url} must be loopback");
+    }
+    assert!(!is_https_or_local_http("http://localhost.evil.com", true));
+    assert!(!is_https_or_local_http("http://127.0.0.1:9000", false));
 }
 
 #[test]

@@ -797,10 +797,19 @@ fn is_https_or_local_http(raw: &str, allow_loopback: bool) -> bool {
     };
     match url.scheme() {
         "https" => true,
-        "http" => {
-            allow_loopback && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
-        }
+        "http" => allow_loopback && is_loopback_host(&url),
         _ => false,
+    }
+}
+
+/// Loopback means the address, not one spelling of it: `127.0.0.0/8` and
+/// `::1` are both loopback, and `Url` has already parsed the host form.
+fn is_loopback_host(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        None => false,
     }
 }
 
@@ -967,7 +976,10 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
         }
     }
     for proxy in &cfg.server.trusted_proxies {
-        if proxy == "0.0.0.0/0" || proxy == "::/0" {
+        let range = re0auth_http::ProxyRange::parse(proxy).ok_or_else(|| {
+            anyhow::anyhow!("server.trusted_proxies contains an invalid range {proxy:?}")
+        })?;
+        if range.prefix_len() == 0 {
             anyhow::bail!(
                 "server.trusted_proxies must not contain {proxy}; that disables the client-address guard"
             );
@@ -1071,9 +1083,7 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
             );
         }
         let scheme = url.scheme();
-        let loopback = url
-            .host_str()
-            .is_some_and(|host| host == "127.0.0.1" || host == "localhost");
+        let loopback = is_loopback_host(&url);
         if scheme != "https" && !(scheme == "http" && loopback && connector.allow_loopback) {
             anyhow::bail!(
                 "connector {}: base_url must be https (http only for loopback with                  connector allow_loopback and the global tls ceiling)",
