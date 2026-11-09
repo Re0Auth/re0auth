@@ -128,7 +128,11 @@ pub struct Envelope<'a> {
 #[derive(Serialize, serde::Deserialize)]
 struct CachedView {
     fetched_at: i64,
-    data: Value,
+    /// The view-applied JSON, already encoded.
+    ///
+    /// Keeping bytes (rather than a `Value`) means a cache hit splices the data
+    /// into the envelope instead of rebuilding the whole JSON tree.
+    data: Vec<u8>,
 }
 
 const DEFAULT_PAGE_LIMIT: u32 = 20;
@@ -177,15 +181,31 @@ impl CachedView {
                 ViewOutput::Items(items) => Value::Array(items),
             },
         };
+        let data = serde_json::to_vec(&data).map_err(|_| GatewayError::Internal)?;
         Ok(Self { fetched_at, data })
     }
 
+    /// `[fetched_at: i64 BE][data JSON]`.
+    ///
+    /// A hand-rolled header rather than a JSON wrapper: the point is to avoid
+    /// re-serialising the view on the way into the cache.
     fn encode(&self) -> Result<Vec<u8>, GatewayError> {
-        serde_json::to_vec(self).map_err(|_| GatewayError::Internal)
+        let mut out = Vec::with_capacity(8 + self.data.len());
+        out.extend_from_slice(&self.fetched_at.to_be_bytes());
+        out.extend_from_slice(&self.data);
+        Ok(out)
     }
 
     fn decode(body: &[u8]) -> Result<Self, GatewayError> {
-        serde_json::from_slice(body).map_err(|_| GatewayError::Internal)
+        if body.len() < 8 {
+            return Err(GatewayError::Internal);
+        }
+        let (head, data) = body.split_at(8);
+        let fetched_at = i64::from_be_bytes(head.try_into().map_err(|_| GatewayError::Internal)?);
+        Ok(Self {
+            fetched_at,
+            data: data.to_vec(),
+        })
     }
 }
 
@@ -756,22 +776,30 @@ impl GatewayService {
         list_view: bool,
         snapshot: CachedView,
     ) -> Result<UpstreamPayload, GatewayError> {
-        let data = if list_view {
-            let items = snapshot.data.as_array().ok_or(GatewayError::Internal)?;
+        let body = if list_view {
+            let value: Value =
+                serde_json::from_slice(&snapshot.data).map_err(|_| GatewayError::Internal)?;
+            let items = value.as_array().ok_or(GatewayError::Internal)?;
             let page = page_body(&request.pagination, items)?;
-            serde_json::to_value(page).map_err(|_| GatewayError::Internal)?
+            let data = serde_json::to_value(page).map_err(|_| GatewayError::Internal)?;
+            let envelope = Envelope {
+                upstream: &endpoint.name,
+                endpoint: request.resource,
+                fetched_at: snapshot.fetched_at,
+                request_id: request.correlation_id,
+                stability: "declared",
+                data,
+            };
+            serde_json::to_vec(&envelope).map_err(|_| GatewayError::Internal)?
         } else {
-            snapshot.data
+            envelope_raw(
+                &endpoint.name,
+                request.resource,
+                snapshot.fetched_at,
+                request.correlation_id,
+                &snapshot.data,
+            )?
         };
-        let envelope = Envelope {
-            upstream: &endpoint.name,
-            endpoint: request.resource,
-            fetched_at: snapshot.fetched_at,
-            request_id: request.correlation_id,
-            stability: "declared",
-            data,
-        };
-        let body = serde_json::to_vec(&envelope).map_err(|_| GatewayError::Internal)?;
         Ok(UpstreamPayload {
             content_type: "application/json".to_string(),
             body,
@@ -883,5 +911,64 @@ mod p03_tests {
         assert_eq!(page.items.len(), 10);
         assert_eq!(page.items[0]["index"], 0);
         assert!(page.next_cursor.is_some());
+    }
+}
+
+/// Builds the envelope around already-encoded view bytes.
+///
+/// String fields go through `serde_json::to_string`; the data is valid JSON by
+/// construction (it was serialised once on the way into the cache).
+fn envelope_raw(
+    upstream: &str,
+    endpoint: &str,
+    fetched_at: i64,
+    request_id: Option<&str>,
+    data: &[u8],
+) -> Result<Vec<u8>, GatewayError> {
+    let upstream = serde_json::to_string(upstream).map_err(|_| GatewayError::Internal)?;
+    let endpoint = serde_json::to_string(endpoint).map_err(|_| GatewayError::Internal)?;
+    let request_id = match request_id {
+        Some(id) => serde_json::to_string(id).map_err(|_| GatewayError::Internal)?,
+        None => "null".to_string(),
+    };
+    let mut out = Vec::with_capacity(128 + data.len());
+    out.extend_from_slice(
+        format!(
+            r#"{{"upstream":{upstream},"endpoint":{endpoint},"fetched_at":{fetched_at},"request_id":{request_id},"stability":"declared","data":"#
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(data);
+    out.push(b'}');
+    Ok(out)
+}
+
+#[cfg(test)]
+mod p01_tests {
+    use super::*;
+
+    #[test]
+    fn p01_cached_bytes_round_trip_and_splice_into_valid_json() {
+        let cached = CachedView {
+            fetched_at: 1_700_000_000,
+            data: br#"{"score":42}"#.to_vec(),
+        };
+        let encoded = cached.encode().expect("encode");
+        let decoded = CachedView::decode(&encoded).expect("decode");
+        assert_eq!(decoded.fetched_at, cached.fetched_at);
+        assert_eq!(decoded.data, cached.data);
+
+        let body = envelope_raw(
+            "phigros",
+            "scores",
+            decoded.fetched_at,
+            Some("req-1"),
+            &decoded.data,
+        )
+        .expect("envelope");
+        let value: Value = serde_json::from_slice(&body).expect("valid JSON");
+        assert_eq!(value["upstream"], "phigros");
+        assert_eq!(value["request_id"], "req-1");
+        assert_eq!(value["data"]["score"], 42);
     }
 }

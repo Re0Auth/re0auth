@@ -844,7 +844,8 @@ async fn the_non_raw_path_never_consults_the_client_record() {
 ///
 /// Uses the harness's own clock so the entry is fresh in the same time frame the
 /// gateway sees; a wall clock would make "fresh" depend on when the test runs.
-/// Seeds the cache with the shape the gateway now writes: `{fetched_at, data}`.
+/// Seeds the cache with the shape the gateway now writes:
+/// `[fetched_at BE][data JSON]`.
 async fn primed_cache(
     app: &Harness,
     data: serde_json::Value,
@@ -853,11 +854,8 @@ async fn primed_cache(
         re0auth_contract::MemoryCache::new(),
         app.clock.clone() as Arc<dyn Clock>,
     );
-    let body = serde_json::to_vec(&serde_json::json!({
-        "fetched_at": app.clock.now(),
-        "data": data,
-    }))
-    .expect("cache body");
+    let mut body = app.clock.now().to_be_bytes().to_vec();
+    body.extend_from_slice(&serde_json::to_vec(&data).expect("data"));
     cache
         .put(
             &re0auth_api::cache::key(&app.binding.id, "phigros", "scores"),

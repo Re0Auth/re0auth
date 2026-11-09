@@ -50,9 +50,14 @@ pub async fn cache_contract_suite(cache: &dyn Cache, advance: impl Fn(i64)) {
         .put(&entry_key, &response(b"payload"), Duration::from_secs(60))
         .await;
     let fresh = cache.get(&entry_key).await.expect("a fresh entry must hit");
-    assert_eq!(fresh.body, b"payload", "the body must be returned verbatim");
     assert_eq!(
-        fresh.content_type, "application/json",
+        fresh.body.as_slice(),
+        b"payload",
+        "the body must be returned verbatim"
+    );
+    assert_eq!(
+        fresh.content_type.as_str(),
+        "application/json",
         "the media type must survive the round trip"
     );
     assert!(!fresh.stale, "a fresh entry must not be flagged stale");
@@ -112,7 +117,7 @@ pub async fn cache_contract_suite(cache: &dyn Cache, advance: impl Fn(i64)) {
         "the revoked binding's entry must be gone"
     );
     assert_eq!(
-        cache.get(&survivor).await.map(|hit| hit.body),
+        cache.get(&survivor).await.map(|hit| hit.body.clone()),
         Some(b"keep".to_vec()),
         "another binding's entries must survive the sweep"
     );

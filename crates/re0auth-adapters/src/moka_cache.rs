@@ -86,8 +86,8 @@ impl Cache for MokaCache {
         let now = self.clock.now();
         let entry = self.entries.get(key).await?;
         (now < entry.fresh_until).then_some(CachedResponse {
-            content_type: entry.response.content_type,
-            body: entry.response.body,
+            content_type: entry.response.content_type.clone(),
+            body: entry.response.body.clone(),
             stale: false,
         })
     }
@@ -99,8 +99,8 @@ impl Cache for MokaCache {
             return None;
         }
         Some(CachedResponse {
-            content_type: entry.response.content_type,
-            body: entry.response.body,
+            content_type: entry.response.content_type.clone(),
+            body: entry.response.body.clone(),
             stale: now >= entry.fresh_until,
         })
     }
