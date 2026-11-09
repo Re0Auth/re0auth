@@ -363,12 +363,12 @@ jobs:
             echo "**提交列表**：https://github.com/$GITHUB_REPOSITORY/commits/$VERSION"
           } > release-notes.md
 
-          if gh release view "$VERSION" >/dev/null 2>&1; then
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # A human may have enriched the notes; never overwrite them on a retry.
             echo "release $VERSION 已存在，保留现有说明"
           else
             # The tag was created (or verified) above, so the release can only
             # attach to this commit.
-            gh release create "$VERSION" --verify-tag \
+            gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag \
               --title "$VERSION" --notes-file release-notes.md
           fi
