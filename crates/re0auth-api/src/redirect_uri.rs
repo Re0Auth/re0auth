@@ -62,6 +62,7 @@ fn is_loopback(host: Host<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn description_matches_display() {
@@ -154,6 +155,50 @@ mod tests {
         }
         for value in ["not-a-url", "", "//client.example/callback"] {
             assert_eq!(validate(value), Err(RedirectUriError::Malformed), "{value}");
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn accepted_https_redirects_have_no_fragment_or_credentials(
+            host in "[a-z][a-z0-9-]{2,20}",
+            path in "/[A-Za-z0-9._~/-]{0,40}",
+        ) {
+            let value = format!("https://{host}.example{path}");
+            prop_assert_eq!(validate(&value), Ok(()));
+            prop_assert_eq!(
+                validate(&format!("{value}#x")),
+                Err(RedirectUriError::Fragment)
+            );
+        }
+
+        #[test]
+        fn userinfo_and_plain_http_off_loopback_are_refused(
+            host in "[a-z][a-z0-9-]{2,20}",
+            user in "[a-z]{1,12}",
+            password in "[a-z]{1,12}",
+        ) {
+            prop_assert_eq!(
+                validate(&format!("https://{user}:{password}@{host}.example/cb")),
+                Err(RedirectUriError::Credentials)
+            );
+            prop_assert_eq!(
+                validate(&format!("http://{host}.example/cb")),
+                Err(RedirectUriError::Insecure)
+            );
+        }
+
+        #[test]
+        fn an_accepted_redirect_never_carries_a_fragment_or_userinfo(
+            raw in "[\\PC]{0,80}",
+        ) {
+            if validate(&raw).is_ok() {
+                let url = Url::parse(&raw).expect("accepted implies parseable");
+                prop_assert!(url.fragment().is_none());
+                prop_assert!(url.username().is_empty());
+                prop_assert!(url.password().is_none());
+                prop_assert!(matches!(url.scheme(), "https" | "http"));
+            }
         }
     }
 }
