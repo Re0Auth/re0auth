@@ -8,7 +8,7 @@ use re0auth_adapters::crypto::RsaTokenSigner;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
 use re0auth_api::oauth::ConsentVersion;
-use re0auth_api::ports::{Client, ClientStatus, Session, Storage, User, UserRole};
+use re0auth_api::ports::{Client, ClientStatus, Session, Storage, User, UserRole, UserStatus};
 use re0auth_api::{ClientId, Clock, SessionId, UserId};
 use re0auth_app::admin;
 use re0auth_app::auth::AuthService;
@@ -1345,4 +1345,118 @@ async fn a_scope_outside_the_client_registration_is_invalid_scope() {
     let response = authorize_with_redirect(&app, REDIRECT_URI, "openid secrets").await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(response).await["error"], "invalid_scope");
+}
+
+async fn ban_user(app: &TestApp) {
+    let now = SystemClock.now();
+    let fact = re0auth_api::audit::SecurityFact::new(
+        re0auth_api::audit::AuditAction::UserBanned,
+        now,
+        format!("user:{}", app.user_id.0),
+    );
+    app.store
+        .users()
+        .set_status(
+            &app.user_id,
+            re0auth_api::ports::UserStatus::Banned,
+            &fact,
+            now,
+        )
+        .await
+        .expect("ban user");
+}
+
+/// B15: a ban must reach the token issuance paths, not just the session.
+#[tokio::test]
+async fn a_banned_account_cannot_refresh_or_use_userinfo() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-ban-tokens").await;
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let tokens = body_json(response).await;
+    let refresh = tokens["refresh_token"].as_str().expect("refresh token");
+    let access = tokens["access_token"].as_str().expect("access token");
+
+    ban_user(&app).await;
+
+    let refreshed = refresh_tokens(&app, refresh).await;
+    assert_eq!(refreshed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(refreshed).await["error"], "invalid_grant");
+
+    let info = userinfo(&app, access).await;
+    assert_eq!(info.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// B15: an approved device code must not be exchanged after the ban.
+#[tokio::test]
+async fn a_banned_account_cannot_exchange_an_approved_device_code() {
+    let app = setup().await;
+    let authorization = start_device(&app).await;
+    let user_code = authorization["user_code"].as_str().expect("user code");
+    let device_code = authorization["device_code"].as_str().expect("device code");
+    admin::approve_device(&app.store, &SystemClock, user_code, app.user_id)
+        .await
+        .expect("approve device");
+
+    ban_user(&app).await;
+
+    let response = poll_device(&app, device_code).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+}
+
+/// B15: the admin ban path must cut the existing grants, not just the session.
+#[tokio::test]
+async fn banning_revokes_the_refresh_family_and_consent() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-ban-revoke").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let refresh = tokens["refresh_token"].as_str().expect("refresh token");
+
+    let now = SystemClock.now();
+    let admin_id = UserId::new();
+    app.store
+        .users()
+        .create(&User {
+            id: admin_id,
+            display_name: "root".to_string(),
+            role: UserRole::Admin,
+            status: UserStatus::Active,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("admin user");
+    let service = re0auth_app::admin_service::AdminService::new(
+        Arc::new(app.store.clone()),
+        Arc::new(SystemClock),
+        Arc::new(OsRandom),
+        Arc::new(
+            re0auth_adapters::client_secret::HmacClientSecretHasher::new(TEST_MASTER)
+                .expect("hasher"),
+        ),
+    );
+    service
+        .set_user_status(admin_id, app.user_id, UserStatus::Banned, None)
+        .await
+        .expect("ban");
+
+    let stored = app
+        .store
+        .refresh_tokens()
+        .find(&hash_secret(refresh))
+        .await
+        .expect("find refresh token")
+        .expect("the refresh row must survive until purge");
+    assert!(
+        stored.revoked_at.is_some(),
+        "the refresh family must be revoked by the ban"
+    );
+    let consent = app
+        .store
+        .consents()
+        .find(&app.user_id, &app.client_id)
+        .await
+        .expect("find consent");
+    assert!(consent.is_none(), "the consent must be revoked by the ban");
 }

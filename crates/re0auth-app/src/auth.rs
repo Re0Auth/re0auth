@@ -974,6 +974,16 @@ impl AuthService {
         let user_id = Uuid::parse_str(&claims.sub)
             .map(UserId)
             .map_err(|_| AuthError::InvalidTicket)?;
+        // B15: a ticket issued before the ban must not approve a device code.
+        let user = self
+            .storage
+            .users()
+            .get(&user_id)
+            .await?
+            .ok_or(AuthError::DeviceUnavailable)?;
+        if user.status == UserStatus::Banned {
+            return Err(AuthError::AccountBanned);
+        }
         let user_code = device::normalize_user_code(&claims.user_code);
         let now = self.clock.now();
         // INV-AUDIT-01: the device approval is the authorization decision ADR-0025

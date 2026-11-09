@@ -16,7 +16,7 @@ use re0auth_api::oauth::{
 use re0auth_api::ports::{
     AuthCode, BindingHints, Client, ClientStatus, Consent, ConsumeAuthCode, DeviceCode,
     DeviceCodeState, DevicePoll, MissingBinding, NoBindingHints, PendingAuthorization,
-    RefreshToken, RepoError, RotateOutcome, RotateRefreshToken, Storage,
+    RefreshToken, RepoError, RotateOutcome, RotateRefreshToken, Storage, UserStatus,
 };
 use re0auth_api::secret::ClientSecretHasher;
 use re0auth_api::{
@@ -724,6 +724,9 @@ impl OAuthService {
             DevicePoll::Approved {
                 user_id, scopes, ..
             } => {
+                // B15: a banned account must not turn an approved device code
+                // into a grant, even if it was approved before the ban.
+                self.require_active_user(user_id).await?;
                 // D2=A: the token exchange is the point where the device
                 // authorization becomes a consent record. A token can never
                 // exist without one.
@@ -1033,6 +1036,9 @@ impl OAuthService {
             .await
             .map_err(map_repo)?
             .ok_or(OAuthError::InvalidToken)?;
+        if user.status == UserStatus::Banned {
+            return Err(OAuthError::InvalidToken);
+        }
         let client_id = Uuid::parse_str(&claims.client_id)
             .map(ClientId)
             .map_err(|_| OAuthError::InvalidToken)?;
@@ -1148,6 +1154,25 @@ impl OAuthService {
         Ok(RevocationOutcome::Revoked)
     }
 
+    /// A banned account must not obtain or keep an OAuth grant (B15).
+    ///
+    /// The session and gateway paths already read the status; this closes the
+    /// issuance paths (code exchange, refresh, device flow), which only looked
+    /// at consent before.
+    async fn require_active_user(&self, user_id: UserId) -> Result<(), OAuthError> {
+        let user = self
+            .storage
+            .users()
+            .get(&user_id)
+            .await
+            .map_err(map_repo)?
+            .ok_or(OAuthError::InvalidGrant("user not found"))?;
+        if user.status == UserStatus::Banned {
+            return Err(OAuthError::InvalidGrant("account banned"));
+        }
+        Ok(())
+    }
+
     /// Consent check for token issuance (code exchange, refresh, device flow).
     ///
     /// A missing or revoked consent is `invalid_grant`: the grant itself is no
@@ -1159,6 +1184,7 @@ impl OAuthService {
         client_id: ClientId,
         scopes: &[String],
     ) -> Result<Consent, OAuthError> {
+        self.require_active_user(user_id).await?;
         let consent = self
             .storage
             .consents()

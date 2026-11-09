@@ -443,6 +443,9 @@ impl AdminService {
             // Sessions die with the ban; the per-request status check is the
             // second gate, not the only one.
             self.storage.sessions().revoke_all(&target, now).await?;
+            // A refresh token or an unused code must not survive the ban either.
+            self.revoke_grants_for_ban(target, actor, now, correlation_id)
+                .await?;
         }
         Ok(AdminUserView {
             id: user.id.0.to_string(),
@@ -452,6 +455,56 @@ impl AdminService {
             created_at: user.created_at,
             updated_at: now,
         })
+    }
+
+    /// B15: a ban must cut the token chain, not just the session.
+    ///
+    /// One pass over the live consents is enough: a consent is per
+    /// `(user, client)`, so revoking each family and then the consent row also
+    /// covers access tokens through the consent version. Grants that never got
+    /// a consent row (unused code, pending authorization) are refused by the
+    /// status check on their issuance path.
+    async fn revoke_grants_for_ban(
+        &self,
+        target: UserId,
+        actor: UserId,
+        now: Unix,
+        correlation_id: Option<&str>,
+    ) -> Result<(), AdminError> {
+        for consent in self.storage.consents().list_by_user(&target).await? {
+            let refresh_fact = SecurityFact::new(
+                AuditAction::RefreshTokenRevoked,
+                now,
+                format!("user:{}:client:{}", target.0, consent.client_id.0),
+            )
+            .actor(actor)
+            .client(consent.client_id)
+            .with_request_id(correlation_id);
+            self.storage
+                .refresh_tokens()
+                .revoke_all_for_client(&target, &consent.client_id, &refresh_fact, now)
+                .await?;
+
+            let consent_fact = SecurityFact::new(
+                AuditAction::ConsentRevoked,
+                now,
+                format!("consent:{:?}", consent.client_id),
+            )
+            .actor(actor)
+            .client(consent.client_id)
+            .with_request_id(correlation_id);
+            match self
+                .storage
+                .consents()
+                .revoke(&target, &consent.client_id, &consent_fact, now)
+                .await
+            {
+                // A concurrent revoke already did it; the goal is the end state.
+                Ok(()) | Err(RepoError::NotFound) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
     }
 
     // ---- Tokens ----------------------------------------------------------

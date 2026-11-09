@@ -1465,3 +1465,86 @@ async fn a_banned_user_loses_the_session_and_cannot_log_in_again() {
     let html = response_text(response).await;
     assert!(html.contains("账号已被封禁"), "{html}");
 }
+
+/// B15: a ticket issued before the ban must not approve a device code.
+#[tokio::test]
+async fn a_banned_user_cannot_approve_a_pending_device_code() {
+    let app = setup().await;
+    let device = post_form(
+        &app,
+        "/oauth/device_authorization",
+        form(&[
+            ("client_id", app.client_id.0.to_string().as_str()),
+            ("scope", "openid profile"),
+        ]),
+        &[],
+    )
+    .await;
+    assert_eq!(device.status(), StatusCode::OK);
+    let device_body: Value =
+        serde_json::from_str(&response_text(device).await).expect("device json");
+    let user_code = device_body["user_code"].as_str().expect("user code");
+
+    let device_page = get_request(
+        &app,
+        &format!("/device/start?{}", form(&[("user_code", user_code)])),
+        None,
+    )
+    .await;
+    assert_eq!(device_page.status(), StatusCode::SEE_OTHER);
+    let intent = login_intent(device_page.headers());
+    let location = device_page
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("authorization redirect");
+    let authorization = Url::parse(location).expect("authorization url");
+    let query: HashMap<_, _> = authorization.query_pairs().into_owned().collect();
+    *app.mock.nonce.lock().expect("nonce") = query["nonce"].clone();
+
+    let callback = get_request(
+        &app,
+        &format!(
+            "/auth/callback?{}",
+            form(&[("code", "device-code"), ("state", query["state"].as_str()),])
+        ),
+        Some(&intent),
+    )
+    .await;
+    assert_eq!(callback.status(), StatusCode::OK);
+    let ticket = ticket_from_html(&response_text(callback).await);
+
+    let user = app
+        .store
+        .users()
+        .list(None, 1)
+        .await
+        .expect("list users")
+        .into_iter()
+        .next()
+        .expect("the device flow created a user");
+    let fact = re0auth_api::audit::SecurityFact::new(
+        re0auth_api::audit::AuditAction::UserBanned,
+        1_000,
+        format!("user:{}", user.id.0),
+    );
+    app.store
+        .users()
+        .set_status(
+            &user.id,
+            re0auth_api::ports::UserStatus::Banned,
+            &fact,
+            1_000,
+        )
+        .await
+        .expect("ban");
+
+    let approve = post_form(
+        &app,
+        "/device/approve",
+        form(&[("ticket", ticket.as_str())]),
+        &[],
+    )
+    .await;
+    assert_eq!(approve.status(), StatusCode::FORBIDDEN);
+}
