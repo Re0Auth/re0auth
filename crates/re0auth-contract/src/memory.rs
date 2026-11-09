@@ -171,6 +171,34 @@ impl UserRepo for MemoryStore {
         Ok(())
     }
 
+    async fn set_role_and_status(
+        &self,
+        id: &UserId,
+        role: UserRole,
+        status: UserStatus,
+        role_fact: &SecurityFact,
+        status_fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        let mut inner = self.lock();
+        let Some(user) = inner.users.get_mut(id) else {
+            return Err(RepoError::NotFound);
+        };
+        user.role = role;
+        user.status = status;
+        user.updated_at = now;
+        Self::push_fact(&mut inner, role_fact);
+        Self::push_fact(&mut inner, status_fact);
+        if status == UserStatus::Banned {
+            for session in inner.sessions.values_mut() {
+                if session.user_id == *id && session.revoked_at.is_none() {
+                    session.revoked_at = Some(now);
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn count_admins(&self) -> RepoResult<u64> {
         let inner = self.lock();
         Ok(inner

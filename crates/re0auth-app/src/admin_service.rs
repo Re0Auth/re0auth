@@ -354,6 +354,115 @@ impl AdminService {
         ))
     }
 
+    /// Applies a PATCH body's role and status as one decision.
+    ///
+    /// Guards run before any write; a combined change uses a single storage
+    /// transaction, and a ban revokes sessions in that same transaction.
+    pub async fn update_user(
+        &self,
+        actor: UserId,
+        target: UserId,
+        role: Option<UserRole>,
+        status: Option<UserStatus>,
+        correlation_id: Option<&str>,
+    ) -> Result<AdminUserView, AdminError> {
+        let now = self.clock.now();
+        let user = self
+            .storage
+            .users()
+            .get(&target)
+            .await?
+            .ok_or(AdminError::NotFound)?;
+        let new_role = role.unwrap_or(user.role);
+        let new_status = status.unwrap_or(user.status);
+        let role_changed = new_role != user.role;
+        let status_changed = new_status != user.status;
+
+        if role_changed && user.role == UserRole::Admin && new_role != UserRole::Admin {
+            if target == actor {
+                return Err(AdminError::Conflict("you cannot demote yourself"));
+            }
+            if self.storage.users().count_admins().await? <= 1 {
+                return Err(AdminError::Conflict("the last admin cannot be demoted"));
+            }
+        }
+        if status_changed && new_status == UserStatus::Banned {
+            if target == actor {
+                return Err(AdminError::Conflict("you cannot ban yourself"));
+            }
+            if user.role == UserRole::Admin && self.storage.users().count_admins().await? <= 1 {
+                return Err(AdminError::Conflict("the last admin cannot be banned"));
+            }
+        }
+
+        let role_fact = role_changed.then(|| {
+            SecurityFact::new(
+                AuditAction::UserRoleChanged,
+                now,
+                format!("user:{}", target.0),
+            )
+            .actor(actor)
+            .with_request_id(correlation_id)
+        });
+        let status_action = if new_status == UserStatus::Banned {
+            AuditAction::UserBanned
+        } else {
+            AuditAction::UserUnbanned
+        };
+        let status_fact = status_changed.then(|| {
+            SecurityFact::new(status_action, now, format!("user:{}", target.0))
+                .actor(actor)
+                .with_request_id(correlation_id)
+        });
+
+        match (role_fact, status_fact) {
+            (Some(role_fact), Some(status_fact)) => {
+                self.storage
+                    .users()
+                    .set_role_and_status(
+                        &target,
+                        new_role,
+                        new_status,
+                        &role_fact,
+                        &status_fact,
+                        now,
+                    )
+                    .await?;
+            }
+            (Some(role_fact), None) => {
+                self.storage
+                    .users()
+                    .set_role(&target, new_role, &role_fact, now)
+                    .await?;
+            }
+            (None, Some(status_fact)) if new_status == UserStatus::Banned => {
+                self.storage
+                    .users()
+                    .set_status_and_revoke_sessions(&target, new_status, &status_fact, now)
+                    .await?;
+            }
+            (None, Some(status_fact)) => {
+                self.storage
+                    .users()
+                    .set_status(&target, new_status, &status_fact, now)
+                    .await?;
+            }
+            (None, None) => {}
+        }
+        if status_changed && new_status == UserStatus::Banned {
+            self.revoke_grants_for_ban(target, actor, now, correlation_id)
+                .await?;
+        }
+        Ok(AdminUserView {
+            id: user.id.0.to_string(),
+            display_name: user.display_name,
+            role: new_role.as_str(),
+            status: new_status.as_str(),
+            created_at: user.created_at,
+            updated_at: now,
+        })
+    }
+
     /// Changes a role, refusing moves that would lock the instance out.
     pub async fn set_user_role(
         &self,

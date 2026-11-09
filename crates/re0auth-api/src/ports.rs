@@ -839,6 +839,18 @@ pub trait UserRepo: Send + Sync {
         fact: &SecurityFact,
         now: Unix,
     ) -> RepoResult<()>;
+    /// Applies a role and a status change in one transaction. A ban also
+    /// revokes sessions here, so the combined PATCH cannot leave half a
+    /// decision behind.
+    async fn set_role_and_status(
+        &self,
+        id: &UserId,
+        role: UserRole,
+        status: UserStatus,
+        role_fact: &SecurityFact,
+        status_fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()>;
     /// Bans the account and revokes every session in the same transaction
     /// (B15). Used when a ban must take effect as one decision, not two writes.
     async fn set_status_and_revoke_sessions(

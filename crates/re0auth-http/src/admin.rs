@@ -481,26 +481,19 @@ pub(crate) async fn update_user(
         ));
     }
     let service = service(&state)?;
-    let mut view = None;
-    if let Some(raw) = body.role.as_deref() {
-        let role = user_role(raw)?;
-        view = Some(
-            service
-                .set_user_role(context.user.id, target, role, request_id::of(&headers))
-                .await
-                .map_err(admin_error)?,
-        );
-    }
-    if let Some(raw) = body.status.as_deref() {
-        let status = user_status(raw)?;
-        view = Some(
-            service
-                .set_user_status(context.user.id, target, status, request_id::of(&headers))
-                .await
-                .map_err(admin_error)?,
-        );
-    }
-    Ok(no_store(Json(view.expect("checked above")).into_response()))
+    let role = body.role.as_deref().map(user_role).transpose()?;
+    let status = body.status.as_deref().map(user_status).transpose()?;
+    let view = service
+        .update_user(
+            context.user.id,
+            target,
+            role,
+            status,
+            request_id::of(&headers),
+        )
+        .await
+        .map_err(admin_error)?;
+    Ok(no_store(Json(view).into_response()))
 }
 
 // ---- Connectors (read-only) ----------------------------------------------
