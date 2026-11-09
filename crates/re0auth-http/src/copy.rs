@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use axum::http::HeaderMap;
+use headers::{Cookie, HeaderMapExt};
 
 const ZH: &str = include_str!("../../../locales/zh-CN.json");
 const EN: &str = include_str!("../../../locales/en.json");
@@ -35,30 +36,21 @@ pub(crate) fn resolve_locale(headers: &HeaderMap, query: Option<&str>) -> String
             }
         }
     }
-    if let Some(cookies) = headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|value| value.to_str().ok())
+    if let Some(cookie) = headers.typed_get::<Cookie>()
+        && let Some(value) = cookie.get("re0auth_lang").filter(|value| !value.is_empty())
     {
-        for cookie in cookies.split(';') {
-            let mut parts = cookie.trim().splitn(2, '=');
-            if parts.next() == Some("re0auth_lang")
-                && let Some(value) = parts.next()
-            {
-                return normalize(value);
-            }
-        }
+        return normalize(value);
     }
     if let Some(accept) = headers
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|value| value.to_str().ok())
     {
-        for candidate in accept.split(',') {
-            let language = candidate.split(';').next().unwrap_or("").trim();
-            if language.starts_with("en") {
-                return "en".to_string();
+        for (language, quality) in accept_language::parse_with_quality(accept) {
+            if quality <= 0.0 {
+                continue;
             }
-            if language.starts_with("zh") {
-                return "zh-CN".to_string();
+            if let Some(locale) = normalize_language(&language) {
+                return locale.to_string();
             }
         }
     }
@@ -66,11 +58,17 @@ pub(crate) fn resolve_locale(headers: &HeaderMap, query: Option<&str>) -> String
 }
 
 fn normalize(value: &str) -> String {
-    let value = value.trim();
+    normalize_language(value).unwrap_or(DEFAULT).to_string()
+}
+
+fn normalize_language(value: &str) -> Option<&'static str> {
+    let value = value.trim().to_ascii_lowercase();
     if value.starts_with("en") {
-        "en".to_string()
+        Some("en")
+    } else if value.starts_with("zh") {
+        Some("zh-CN")
     } else {
-        DEFAULT.to_string()
+        None
     }
 }
 
@@ -103,6 +101,36 @@ mod tests {
     fn missing_keys_fall_back_safely() {
         assert_eq!(t("en", "unknown-key"), "unknown-key");
         assert_eq!(t("xx", "device_approval_title"), "批准设备");
+    }
+
+    #[test]
+    fn accept_language_uses_quality_order() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::ACCEPT_LANGUAGE,
+            "en;q=0.2, zh-CN;q=0.9".parse().expect("header"),
+        );
+        assert_eq!(super::resolve_locale(&headers, None), "zh-CN");
+    }
+
+    #[test]
+    fn a_disabled_language_is_not_selected() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::ACCEPT_LANGUAGE,
+            "en;q=0, zh-CN;q=1".parse().expect("header"),
+        );
+        assert_eq!(super::resolve_locale(&headers, None), "zh-CN");
+    }
+
+    #[test]
+    fn a_typed_cookie_is_read() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            "re0auth_lang=en; other=value".parse().expect("header"),
+        );
+        assert_eq!(super::resolve_locale(&headers, None), "en");
     }
 }
 
