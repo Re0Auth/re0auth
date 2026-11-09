@@ -43,6 +43,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # A dispatch can run this file from any branch; the workflow file and the
+      # version it validates then come from that branch. Only main may release.
+      - name: require the default branch
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -eu
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "release 只允许从 main 触发，当前为 $REF" >&2
+            exit 1
+          fi
+
       - name: check version format
         id: check
         env:
@@ -64,6 +76,33 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # A source tag that points elsewhere means the version was reused; stop
+      # before a twenty minute build, not after the images are already pushed.
+      - name: refuse a source tag that points elsewhere
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          err=$(mktemp)
+          if existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" \
+              --jq '.object.type + " " + .object.sha' 2>"$err"); then
+            object_type=${existing%% *}
+            object_sha=${existing#* }
+            if [ "$object_type" = "tag" ]; then
+              object_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" --jq '.object.sha')
+            fi
+            if [ "$object_sha" != "$GITHUB_SHA" ]; then
+              echo "标签 $VERSION 已指向 $object_sha，而本次构建是 $GITHUB_SHA" >&2
+              exit 1
+            fi
+          elif ! grep -q "HTTP 404" "$err"; then
+            # 401/403/5xx/限流不再被当成「tag 不存在」。
+            echo "查询标签失败（只有 404 视为不存在）：" >&2
+            cat "$err" >&2
+            exit 1
+          fi
+
       # 同一个 vX.Y.Z 指向两份二进制时，升级与回滚都会失去意义：
       # 引用该版本的人拿到的内容取决于拉取时间。已存在的 tag 一律拒绝，
       # 只有显式勾选 allow_overwrite（发布重试/回滚）才放行。
@@ -84,8 +123,19 @@ jobs:
             fi
           done
 
-  build:
+  # One approval per release: the environment's deployment branch policy is
+  # enforced by GitHub, outside this file, so a dispatch from any ref other than
+  # main never reaches the build. Reviewers live on the environment itself.
+  gate:
     needs: [ci, validate]
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - name: approved
+        run: echo "release environment approved"
+
+  build:
+    needs: [ci, validate, gate]
     strategy:
       fail-fast: false
       matrix:
@@ -145,7 +195,7 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [build, validate]
+    needs: [build, validate, gate]
     runs-on: ubuntu-24.04
     permissions:
       # Releases and source tags are repo content; publishing them belongs to
@@ -217,13 +267,21 @@ jobs:
         run: |
           set -eu
 
-          # A tag that already points elsewhere means the version was reused;
-          # stop rather than publish a release whose source is not the image.
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" \
-            --jq '.object.type + " " + .object.sha' 2>/dev/null || true)
-          if [ -n "$existing" ]; then
-            object_type=${existing%% *}
-            object_sha=${existing#* }
+          # Create the tag atomically. If it already exists, it must point at
+          # this commit: `--target` is ignored for an existing tag, so never
+          # rely on it to decide where the release is attached.
+          err=$(mktemp)
+          if ! gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$VERSION" -f sha="$GITHUB_SHA" >/dev/null 2>"$err"; then
+            if ! grep -q "HTTP 422" "$err"; then
+              echo "创建标签失败：" >&2
+              cat "$err" >&2
+              exit 1
+            fi
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" \
+              --jq '.object.type + " " + .object.sha')
+            object_type=${object%% *}
+            object_sha=${object#* }
             if [ "$object_type" = "tag" ]; then
               object_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" --jq '.object.sha')
             fi
@@ -252,9 +310,9 @@ jobs:
             # A human may have enriched the notes; never overwrite them on a retry.
             echo "release $VERSION 已存在，保留现有说明"
           else
-            # `--target` is ignored when the tag already exists, so a retry with
-            # allow_overwrite attaches the release to the tag that was checked above.
-            gh release create "$VERSION" --target "$GITHUB_SHA" \
+            # The tag was created (or verified) above, so the release can only
+            # attach to this commit.
+            gh release create "$VERSION" --verify-tag \
               --title "$VERSION" --notes-file release-notes.md
           fi
 
