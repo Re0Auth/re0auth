@@ -23,6 +23,7 @@ license = "AGPL-3.0-or-later"
 repository = "https://github.com/Re0Auth/re0auth"
 
 [workspace.dependencies]
+accept-language = "3.1"
 aes-gcm = "0.11"
 anyhow = "1"
 async-trait = "0.1"
@@ -32,6 +33,7 @@ base64 = "0.23"
 headers = "0.4"
 pem = "3"
 percent-encoding = "2.3"
+prometheus = { version = "0.14", default-features = false }
 proptest = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 cookie = { version = "0.18", default-features = false, features = ["percent-encode"] }

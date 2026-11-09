@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "accept-language"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f27d075294830fcab6f66e320dab524bc6d048f4a151698e153205559113772"
+
+[[package]]
 name = "aead"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2482,6 +2488,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "memchr",
+ "parking_lot",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "proptest"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2729,6 +2749,7 @@ dependencies = [
 name = "re0auth-http"
 version = "0.1.12"
 dependencies = [
+ "accept-language",
  "axum",
  "base64 0.23.1",
  "cookie",
@@ -2738,6 +2759,7 @@ dependencies = [
  "mime",
  "mime_guess",
  "percent-encoding",
+ "prometheus",
  "qrcodegen",
  "re0auth-api",
  "re0auth-app",
@@ -2777,6 +2799,7 @@ dependencies = [
  "async-trait",
  "hex",
  "ipnet",
+ "mime",
  "re0auth-api",
  "reqwest",
  "rustls",
