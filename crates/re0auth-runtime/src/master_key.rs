@@ -52,24 +52,63 @@ pub fn decode_hex(raw: &str) -> anyhow::Result<Zeroizing<Vec<u8>>> {
     Ok(Zeroizing::new(bytes))
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
+fn mode_is_private(mode: u32) -> bool {
+    mode & 0o077 == 0
+}
+
 fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::metadata(path).map_err(|error| {
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
+
+        // Check the opened descriptor, not the path: a replacement between
+        // metadata and read must not change which file we adopt.
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .open(path)
+            .map_err(|error| {
+                anyhow::anyhow!("read encryption key file {}: {error}", path.display())
+            })?;
+        let metadata = file.metadata().map_err(|error| {
             anyhow::anyhow!("read encryption key file {}: {error}", path.display())
         })?;
-        let mode = metadata.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
+        let mode = metadata.mode() & 0o777;
+        if !mode_is_private(mode) {
             anyhow::bail!(
                 "encryption key file {} must not be group/world accessible (mode {mode:o})",
                 path.display()
             );
         }
+        #[cfg(target_os = "linux")]
+        {
+            // /proc/self is owned by the effective UID on Linux. A key owned by
+            // another user is not ours even when the mode happens to be 0600.
+            if let Ok(proc) = fs::metadata("/proc/self")
+                && metadata.uid() != proc.uid()
+            {
+                anyhow::bail!(
+                    "encryption key file {} must be owned by the current user (uid {}, expected {})",
+                    path.display(),
+                    metadata.uid(),
+                    proc.uid()
+                );
+            }
+        }
+        let mut content = String::new();
+        file.read_to_string(&mut content).map_err(|error| {
+            anyhow::anyhow!("read encryption key file {}: {error}", path.display())
+        })?;
+        return Ok(Zeroizing::new(content.trim().to_string()));
     }
-    let content = fs::read_to_string(path)
-        .map_err(|error| anyhow::anyhow!("read encryption key file {}: {error}", path.display()))?;
-    Ok(Zeroizing::new(content.trim().to_string()))
+    #[cfg(not(unix))]
+    {
+        let content = fs::read_to_string(path).map_err(|error| {
+            anyhow::anyhow!("read encryption key file {}: {error}", path.display())
+        })?;
+        Ok(Zeroizing::new(content.trim().to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -121,5 +160,27 @@ mod tests {
         );
         assert!(decode_hex("abc").is_err(), "odd length");
         assert!(decode_hex("zz").is_err(), "non-hex digit");
+    }
+
+    #[test]
+    fn key_modes_must_be_private() {
+        assert!(mode_is_private(0o600));
+        assert!(mode_is_private(0o400));
+        assert!(!mode_is_private(0o640));
+        assert!(!mode_is_private(0o604));
+        assert!(!mode_is_private(0o777));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_readable_key_file_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let file = key_file();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640))
+            .expect("set permissive mode");
+        let error = resolve_master_key(None, Some(&file)).expect_err("mode must be rejected");
+        assert!(error.to_string().contains("group/world accessible"));
+        let _ = std::fs::remove_file(file);
     }
 }

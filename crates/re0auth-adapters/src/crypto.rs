@@ -87,17 +87,18 @@ impl SigningKey {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create key directory {}", parent.display()))?;
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .with_context(|| format!("create signing key {}", path.display()))?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600))
-                .context("set signing key permissions")?;
+            use std::os::unix::fs::OpenOptionsExt;
+            // Set the mode at creation; chmod after create leaves a short window
+            // where the process umask decides who can read the private key.
+            options.mode(0o600);
         }
+        let mut file = options
+            .open(path)
+            .with_context(|| format!("create signing key {}", path.display()))?;
         file.write_all(pem.as_bytes())
             .context("write signing key")?;
         Self::from_key_pair(key_pair, now)
