@@ -170,6 +170,7 @@ impl ConsentRepo for SqliteStore {
         &self,
         consent: &Consent,
         fact: &SecurityFact,
+        revive_after: Unix,
     ) -> RepoResult<Option<Consent>> {
         let mut tx = self
             .pool
@@ -186,7 +187,9 @@ impl ConsentRepo for SqliteStore {
         .map_err(db_error)?;
         if let Some(row) = &existing {
             let revoked: Option<i64> = row.try_get("revoked_at").map_err(db_error)?;
-            if revoked.is_some() {
+            // A revocation that happened after this flow began wins; an older
+            // one is history and the new approval may replace it.
+            if revoked.is_some_and(|revoked| revoked >= revive_after) {
                 return Ok(None);
             }
         }
@@ -194,8 +197,8 @@ impl ConsentRepo for SqliteStore {
 
         let row = if existing.is_some() {
             sqlx::query(
-                "UPDATE consents SET scopes = ?, updated_at = ?, version = version + 1 \
-                 WHERE user_id = ? AND client_id = ? \
+                "UPDATE consents SET scopes = ?, updated_at = ?, revoked_at = NULL, \
+                 version = version + 1 WHERE user_id = ? AND client_id = ? \
                  RETURNING id, user_id, client_id, scopes, created_at, updated_at, revoked_at, version",
             )
             .bind(scopes_json(&merged)?)

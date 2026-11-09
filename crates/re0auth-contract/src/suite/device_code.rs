@@ -127,6 +127,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
             client_id: client.id,
             user_id: user.id,
             scopes: vec!["phigros.stats.read".to_string()],
+            created_at: 1_000,
         }
     );
     assert_eq!(

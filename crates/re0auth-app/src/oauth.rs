@@ -438,6 +438,7 @@ impl OAuthService {
             now,
             correlation_id,
             true,
+            0,
         )
         .await?;
         let code = self
@@ -549,6 +550,7 @@ impl OAuthService {
         now: Unix,
         correlation_id: Option<&str>,
         revive: bool,
+        revive_after: Unix,
     ) -> Result<Consent, OAuthError> {
         // INV-CONSENT-01: the consent record stores only the union of scopes.
         let existing = self
@@ -592,9 +594,9 @@ impl OAuthService {
             revoked_at: None,
             version: ConsentVersion(0),
         };
-        // Only the consent page may revive a revoked grant. The device flow is
-        // non-interactive: if the user revoked while the poll was in flight,
-        // the revocation wins (INV-AUTHZ-02).
+        // The consent page always revives. The device flow revives only when the
+        // revocation predates the device code being exchanged; a revoke after
+        // the flow began wins (INV-AUTHZ-02).
         let stored = if revive {
             self.storage
                 .consents()
@@ -602,7 +604,10 @@ impl OAuthService {
                 .await
                 .map(Some)
         } else {
-            self.storage.consents().grant_if_live(&pending, &fact).await
+            self.storage
+                .consents()
+                .grant_if_live(&pending, &fact, revive_after)
+                .await
         }
         .map_err(map_repo)?
         .ok_or(OAuthError::InvalidGrant("consent revoked"))?;
@@ -736,7 +741,10 @@ impl OAuthService {
             DevicePoll::SlowDown { interval_secs } => Err(OAuthError::SlowDown { interval_secs }),
             DevicePoll::ClientMismatch => Err(OAuthError::InvalidGrant("client mismatch")),
             DevicePoll::Approved {
-                user_id, scopes, ..
+                user_id,
+                scopes,
+                created_at,
+                ..
             } => {
                 // B15: a banned account must not turn an approved device code
                 // into a grant, even if it was approved before the ban.
@@ -745,7 +753,15 @@ impl OAuthService {
                 // authorization becomes a consent record. A token can never
                 // exist without one.
                 let consent = self
-                    .grant_consent(user_id, client_id, &scopes, now, correlation_id, false)
+                    .grant_consent(
+                        user_id,
+                        client_id,
+                        &scopes,
+                        now,
+                        correlation_id,
+                        false,
+                        created_at,
+                    )
                     .await?;
                 let (refresh_raw, refresh_hash) = new_secret(self.random.as_ref());
                 let refresh = RefreshToken {

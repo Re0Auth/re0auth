@@ -764,6 +764,7 @@ impl DeviceCodeRepo for MemoryStore {
                 client_id: code.client_id,
                 user_id,
                 scopes: code.scopes.clone(),
+                created_at: code.created_at,
             });
         }
 
@@ -1093,6 +1094,7 @@ impl ConsentRepo for MemoryStore {
         &self,
         consent: &Consent,
         fact: &SecurityFact,
+        revive_after: Unix,
     ) -> RepoResult<Option<Consent>> {
         let mut inner = self.lock();
         if !inner.users.contains_key(&consent.user_id)
@@ -1103,7 +1105,10 @@ impl ConsentRepo for MemoryStore {
         let key = (consent.user_id, consent.client_id);
         let mut stored = consent.clone();
         if let Some(existing) = inner.consents.get(&key) {
-            if existing.revoked_at.is_some() {
+            if existing
+                .revoked_at
+                .is_some_and(|revoked| revoked >= revive_after)
+            {
                 return Ok(None);
             }
             stored.id = existing.id;

@@ -274,6 +274,7 @@ impl DeviceCodeRepo for SqliteStore {
                     client_id: code.client_id,
                     user_id,
                     scopes: code.scopes,
+                    created_at: code.created_at,
                 });
             }
             // A concurrent poll consumed it; return the family it recorded so

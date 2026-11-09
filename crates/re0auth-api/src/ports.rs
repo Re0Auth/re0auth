@@ -601,6 +601,9 @@ pub enum DevicePoll {
         client_id: ClientId,
         user_id: UserId,
         scopes: Vec<String>,
+        /// When the device code was created; a consent revoked after this
+        /// moment still wins over an in-flight approval.
+        created_at: Unix,
     },
     Denied,
     Expired,
@@ -1021,6 +1024,7 @@ pub trait ConsentRepo: Send + Sync {
         &self,
         consent: &Consent,
         fact: &SecurityFact,
+        revive_after: Unix,
     ) -> RepoResult<Option<Consent>>;
     async fn revoke(
         &self,
