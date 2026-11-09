@@ -156,7 +156,10 @@ pub enum AdminCommand {
 }
 
 pub async fn run(cfg: &Config, command: AdminCommand) -> anyhow::Result<()> {
-    let store = SqliteStore::connect(&cfg.database.url).await?;
+    // No migrations here: the server owns the schema. A CLI command that
+    // migrated a live database could move it under a running process.
+    let store =
+        SqliteStore::connect_existing_with(&cfg.database.url, cfg.database.options()).await?;
     let clock = SystemClock;
     let random = OsRandom;
 

@@ -315,3 +315,74 @@ async fn p06_audit_query_applies_only_supplied_filters() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].action, AuditAction::ClientCreated);
 }
+
+/// The CLI path opens an existing database without migrating it; only the
+/// server path may create the schema.
+#[tokio::test]
+async fn s22_existing_connection_does_not_migrate() {
+    use re0auth_adapters::storage::DatabaseOptions;
+
+    let path = std::env::temp_dir().join(format!("re0auth-cli-{}.db", uuid::Uuid::now_v7()));
+    let url = format!("sqlite://{}", path.display());
+
+    let unmigrated = SqliteStore::connect_existing_with(&url, DatabaseOptions::default())
+        .await
+        .expect("opening a file without migrations is allowed");
+    assert!(
+        unmigrated.users().get(&UserId::new()).await.is_err(),
+        "an unmigrated database must not have the users table"
+    );
+    drop(unmigrated);
+
+    let migrated = SqliteStore::connect_with(&url, DatabaseOptions::default())
+        .await
+        .expect("server path migrates");
+    migrated.users().get(&UserId::new()).await.expect("query");
+    drop(migrated);
+
+    let existing = SqliteStore::connect_existing_with(&url, DatabaseOptions::default())
+        .await
+        .expect("existing schema opens");
+    existing.users().get(&UserId::new()).await.expect("query");
+    drop(existing);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Family markers are not kept forever: once the refresh-token absolute
+/// lifetime has passed, no live token can still reference the family.
+#[tokio::test]
+async fn p07_revoked_families_are_purged_by_age() {
+    use re0auth_api::FamilyId;
+
+    let store = store().await;
+    let family = FamilyId::new();
+    let fact = SecurityFact::new(AuditAction::RefreshTokenRevoked, 1_000, "family:test");
+    store
+        .refresh_tokens()
+        .revoke_family(&family, &fact, 1_000)
+        .await
+        .expect("revoke");
+    assert!(
+        store
+            .access_tokens()
+            .is_denied("jti", &family, 1_000)
+            .await
+            .expect("denied")
+    );
+
+    assert_eq!(
+        store
+            .refresh_tokens()
+            .purge_revoked_families_before(1_000)
+            .await
+            .expect("purge"),
+        1
+    );
+    assert!(
+        !store
+            .access_tokens()
+            .is_denied("jti", &family, 1_001)
+            .await
+            .expect("denied")
+    );
+}

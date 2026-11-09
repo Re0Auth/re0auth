@@ -52,6 +52,25 @@ impl SqliteStore {
 
     /// 同 [`Self::connect`]，但连接参数由调用方提供。
     pub async fn connect_with(url: &str, options: DatabaseOptions) -> anyhow::Result<Self> {
+        Self::connect_inner(url, options, true).await
+    }
+
+    /// Opens an existing database without running migrations.
+    ///
+    /// The admin CLI uses this: a CLI command must not migrate a database that
+    /// a running server is using, and a missing schema is an operator error.
+    pub async fn connect_existing_with(
+        url: &str,
+        options: DatabaseOptions,
+    ) -> anyhow::Result<Self> {
+        Self::connect_inner(url, options, false).await
+    }
+
+    async fn connect_inner(
+        url: &str,
+        options: DatabaseOptions,
+        migrate: bool,
+    ) -> anyhow::Result<Self> {
         // One reading of the URL, shared with the vault-collision guard: the
         // `sqlite:` grammar is sqlx's, and `contains(":memory:")` also matched a
         // file whose name happened to contain that text.
@@ -102,10 +121,12 @@ impl SqliteStore {
             .await
             .context("connect SQLite")?;
 
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .context("run SQLite migrations")?;
+        if migrate {
+            sqlx::migrate!("./migrations")
+                .run(&pool)
+                .await
+                .context("run SQLite migrations")?;
+        }
 
         Ok(Self { pool })
     }
@@ -866,6 +887,15 @@ impl RefreshTokenRepo for SqliteStore {
         }
         tx.commit().await.map_err(db_error)?;
         Ok(revoked)
+    }
+
+    async fn purge_revoked_families_before(&self, before: Unix) -> RepoResult<u64> {
+        let result = sqlx::query("DELETE FROM revoked_families WHERE revoked_at <= ?")
+            .bind(before)
+            .execute(&self.pool)
+            .await
+            .map_err(db_error)?;
+        Ok(result.rows_affected())
     }
 
     async fn revoke_all_for_client(

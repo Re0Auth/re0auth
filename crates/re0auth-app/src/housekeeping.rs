@@ -101,6 +101,17 @@ impl ScheduledTask for HousekeepingSweepJob {
                 .purge_expired(before(grace::REFRESH_TOKENS))
                 .await,
         );
+        // A family marker only serves tokens that could still exist; after the
+        // absolute refresh lifetime nothing can reference it.
+        sweep.add(
+            "revoked_families",
+            storage
+                .refresh_tokens()
+                .purge_revoked_families_before(
+                    now.saturating_sub(re0auth_domain::refresh_token_absolute_ttl(now)),
+                )
+                .await,
+        );
         sweep.add(
             "login_transactions",
             storage

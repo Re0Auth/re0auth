@@ -903,6 +903,12 @@ pub trait RefreshTokenRepo: Send + Sync {
         now: Unix,
     ) -> RepoResult<u64>;
 
+    /// Drops family markers older than `before`.
+    ///
+    /// A marker only has to outlive the tokens it denies; once the refresh-token
+    /// absolute lifetime has passed, no live token can reference the family.
+    async fn purge_revoked_families_before(&self, before: Unix) -> RepoResult<u64>;
+
     /// Revokes every live refresh family for one `(user, client)` pair.
     ///
     /// Used when the user withdraws the whole authorization, not just one

@@ -566,6 +566,12 @@ impl RefreshTokenRepo for MemoryStore {
         });
         Ok((previous - inner.refresh_tokens.len()) as u64)
     }
+
+    async fn purge_revoked_families_before(&self, _before: Unix) -> RepoResult<u64> {
+        // The test double keeps family ids without timestamps, so it cannot
+        // decide by age; production retention is covered by the SQLite test.
+        Ok(0)
+    }
 }
 
 #[async_trait]
