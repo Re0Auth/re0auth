@@ -103,7 +103,18 @@ cargo bench -p re0auth-server --bench token_paths -- exchange_code
 
 中位数由 **87.10 µs** 降至 **72.75 µs（−16.5%）**，两侧置信区间不重叠。
 
-## 尚未处理
+## 第 5 轮优化：删除重复的客户端放行检查
 
-- 删除三条 token 流程中重复的 `require_approved_client`（对 token 基准 <1%，但每次少一次查询）。
-- 网关路径中 `verify_gateway_token` 与 `GatewayService::fetch` 对同一 `users` 行的重复读取。
+`authenticate_client` 已经返回「存在且状态为 `Approved`」的客户端；三条 token 流程随后又调用一次 `require_approved_client`，把同一行再读一遍。该检查已删除，方法本身一并移除。唯一的语义差别是并发管理操作恰好在两次检查之间把客户端挂起——旧代码也只是在第二次检查时点判断，本身并不构成原子保证。
+
+| 配对 | OLD | NEW |
+|---|---:|---:|
+| 1 | 1.1143 ms | 1.0639 ms |
+| 2 | 1.3125 ms | 1.3336 ms |
+| 3 | 1.0986 ms | 1.0836 ms |
+
+中位数 1.1143 ms → 1.0836 ms（−2.8%），差异小于该基准的波动，**不宣称收益**。
+
+## 未采纳：网关路径重复读取 `users`
+
+`verify_gateway_token` 与 `GatewayService::fetch` 各读一次 `users` 行（同一请求内约 6 µs）。合并需要把用户状态穿透两层接口，或把「封禁」错误从网关层的 403 改到令牌层的 401，二者都会增加耦合或改变可观察行为；该路径的耗时由上游 RTT（数十毫秒）主导，收益不可测。按「不做无证据的顺手优化」放弃。

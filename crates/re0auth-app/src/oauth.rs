@@ -724,7 +724,6 @@ impl OAuthService {
             DevicePoll::Approved {
                 user_id, scopes, ..
             } => {
-                self.require_approved_client(client_id).await?;
                 // D2=A: the token exchange is the point where the device
                 // authorization becomes a consent record. A token can never
                 // exist without one.
@@ -813,7 +812,6 @@ impl OAuthService {
             Err(error) => return Err(map_repo(error)),
         };
 
-        self.require_approved_client(client_id).await?;
         let consent = self
             .require_grant_consent(grant.user_id, client_id, &grant.scopes)
             .await?;
@@ -905,7 +903,6 @@ impl OAuthService {
         if old.revoked_at.is_some() || old.expires_at <= now {
             return Err(OAuthError::InvalidGrant("expired or revoked"));
         }
-        self.require_approved_client(client_id).await?;
         let consent = self
             .require_grant_consent(old.user_id, client_id, &old.scopes)
             .await?;
@@ -1149,20 +1146,6 @@ impl OAuthService {
             .await
             .map_err(map_repo)?;
         Ok(RevocationOutcome::Revoked)
-    }
-
-    async fn require_approved_client(&self, client_id: ClientId) -> Result<(), OAuthError> {
-        let client = self
-            .storage
-            .clients()
-            .get(&client_id)
-            .await
-            .map_err(map_repo)?
-            .ok_or(OAuthError::InvalidClient)?;
-        if client.status != ClientStatus::Approved {
-            return Err(OAuthError::UnauthorizedClient);
-        }
-        Ok(())
     }
 
     /// Consent check for token issuance (code exchange, refresh, device flow).
