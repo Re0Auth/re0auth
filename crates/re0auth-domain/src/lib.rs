@@ -63,3 +63,37 @@ pub fn session_idle_ttl(_now: Unix) -> Unix {
 pub fn session_absolute_ttl(_now: Unix) -> Unix {
     7 * 24 * 60 * 60
 }
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn id_tokens_accept_exactly_non_empty_subjects(subject in r"[\s\S]{0,32}") {
+            prop_assert_eq!(
+                require_id_subject(TokenUse::Id, Some(&subject)).is_ok(),
+                !subject.is_empty(),
+            );
+        }
+
+        #[test]
+        fn non_id_tokens_are_rejected_regardless_of_the_subject(
+            subject in proptest::option::of(r"[\s\S]{0,32}"),
+        ) {
+            prop_assert_eq!(
+                require_id_subject(TokenUse::Access, subject.as_deref()),
+                Err(ClaimError::WrongTokenUse),
+            );
+        }
+    }
+
+    #[test]
+    fn id_tokens_without_a_subject_are_rejected() {
+        assert_eq!(
+            require_id_subject(TokenUse::Id, None),
+            Err(ClaimError::MissingSubject)
+        );
+    }
+}

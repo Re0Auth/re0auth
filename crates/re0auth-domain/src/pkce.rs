@@ -75,3 +75,36 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn s256_round_trips_and_fits_the_wire(verifier in r"[A-Za-z0-9._~-]{43,128}") {
+            let challenge = challenge_s256(&verifier);
+            prop_assert_eq!(challenge.len(), 43);
+            prop_assert!(verify_s256(&verifier, &challenge));
+        }
+
+        #[test]
+        fn verifier_validation_matches_rfc7636(value in r"[\s\S]{0,160}") {
+            let expected = (43..=128).contains(&value.len())
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                });
+            prop_assert_eq!(is_valid_verifier(&value), expected);
+        }
+
+        #[test]
+        fn different_verifiers_produce_different_challenges(
+            left in r"[A-Za-z0-9._~-]{43,64}",
+            right in r"[A-Za-z0-9._~-]{43,64}",
+        ) {
+            prop_assume!(left != right);
+            prop_assert_ne!(challenge_s256(&left), challenge_s256(&right));
+        }
+    }
+}

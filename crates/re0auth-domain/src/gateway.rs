@@ -134,3 +134,53 @@ mod tests {
         assert!(error.to_string().contains("resource"));
     }
 }
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn names_inside_the_alphabet_are_accepted(value in r"[a-z0-9_-]{1,64}") {
+            prop_assert_eq!(validate_resource_name(&value), Ok(()));
+        }
+
+        #[test]
+        fn ascii_outside_the_alphabet_is_rejected(value in r"[a-z0-9_-]{0,63}", bad in 0u8..=127) {
+            prop_assume!(
+                !(bad.is_ascii_lowercase() || bad.is_ascii_digit() || bad == b'-' || bad == b'_')
+            );
+            let mut candidate = value;
+            candidate.push(char::from(bad));
+            prop_assert_eq!(
+                validate_resource_name(&candidate),
+                Err(ResourceError::IllegalCharacter)
+            );
+        }
+
+        #[test]
+        fn names_above_the_length_bound_are_rejected(value in r"[a-z0-9_-]{65,200}") {
+            prop_assert_eq!(validate_resource_name(&value), Err(ResourceError::TooLong));
+        }
+
+        #[test]
+        fn subjects_share_the_alphabet_under_a_larger_bound(value in r"[a-z0-9_-]{1,128}") {
+            prop_assert_eq!(validate_subject(&value), Ok(()));
+        }
+
+        #[test]
+        fn subjects_above_the_length_bound_are_rejected(value in r"[a-z0-9_-]{129,200}") {
+            prop_assert_eq!(validate_subject(&value), Err(ResourceError::TooLong));
+        }
+
+        #[test]
+        fn scope_allows_is_exact_membership(
+            granted in proptest::collection::vec(r"[a-z.]{1,16}", 0..8),
+            required in r"[a-z.]{0,16}",
+        ) {
+            let expected = !required.is_empty() && granted.iter().any(|scope| scope == &required);
+            prop_assert_eq!(scope_allows(&granted, &required), expected);
+        }
+    }
+}

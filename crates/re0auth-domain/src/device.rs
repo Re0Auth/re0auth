@@ -67,3 +67,50 @@ mod tests {
         assert_eq!(generate_user_code(&Fixed), "AAAA-AAAA");
     }
 }
+
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    struct Fixed(Vec<u8>);
+
+    impl Random for Fixed {
+        fn bytes(&self, len: usize) -> Vec<u8> {
+            self.0.iter().copied().cycle().take(len).collect()
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn normalization_is_idempotent(raw in r"[\s\S]{0,64}") {
+            let once = normalize_user_code(&raw);
+            prop_assert_eq!(normalize_user_code(&once), once);
+        }
+
+        #[test]
+        fn normalization_output_is_uppercase_ascii_alphanumeric(raw in r"[\s\S]{0,64}") {
+            let normalized = normalize_user_code(&raw);
+            prop_assert!(normalized
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()));
+        }
+
+        #[test]
+        fn formatting_is_idempotent(raw in r"[\s\S]{0,32}") {
+            let once = format_user_code(&raw);
+            prop_assert_eq!(format_user_code(&once), once);
+        }
+
+        #[test]
+        fn generated_codes_match_the_wire_format(bytes in proptest::collection::vec(any::<u8>(), 8)) {
+            let code = generate_user_code(&Fixed(bytes));
+            prop_assert_eq!(code.len(), 9);
+            prop_assert_eq!(code.as_bytes()[4], b'-');
+            prop_assert!(code
+                .chars()
+                .filter(|ch| *ch != '-')
+                .all(|ch| USER_CODE_ALPHABET.contains(&(ch as u8))));
+        }
+    }
+}
