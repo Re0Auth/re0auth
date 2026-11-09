@@ -100,7 +100,7 @@ fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
         file.read_to_string(&mut content).map_err(|error| {
             anyhow::anyhow!("read encryption key file {}: {error}", path.display())
         })?;
-        return Ok(Zeroizing::new(content.trim().to_string()));
+        Ok(Zeroizing::new(content.trim().to_string()))
     }
     #[cfg(not(unix))]
     {
