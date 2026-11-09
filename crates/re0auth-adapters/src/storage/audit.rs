@@ -168,41 +168,64 @@ impl AuditRepo for SqliteStore {
         limit: u32,
     ) -> RepoResult<Vec<AuditRecord>> {
         // Read-only by contract (HR-04): this method has no write path.
-        let cursor = before.map(|id| id.0.to_string());
-        let actor = filter.actor.map(|id| id.0.to_string());
-        let client = filter.client.map(|id| id.0.to_string());
-        let action = filter.action.map(AuditAction::as_str);
-        let tier = filter.tier.map(AuditTier::as_str);
-        let rows = sqlx::query(
+        //
+        // Only the filters the caller supplied become predicates. The previous
+        // `(? IS NULL OR col = ?)` shape made every plan a full scan because no
+        // index can serve it. Fragments are static; values stay bound.
+        let mut sql = String::from(
             "SELECT id, occurred_at, actor_user_id, client_id, action, target, outcome, \
-             request_id, severity, detail_json, tier FROM audit_logs \
-             WHERE (? IS NULL OR id < ?) \
-               AND (? IS NULL OR actor_user_id = ?) \
-               AND (? IS NULL OR client_id = ?) \
-               AND (? IS NULL OR action = ?) \
-               AND (? IS NULL OR tier = ?) \
-               AND (? IS NULL OR occurred_at >= ?) \
-               AND (? IS NULL OR occurred_at <= ?) \
-             ORDER BY id DESC LIMIT ?",
-        )
-        .bind(&cursor)
-        .bind(&cursor)
-        .bind(&actor)
-        .bind(&actor)
-        .bind(&client)
-        .bind(&client)
-        .bind(action)
-        .bind(action)
-        .bind(tier)
-        .bind(tier)
-        .bind(filter.from)
-        .bind(filter.from)
-        .bind(filter.to)
-        .bind(filter.to)
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_error)?;
+             request_id, severity, detail_json, tier FROM audit_logs WHERE 1 = 1",
+        );
+        if before.is_some() {
+            sql.push_str(" AND id < ?");
+        }
+        if filter.actor.is_some() {
+            sql.push_str(" AND actor_user_id = ?");
+        }
+        if filter.client.is_some() {
+            sql.push_str(" AND client_id = ?");
+        }
+        if filter.action.is_some() {
+            sql.push_str(" AND action = ?");
+        }
+        if filter.tier.is_some() {
+            sql.push_str(" AND tier = ?");
+        }
+        if filter.from.is_some() {
+            sql.push_str(" AND occurred_at >= ?");
+        }
+        if filter.to.is_some() {
+            sql.push_str(" AND occurred_at <= ?");
+        }
+        sql.push_str(" ORDER BY id DESC LIMIT ?");
+
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        if let Some(cursor) = before {
+            query = query.bind(cursor.0.to_string());
+        }
+        if let Some(actor) = filter.actor {
+            query = query.bind(actor.0.to_string());
+        }
+        if let Some(client) = filter.client {
+            query = query.bind(client.0.to_string());
+        }
+        if let Some(action) = filter.action {
+            query = query.bind(action.as_str());
+        }
+        if let Some(tier) = filter.tier {
+            query = query.bind(tier.as_str());
+        }
+        if let Some(from) = filter.from {
+            query = query.bind(from);
+        }
+        if let Some(to) = filter.to {
+            query = query.bind(to);
+        }
+        let rows = query
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_error)?;
         rows.iter().map(row_to_audit).collect()
     }
 }

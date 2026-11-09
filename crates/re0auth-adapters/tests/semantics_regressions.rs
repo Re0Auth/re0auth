@@ -277,3 +277,41 @@ async fn s09_signing_key_purge_removes_the_row() {
         Err(RepoError::NotFound)
     ));
 }
+
+/// The audit query must apply only the filters supplied; the old `OR` shape
+/// scanned every row regardless.
+#[tokio::test]
+async fn p06_audit_query_applies_only_supplied_filters() {
+    use re0auth_api::audit::{AuditAction, SecurityFact};
+
+    let store = store().await;
+    for (action, target) in [
+        (AuditAction::ClientCreated, "client:a"),
+        (AuditAction::UserBanned, "user:b"),
+    ] {
+        store
+            .audits()
+            .record_fact(&SecurityFact::new(action, 1_000, target))
+            .await
+            .expect("fact");
+    }
+
+    let rows = store
+        .audits()
+        .query(
+            &AuditFilter {
+                actor: None,
+                client: None,
+                action: Some(AuditAction::ClientCreated),
+                tier: None,
+                from: None,
+                to: None,
+            },
+            None,
+            10,
+        )
+        .await
+        .expect("query");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].action, AuditAction::ClientCreated);
+}
