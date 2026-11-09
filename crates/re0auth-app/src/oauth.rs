@@ -437,8 +437,7 @@ impl OAuthService {
             &request.scopes,
             now,
             correlation_id,
-            true,
-            0,
+            None,
         )
         .await?;
         let code = self
@@ -549,8 +548,9 @@ impl OAuthService {
         requested: &[String],
         now: Unix,
         correlation_id: Option<&str>,
-        revive: bool,
-        revive_after: Unix,
+        // `None` = interactive grant (may revive). `Some(t)` = device flow,
+        // where a revocation at or after `t` still wins.
+        revive_after: Option<Unix>,
     ) -> Result<Consent, OAuthError> {
         // INV-CONSENT-01: the consent record stores only the union of scopes.
         let existing = self
@@ -597,17 +597,19 @@ impl OAuthService {
         // The consent page always revives. The device flow revives only when the
         // revocation predates the device code being exchanged; a revoke after
         // the flow began wins (INV-AUTHZ-02).
-        let stored = if revive {
-            self.storage
+        let stored = match revive_after {
+            None => self
+                .storage
                 .consents()
                 .grant(&pending, &fact)
                 .await
-                .map(Some)
-        } else {
-            self.storage
-                .consents()
-                .grant_if_live(&pending, &fact, revive_after)
-                .await
+                .map(Some),
+            Some(threshold) => {
+                self.storage
+                    .consents()
+                    .grant_if_live(&pending, &fact, threshold)
+                    .await
+            }
         }
         .map_err(map_repo)?
         .ok_or(OAuthError::InvalidGrant("consent revoked"))?;
@@ -759,8 +761,7 @@ impl OAuthService {
                         &scopes,
                         now,
                         correlation_id,
-                        false,
-                        created_at,
+                        Some(created_at),
                     )
                     .await?;
                 let (refresh_raw, refresh_hash) = new_secret(self.random.as_ref());
