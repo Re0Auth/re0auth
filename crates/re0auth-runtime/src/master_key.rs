@@ -104,6 +104,11 @@ fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
     }
     #[cfg(not(unix))]
     {
+        // No stable ACL API: say so rather than implying the file is private.
+        tracing::warn!(
+            path = %path.display(),
+            "file permissions are not verified on this platform; restrict the key file to the service account"
+        );
         let content = fs::read_to_string(path).map_err(|error| {
             anyhow::anyhow!("read encryption key file {}: {error}", path.display())
         })?;
@@ -182,5 +187,21 @@ mod tests {
         let error = resolve_master_key(None, Some(&file)).expect_err("mode must be rejected");
         assert!(error.to_string().contains("group/world accessible"));
         let _ = std::fs::remove_file(file);
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod s18_tests {
+    use super::*;
+
+    const MASTER: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
+
+    #[test]
+    fn s18_non_unix_reads_the_key_despite_missing_acl_checks() {
+        let path = std::env::temp_dir().join(format!("re0auth-key-{}.hex", uuid::Uuid::now_v7()));
+        std::fs::write(&path, MASTER).expect("write key");
+        let key = resolve_master_key(None, Some(&path)).expect("key file");
+        assert_eq!(key.as_str(), MASTER);
+        let _ = std::fs::remove_file(path);
     }
 }

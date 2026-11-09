@@ -116,6 +116,12 @@ impl GovernorClock for PortClock {
     }
 }
 
+/// Hard ceiling on one lane's key map.
+///
+/// The periodic prune drops quiet keys, but between prunes a scanner rotating
+/// source addresses can insert freely; this is the backstop.
+const MAX_KEYS_PER_LANE: usize = 100_000;
+
 /// Keyed GCRA limiters, one per lane.
 pub struct GovernorLimiter {
     unauthenticated: LaneLimiter,
@@ -186,6 +192,21 @@ fn build(quota: LaneQuota, clock: Arc<dyn Clock>) -> LaneLimiter {
 impl RateLimiter for GovernorLimiter {
     fn check(&self, lane: Lane, key: &str) -> RateDecision {
         let lane_limiter = self.limiter(lane);
+        // Last-resort memory bound: governor's store never evicts on its own,
+        // and an IPv6 scanner can keep inserting fresh keys between prunes.
+        if lane_limiter.limiter.len() >= MAX_KEYS_PER_LANE {
+            // Drop quiet keys first; if the flood is still at the ceiling,
+            // refuse new keys instead of growing without bound. Existing keys
+            // keep their budgets, and the caller gets a normal 429.
+            lane_limiter.limiter.retain_recent();
+            if lane_limiter.limiter.len() >= MAX_KEYS_PER_LANE {
+                return RateDecision::Deny {
+                    retry_after_secs: 1,
+                    limit: lane_limiter.burst,
+                    window_secs: lane_limiter.window_secs,
+                };
+            }
+        }
         match lane_limiter.limiter.check_key(&key.to_string()) {
             Ok(()) => RateDecision::Allow,
             Err(not_until) => {
@@ -549,5 +570,55 @@ mod tests {
             dropped >= 9,
             "all three lanes must be swept, dropped {dropped}"
         );
+    }
+}
+
+#[cfg(test)]
+mod p13_tests {
+    use super::*;
+    use re0auth_api::Unix;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    struct Clock(Arc<AtomicI64>);
+
+    impl re0auth_api::Clock for Clock {
+        fn now(&self) -> Unix {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn p13_limiter_state_stays_under_the_hard_cap() {
+        let clock = Arc::new(AtomicI64::new(1_000));
+        let limiter = GovernorLimiter::new(
+            RateLimitPolicy {
+                unauthenticated: LaneQuota {
+                    burst: 1_000_000,
+                    period_secs: 60,
+                },
+                authenticated: LaneQuota {
+                    burst: 1,
+                    period_secs: 60,
+                },
+                per_user: LaneQuota {
+                    burst: 1,
+                    period_secs: 60,
+                },
+            },
+            Arc::new(Clock(clock)),
+        );
+
+        for index in 0..MAX_KEYS_PER_LANE {
+            limiter.check(Lane::Unauthenticated, &format!("ip-{index}"));
+        }
+        assert!(
+            matches!(
+                limiter.check(Lane::Unauthenticated, "overflow"),
+                RateDecision::Deny { .. }
+            ),
+            "a full lane must refuse new keys rather than grow"
+        );
+        assert!(limiter.limiter(Lane::Unauthenticated).limiter.len() <= MAX_KEYS_PER_LANE);
     }
 }
