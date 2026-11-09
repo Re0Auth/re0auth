@@ -23,7 +23,7 @@ use re0auth_api::{AuditId, ClientId, Clock, ConnectorId, Re0Error, UserId};
 use re0auth_domain::gateway::{self, InvalidResource, ResourceField};
 use uuid::Uuid;
 
-use crate::circuit::{Admission, CircuitKey, CircuitTracker, Outcome};
+use crate::circuit::{CircuitKey, CircuitTracker, Outcome, Probe};
 use crate::credentials::{CredentialError, CredentialSource};
 
 #[derive(Clone, Debug)]
@@ -489,19 +489,17 @@ impl GatewayService {
             .access_token(&binding, now, request.correlation_id)
             .await?;
 
-        let connector_key = CircuitKey::Connector(endpoint.id);
-        let binding_key = CircuitKey::Binding(endpoint.id, binding.id);
-        // `admit` claims the single half-open probe slot as a side effect, so
-        // every early exit below has to give back whatever it took. Otherwise
-        // the key stays half-open with the slot held forever and rejects every
-        // later caller until restart.
-        if let Admission::Reject { retry_after_secs } = self.circuit.admit(&connector_key, now) {
-            return Err(GatewayError::CircuitOpen { retry_after_secs });
-        }
-        if let Admission::Reject { retry_after_secs } = self.circuit.admit(&binding_key, now) {
-            self.circuit.release_probe(&connector_key, now);
-            return Err(GatewayError::CircuitOpen { retry_after_secs });
-        }
+        // Admission hands back a claim that releases its slot on drop, so a
+        // cancelled request (timeout, client disconnect) cannot leave the key
+        // half-open and rejecting every later caller until restart.
+        let mut connector_probe = self
+            .circuit
+            .probe(CircuitKey::Connector(endpoint.id), now)
+            .map_err(|retry_after_secs| GatewayError::CircuitOpen { retry_after_secs })?;
+        let mut binding_probe = self
+            .circuit
+            .probe(CircuitKey::Binding(endpoint.id, binding.id), now)
+            .map_err(|retry_after_secs| GatewayError::CircuitOpen { retry_after_secs })?;
 
         let resource = ResourceRequest::new(request.resource, subject);
         let started = std::time::Instant::now();
@@ -517,8 +515,8 @@ impl GatewayService {
                     list_view,
                     payload,
                     started,
-                    &connector_key,
-                    &binding_key,
+                    &mut connector_probe,
+                    &mut binding_probe,
                     &cache_key,
                     now,
                 )
@@ -546,8 +544,8 @@ impl GatewayService {
                                             list_view,
                                             payload,
                                             started,
-                                            &connector_key,
-                                            &binding_key,
+                                            &mut connector_probe,
+                                            &mut binding_probe,
                                             &cache_key,
                                             now,
                                         )
@@ -556,8 +554,8 @@ impl GatewayService {
                                 Err(retry_error) => {
                                     self.apply_failure(
                                         &binding,
-                                        &connector_key,
-                                        &binding_key,
+                                        &mut connector_probe,
+                                        &mut binding_probe,
                                         &retry_error,
                                         now,
                                         request.correlation_id,
@@ -568,8 +566,8 @@ impl GatewayService {
                             }
                         }
                         Err(CredentialError::NeedsReauth) => {
-                            self.circuit.settle(&connector_key, Outcome::Business, now);
-                            self.circuit.settle(&binding_key, Outcome::Business, now);
+                            connector_probe.settle(Outcome::Business, now);
+                            binding_probe.settle(Outcome::Business, now);
                             self.mark_needs_reauth(
                                 &binding,
                                 "refresh_invalid_grant",
@@ -582,8 +580,8 @@ impl GatewayService {
                         Err(CredentialError::Unavailable) => {
                             self.apply_failure(
                                 &binding,
-                                &connector_key,
-                                &binding_key,
+                                &mut connector_probe,
+                                &mut binding_probe,
                                 &UpstreamError::Unavailable,
                                 now,
                                 request.correlation_id,
@@ -592,16 +590,16 @@ impl GatewayService {
                             return Err(UpstreamError::Unavailable.into());
                         }
                         Err(CredentialError::Internal) => {
-                            self.circuit.settle(&connector_key, Outcome::Internal, now);
-                            self.circuit.settle(&binding_key, Outcome::Internal, now);
+                            connector_probe.settle(Outcome::Internal, now);
+                            binding_probe.settle(Outcome::Internal, now);
                             return Err(GatewayError::Internal);
                         }
                     }
                 }
                 self.apply_failure(
                     &binding,
-                    &connector_key,
-                    &binding_key,
+                    &mut connector_probe,
+                    &mut binding_probe,
                     &error,
                     now,
                     request.correlation_id,
@@ -679,8 +677,8 @@ impl GatewayService {
         list_view: bool,
         payload: UpstreamPayload,
         started: std::time::Instant,
-        connector_key: &CircuitKey,
-        binding_key: &CircuitKey,
+        connector_probe: &mut Probe,
+        binding_probe: &mut Probe,
         cache_key: &str,
         now: re0auth_api::Unix,
     ) -> Result<UpstreamPayload, GatewayError> {
@@ -688,12 +686,13 @@ impl GatewayService {
             // An oversized response is an upstream-wide condition, so it counts
             // against the connector only. Opening the binding breaker as well
             // would refuse that one binding for 30 minutes over a problem that
-            // is not specific to it.
-            self.circuit.settle(connector_key, Outcome::Internal, now);
+            // is not specific to it. The binding claim is dropped unsettled,
+            // which hands its slot back without opening anything.
+            connector_probe.settle(Outcome::Internal, now);
             return Err(UpstreamError::Truncated.into());
         }
-        self.circuit.settle(connector_key, Outcome::Success, now);
-        self.circuit.settle(binding_key, Outcome::Success, now);
+        connector_probe.settle(Outcome::Success, now);
+        binding_probe.settle(Outcome::Success, now);
         if request.raw {
             // Recorded only on a served read: a failure is an error, not a read,
             // and inventing a ledger row for it would blur the two.
@@ -820,8 +819,8 @@ impl GatewayService {
     async fn apply_failure(
         &self,
         binding: &Binding,
-        connector_key: &CircuitKey,
-        binding_key: &CircuitKey,
+        connector_probe: &mut Probe,
+        binding_probe: &mut Probe,
         error: &UpstreamError,
         now: i64,
         correlation_id: Option<&str>,
@@ -829,20 +828,20 @@ impl GatewayService {
         match error.fault_class() {
             FaultClass::Business => {
                 // A 4xx still proves reachability: close any open probe.
-                self.circuit.settle(connector_key, Outcome::Business, now);
-                self.circuit.settle(binding_key, Outcome::Business, now);
+                connector_probe.settle(Outcome::Business, now);
+                binding_probe.settle(Outcome::Business, now);
                 if error.binding_action() == BindingAction::NeedsReauth {
                     self.mark_needs_reauth(binding, "upstream_401", now, correlation_id)
                         .await?;
                 }
             }
             FaultClass::Internal => {
-                self.circuit.settle(connector_key, Outcome::Internal, now);
+                connector_probe.settle(Outcome::Internal, now);
                 // The binding key was admitted for this request, so it must be
                 // settled too. Leaving it half-open holds its probe slot and
                 // rejects every later request for this binding — a permanent
                 // 503 that outlives the upstream's outage.
-                self.circuit.settle(binding_key, Outcome::Internal, now);
+                binding_probe.settle(Outcome::Internal, now);
             }
             _ => {}
         }

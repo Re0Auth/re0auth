@@ -64,6 +64,44 @@ impl Outcome {
     }
 }
 
+/// One caller's claim on a breaker key.
+///
+/// [`CircuitTracker::admit`] claims the single half-open probe slot as a side
+/// effect. A request cancelled between admission and the upstream reply (the
+/// request timeout, a client disconnect) never reaches `settle`, so the claim
+/// has to be released when this value is dropped; otherwise the key stays
+/// half-open and rejects every later caller until the process restarts.
+///
+/// Settling consumes the outcome: `settle` records it and marks the claim
+/// handled, so `Drop` becomes a no-op.
+pub struct Probe {
+    tracker: Arc<CircuitTracker>,
+    key: CircuitKey,
+    admitted_at: Unix,
+    settled: bool,
+}
+
+impl Probe {
+    /// Records the upstream outcome. Calling this twice is a no-op.
+    pub fn settle(&mut self, outcome: Outcome, now: Unix) {
+        if self.settled {
+            return;
+        }
+        self.tracker.settle(&self.key, outcome, now);
+        self.settled = true;
+    }
+}
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        if !self.settled {
+            // Restore `Open` with the admission deadline already elapsed, so
+            // the next caller may probe immediately.
+            self.tracker.release_probe(&self.key, self.admitted_at);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum State {
     Closed { failures: u32 },
@@ -115,6 +153,23 @@ impl CircuitTracker {
                     Admission::Pass
                 }
             }
+        }
+    }
+
+    /// Admits one caller and returns the claim it must settle or drop.
+    ///
+    /// The `Arc` receiver is what lets the returned [`Probe`] release its slot
+    /// on `Drop`; the tracker outlives the request even when the future is
+    /// cancelled.
+    pub fn probe(self: &Arc<Self>, key: CircuitKey, now: Unix) -> Result<Probe, i64> {
+        match self.admit(&key, now) {
+            Admission::Pass => Ok(Probe {
+                tracker: Arc::clone(self),
+                key,
+                admitted_at: now,
+                settled: false,
+            }),
+            Admission::Reject { retry_after_secs } => Err(retry_after_secs),
         }
     }
 
@@ -319,6 +374,39 @@ mod tests {
         let key = key();
         // No half-open state at all: release must be a no-op, not a state edit.
         tracker.release_probe(&key, 1_030);
+        assert_eq!(tracker.admit(&key, 1_030), Admission::Pass);
+        assert_eq!(tracker.retry_after(&key, 1_030), None);
+    }
+
+    /// A request that is cancelled between admission and the upstream reply
+    /// never calls `settle`. The claim must hand the half-open slot back on
+    /// drop, or the key rejects every later caller until the process restarts.
+    #[test]
+    fn s01_a_cancelled_probe_does_not_wedge_the_breaker() {
+        let tracker = Arc::new(tracker(1, 30));
+        let key = key();
+        open(&tracker, &key, 1_000);
+
+        let probe = tracker.probe(key, 1_030).expect("probe is admitted");
+        drop(probe);
+
+        assert_eq!(
+            tracker.admit(&key, 1_030),
+            Admission::Pass,
+            "a dropped claim must leave the slot immediately available"
+        );
+    }
+
+    #[test]
+    fn s01_a_settled_probe_does_not_release_a_slot() {
+        let tracker = Arc::new(tracker(1, 30));
+        let key = key();
+        open(&tracker, &key, 1_000);
+
+        let mut probe = tracker.probe(key, 1_030).expect("probe is admitted");
+        probe.settle(Outcome::Success, 1_030);
+
+        // Success removes the key; dropping afterwards must not resurrect it.
         assert_eq!(tracker.admit(&key, 1_030), Admission::Pass);
         assert_eq!(tracker.retry_after(&key, 1_030), None);
     }
