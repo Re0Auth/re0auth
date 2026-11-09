@@ -122,10 +122,24 @@ impl SqliteStore {
             .context("connect SQLite")?;
 
         if migrate {
-            sqlx::migrate!("./migrations")
-                .run(&pool)
-                .await
-                .context("run SQLite migrations")?;
+            // Two instances starting together race on the same migration list.
+            // SQLite's migration lock is a no-op, so the loser's transaction
+            // fails; a retry re-reads the applied versions and skips them. This
+            // is the serialization point without touching the vendored driver.
+            normalize_legacy_bindings(&pool).await?;
+            let mut attempt = 0;
+            loop {
+                match sqlx::migrate!("./migrations").run(&pool).await {
+                    Ok(()) => break,
+                    Err(_error) if attempt < 2 => {
+                        attempt += 1;
+                        tokio::time::sleep(Duration::from_millis(250 * attempt)).await;
+                    }
+                    Err(error) => {
+                        return Err(error).context("run SQLite migrations");
+                    }
+                }
+            }
         }
 
         Ok(Self { pool })
@@ -1424,3 +1438,27 @@ mod tests {
         assert_eq!(sqlite_code_error("999"), None);
     }
 }
+
+/// Normalizes rows written before the `expired` binding state was removed.
+///
+/// Migration `0018` rebuilds `bindings` with a CHECK that no longer allows
+/// `expired`; a later migration could not rescue it because `0018` would already
+/// have aborted. Done in code, before the migrator runs.
+async fn normalize_legacy_bindings(pool: &SqlitePool) -> anyhow::Result<()> {
+    let table: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bindings'",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("probe bindings table")?;
+    if table.is_some() {
+        sqlx::query("UPDATE bindings SET status = 'needs_reauth' WHERE status = 'expired'")
+            .execute(pool)
+            .await
+            .context("normalize legacy binding status")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod regression_tests;
