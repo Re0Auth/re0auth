@@ -506,6 +506,16 @@ fn assert_api(status: StatusCode, body: &str, expected_status: StatusCode, expec
 
 // ---------------------------------------------------------------- authorize
 
+fn assert_redirect_error(status: StatusCode, location: Option<&str>, code: &str) {
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let location = location.expect("redirect");
+    assert!(
+        location.starts_with("https://client.example/callback?"),
+        "{location}"
+    );
+    assert!(location.contains(&format!("error={code}")), "{location}");
+}
+
 #[tokio::test]
 async fn authorize_rejects_every_malformed_query() {
     let app = app().await;
@@ -513,22 +523,41 @@ async fn authorize_rejects_every_malformed_query() {
     let redirect = "https%3A%2F%2Fclient.example%2Fcallback";
     let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
-    // response_type must be `code`.
-    for response_type in ["", "token", "CODE"] {
+    // RFC 6749 §4.1.2.1: with a valid client and redirect_uri these errors are
+    // redirected back, and `state` must survive.
+    for (response_type, code) in [
+        ("", "invalid_request"),
+        ("token", "unsupported_response_type"),
+        ("CODE", "unsupported_response_type"),
+    ] {
         let uri = format!(
-            "/oauth/authorize?response_type={response_type}&client_id={client}&redirect_uri={redirect}&scope=openid&code_challenge={challenge}&code_challenge_method=S256"
+            "/oauth/authorize?response_type={response_type}&client_id={client}&redirect_uri={redirect}&scope=openid&state=keep&code_challenge={challenge}&code_challenge_method=S256"
         );
-        let (status, body, _) = get(&app, &uri).await;
-        assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_request");
+        let (status, _, location) = get(&app, &uri).await;
+        assert_redirect_error(status, location.as_deref(), code);
+        assert!(
+            location
+                .as_deref()
+                .unwrap_or_default()
+                .contains("state=keep"),
+            "state must survive: {location:?}"
+        );
     }
+
+    // A missing response_type is invalid_request, not unsupported.
+    let uri = format!(
+        "/oauth/authorize?client_id={client}&redirect_uri={redirect}&scope=openid&code_challenge={challenge}&code_challenge_method=S256"
+    );
+    let (status, _, location) = get(&app, &uri).await;
+    assert_redirect_error(status, location.as_deref(), "invalid_request");
 
     // code_challenge_method must be S256.
     for method in ["", "plain", "s256"] {
         let uri = format!(
             "/oauth/authorize?response_type=code&client_id={client}&redirect_uri={redirect}&scope=openid&code_challenge={challenge}&code_challenge_method={method}"
         );
-        let (status, body, _) = get(&app, &uri).await;
-        assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_request");
+        let (status, _, location) = get(&app, &uri).await;
+        assert_redirect_error(status, location.as_deref(), "invalid_request");
     }
 
     // client_id: absent, empty, and non-UUID all fail before any session work.
@@ -547,21 +576,30 @@ async fn authorize_rejects_every_malformed_query() {
     let (status, body, _) = get(&app, &uri).await;
     assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_request");
 
+    // A malformed challenge is rejected even though the redirect is trusted.
+    for bad_challenge in ["short", &"a".repeat(44), &("a".repeat(42) + "!")] {
+        let uri = format!(
+            "/oauth/authorize?response_type=code&client_id={client}&redirect_uri={redirect}&scope=openid&code_challenge={bad_challenge}&code_challenge_method=S256"
+        );
+        let (status, _, location) = get(&app, &uri).await;
+        assert_redirect_error(status, location.as_deref(), "invalid_request");
+    }
+
     // code_challenge missing or empty.
     for challenge_param in ["", "&code_challenge="] {
         let uri = format!(
             "/oauth/authorize?response_type=code&client_id={client}&redirect_uri={redirect}&scope=openid{challenge_param}&code_challenge_method=S256"
         );
-        let (status, body, _) = get(&app, &uri).await;
-        assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_request");
+        let (status, _, location) = get(&app, &uri).await;
+        assert_redirect_error(status, location.as_deref(), "invalid_request");
     }
 
-    // No scope at all is an invalid_scope, not an invalid_request.
+    // No scope at all is an invalid_scope, redirected to the client.
     let uri = format!(
         "/oauth/authorize?response_type=code&client_id={client}&redirect_uri={redirect}&code_challenge={challenge}&code_challenge_method=S256"
     );
-    let (status, body, _) = get(&app, &uri).await;
-    assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_scope");
+    let (status, _, location) = get(&app, &uri).await;
+    assert_redirect_error(status, location.as_deref(), "invalid_scope");
 }
 
 #[tokio::test]
@@ -609,8 +647,16 @@ async fn device_authorization_rejects_malformed_forms() {
         assert_api(status, &payload, StatusCode::BAD_REQUEST, "invalid_request");
     }
 
-    for body in [
+    // An omitted scope is legal and falls back to the client's scopes.
+    let (status, _, _) = post(
+        &app,
+        "/oauth/device_authorization",
         form(&[("client_id", &client)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for body in [
         form(&[("client_id", &client), ("scope", "")]),
         form(&[("client_id", &client), ("scope", "   ")]),
     ] {
@@ -2110,6 +2156,7 @@ async fn revoking_a_token_requires_it_to_belong_to_the_caller() {
                 code_challenge: Some(challenge),
                 code_challenge_method: Some("S256".to_string()),
                 nonce: None,
+                auth_time: now,
                 created_at: now,
                 expires_at: now + 600,
                 consumed_at: None,
@@ -2275,6 +2322,7 @@ async fn an_unknown_token_type_hint_is_ignored_and_the_token_is_still_revoked() 
                 code_challenge: Some(challenge),
                 code_challenge_method: Some("S256".to_string()),
                 nonce: None,
+                auth_time: now,
                 created_at: now,
                 expires_at: now + 600,
                 consumed_at: None,
@@ -2362,6 +2410,7 @@ async fn a_wrong_secret_does_not_burn_the_authorization_code() {
                 code_challenge: Some(challenge),
                 code_challenge_method: Some("S256".to_string()),
                 nonce: None,
+                auth_time: now,
                 created_at: now,
                 expires_at: now + 600,
                 consumed_at: None,
@@ -2536,4 +2585,121 @@ async fn a_forged_forwarded_header_does_not_create_a_new_rate_bucket() {
         "a header must not hand the caller a fresh bucket"
     );
     assert_eq!(statuses[2], StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn authorize_prompt_none_without_a_session_returns_login_required() {
+    let app = app().await;
+    let uri = format!(
+        "/oauth/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&state=keep&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&prompt=none",
+        app.client_id.0
+    );
+    let (status, _, location) = get(&app, &uri).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let location = location.expect("redirect");
+    assert!(
+        location.starts_with("https://client.example/callback?"),
+        "{location}"
+    );
+    assert!(location.contains("error=login_required"), "{location}");
+    assert!(location.contains("state=keep"), "{location}");
+}
+
+#[tokio::test]
+async fn authorize_prompt_none_cannot_be_combined() {
+    let app = app().await;
+    let uri = format!(
+        "/oauth/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&prompt=none%20login",
+        app.client_id.0
+    );
+    let (status, _, location) = get(&app, &uri).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(
+        location
+            .expect("redirect")
+            .contains("error=invalid_request")
+    );
+}
+
+#[tokio::test]
+async fn authorize_form_post_returns_code_in_a_form_body() {
+    let app = app().await;
+    let (cookie, _) = authenticated(&app).await;
+    grant_consent(&app, app.client_id, &["openid"]).await;
+    let uri = format!(
+        "/oauth/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&state=keep&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&response_mode=form_post",
+        app.client_id.0
+    );
+    let (status, body, _) = get_with_cookie(&app, &uri, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#"action="https://client.example/callback""#),
+        "{body}"
+    );
+    assert!(body.contains(r#"name="code""#), "{body}");
+    assert!(body.contains(r#"name="state" value="keep""#), "{body}");
+    assert!(body.contains("document.forms[0].submit()"), "{body}");
+}
+
+#[tokio::test]
+async fn authorize_form_post_errors_are_also_forms() {
+    let app = app().await;
+    let uri = format!(
+        "/oauth/authorize?response_type=none&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&state=keep&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&response_mode=form_post",
+        app.client_id.0
+    );
+    let (status, body, _) = get(&app, &uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#"name="error" value="unsupported_response_type""#),
+        "{body}"
+    );
+    assert!(body.contains(r#"name="state" value="keep""#), "{body}");
+}
+
+#[tokio::test]
+async fn authorize_rejects_an_unknown_response_mode() {
+    let app = app().await;
+    let uri = format!(
+        "/oauth/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&state=keep&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&response_mode=fragment",
+        app.client_id.0
+    );
+    let (status, _, location) = get(&app, &uri).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(
+        location
+            .expect("redirect")
+            .contains("error=invalid_request")
+    );
+}
+
+#[tokio::test]
+async fn authorize_max_age_forces_reauthentication() {
+    let app = app().await;
+    let (cookie, _) = authenticated(&app).await;
+    let uri = format!(
+        "/oauth/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&max_age=0",
+        app.client_id.0
+    );
+    let (status, _, location) = get_with_cookie(&app, &uri, &cookie).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(
+        location.expect("redirect").starts_with("/login?return_to="),
+        "max_age=0 must force a fresh login"
+    );
+}
+
+#[tokio::test]
+async fn authorize_max_age_with_prompt_none_returns_login_required() {
+    let app = app().await;
+    let (cookie, _) = authenticated(&app).await;
+    let uri = format!(
+        "/oauth/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&scope=openid&state=keep&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&max_age=0&prompt=none",
+        app.client_id.0
+    );
+    let (status, _, location) = get_with_cookie(&app, &uri, &cookie).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let location = location.expect("redirect");
+    assert!(location.contains("error=login_required"), "{location}");
+    assert!(location.contains("state=keep"), "{location}");
 }

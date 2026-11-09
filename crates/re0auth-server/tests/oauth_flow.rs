@@ -3,13 +3,16 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
+use base64::Engine;
 use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::crypto::RsaTokenSigner;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
 use re0auth_api::oauth::ConsentVersion;
-use re0auth_api::ports::{Client, ClientStatus, Session, Storage, User, UserRole, UserStatus};
-use re0auth_api::{ClientId, Clock, SessionId, UserId};
+use re0auth_api::ports::{
+    Client, ClientStatus, Consent, RefreshToken, Session, Storage, User, UserRole, UserStatus,
+};
+use re0auth_api::{ClientId, Clock, FamilyId, RefreshTokenId, SessionId, UserId};
 use re0auth_app::admin;
 use re0auth_app::auth::AuthService;
 use re0auth_app::oauth::{OAuthService, hash_secret};
@@ -319,6 +322,8 @@ async fn authorization_code_flow_reaches_userinfo_and_refresh() {
         .expect("access token")
         .to_string();
     let id_token = tokens["id_token"].as_str().expect("id token").to_string();
+    let claims = jwt_payload(&id_token);
+    assert!(claims["auth_time"].as_i64().expect("auth_time") > 0);
     let refresh_token = tokens["refresh_token"]
         .as_str()
         .expect("refresh token")
@@ -1343,8 +1348,14 @@ async fn a_pkce_bound_code_cannot_be_redeemed_with_a_verifier_mismatch() {
 async fn a_scope_outside_the_client_registration_is_invalid_scope() {
     let app = setup().await;
     let response = authorize_with_redirect(&app, REDIRECT_URI, "openid secrets").await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_json(response).await["error"], "invalid_scope");
+    // RFC 6749 §4.1.2.1: a valid redirect_uri means the error goes back to the client.
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("redirect");
+    assert!(location.contains("error=invalid_scope"), "{location}");
 }
 
 async fn ban_user(app: &TestApp) {
@@ -1557,4 +1568,291 @@ async fn deleting_an_account_with_a_live_binding_is_refused() {
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = body_json(response).await;
     assert_eq!(body["code"], "bindings_not_revocable");
+}
+
+async fn refresh_tokens_with_scope(
+    app: &TestApp,
+    refresh_token: &str,
+    scope: &str,
+) -> axum::response::Response {
+    post_form(
+        app,
+        token_form(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", &app.client_id.0.to_string()),
+            ("refresh_token", refresh_token),
+            ("scope", scope),
+        ]),
+    )
+    .await
+}
+
+/// RFC 6749 §6: an omitted scope keeps the grant, a subset narrows it.
+#[tokio::test]
+async fn refreshing_with_a_narrower_scope_narrows_the_token() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-refresh-narrow").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let refresh = tokens["refresh_token"].as_str().expect("refresh token");
+    assert!(
+        tokens["scope"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("profile"),
+        "{tokens}"
+    );
+
+    let narrowed = refresh_tokens_with_scope(&app, refresh, "openid").await;
+    assert_eq!(narrowed.status(), StatusCode::OK);
+    let body = body_json(narrowed).await;
+    assert_eq!(body["scope"], "openid");
+
+    // The rotated refresh token must carry the narrowed scope too.
+    let next = body["refresh_token"]
+        .as_str()
+        .expect("rotated refresh token");
+    let again = body_json(refresh_tokens(&app, next).await).await;
+    assert_eq!(again["scope"], "openid");
+}
+
+/// RFC 6749 §6: the requested scope must not exceed the original grant.
+#[tokio::test]
+async fn refreshing_with_a_wider_scope_is_invalid_scope() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-refresh-wide").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let refresh = tokens["refresh_token"].as_str().expect("refresh token");
+
+    let response = refresh_tokens_with_scope(&app, refresh, "openid profile secrets").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_scope");
+}
+
+/// OIDC Core §5.3.1: the UserInfo endpoint must accept POST, with the token in
+/// the form body (RFC 6750 §2.2).
+#[tokio::test]
+async fn userinfo_accepts_a_form_token_on_post() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-userinfo-post").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let access = tokens["access_token"].as_str().expect("access token");
+
+    let response = post_form_path(&app, "/userinfo", token_form(&[("access_token", access)])).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert!(
+        body["sub"].as_str().is_some_and(|sub| !sub.is_empty()),
+        "{body}"
+    );
+}
+
+/// RFC 6750 §2: a request must not carry the token in more than one place.
+#[tokio::test]
+async fn userinfo_post_rejects_two_bearer_methods() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-userinfo-both").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let access = tokens["access_token"].as_str().expect("access token");
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/userinfo")
+                .header(header::AUTHORIZATION, format!("Bearer {access}"))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(token_form(&[("access_token", access)])))
+                .expect("request"),
+        )
+        .await
+        .expect("userinfo post");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_request");
+}
+
+/// A POST without any token is an authentication failure, not a form error.
+#[tokio::test]
+async fn userinfo_post_without_a_token_is_unauthorized() {
+    let app = setup().await;
+    let response = post_form_path(&app, "/userinfo", token_form(&[("access_token", "")])).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(body_json(response).await["error"], "invalid_token");
+}
+
+/// OIDC Core §3.1.2.1: the authorization endpoint must accept POST as well as GET.
+#[tokio::test]
+async fn authorize_accepts_a_post_form() {
+    let app = setup().await;
+    let challenge = pkce::challenge_s256(VERIFIER);
+    let form = token_form(&[
+        ("response_type", "code"),
+        ("client_id", &app.client_id.0.to_string()),
+        ("redirect_uri", REDIRECT_URI),
+        ("scope", "openid profile"),
+        ("state", "state-post"),
+        ("code_challenge", &challenge),
+        ("code_challenge_method", "S256"),
+        ("nonce", "nonce-123"),
+    ]);
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/oauth/authorize")
+                .header(
+                    header::COOKIE,
+                    format!("__Host-re0auth_session={SESSION_RAW}"),
+                )
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(form))
+                .expect("request"),
+        )
+        .await
+        .expect("authorize post");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("location");
+    assert!(location.starts_with("/consent?"), "{location}");
+}
+
+/// An explicitly empty `scope` is malformed, not "no scopes".
+#[tokio::test]
+async fn refreshing_with_an_empty_scope_is_invalid_scope() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-refresh-empty").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let refresh = tokens["refresh_token"].as_str().expect("refresh token");
+
+    let response = refresh_tokens_with_scope(&app, refresh, "").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_scope");
+}
+
+fn jwt_payload(token: &str) -> Value {
+    let payload = token.split('.').nth(1).expect("jwt payload");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .expect("base64 payload");
+    serde_json::from_slice(&bytes).expect("json payload")
+}
+
+#[tokio::test]
+async fn refresh_family_older_than_absolute_lifetime_is_rejected() {
+    let app = setup().await;
+    let now = SystemClock.now();
+    let long_ago = now - 91 * 24 * 60 * 60;
+    app.store
+        .consents()
+        .grant(
+            &Consent {
+                id: re0auth_api::ConsentId::new(),
+                user_id: app.user_id,
+                client_id: app.client_id,
+                scopes: vec!["openid".to_string()],
+                created_at: long_ago,
+                updated_at: long_ago,
+                revoked_at: None,
+                version: ConsentVersion(0),
+            },
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::ConsentGranted,
+                long_ago,
+                "consent:absolute-ttl",
+            ),
+        )
+        .await
+        .expect("consent");
+
+    let raw = "refresh-family-too-old";
+    app.store
+        .refresh_tokens()
+        .insert(&RefreshToken {
+            id: RefreshTokenId::new(),
+            token_hash: hash_secret(raw),
+            family_id: FamilyId::new(),
+            client_id: app.client_id,
+            user_id: app.user_id,
+            scopes: vec!["openid".to_string()],
+            created_at: long_ago,
+            family_created_at: long_ago,
+            auth_time: long_ago,
+            expires_at: now + 3_600,
+            consumed_at: None,
+            revoked_at: None,
+            replaced_by: None,
+        })
+        .await
+        .expect("refresh token");
+
+    let response = refresh_tokens_with_scope(&app, raw, "openid").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+}
+
+#[tokio::test]
+async fn introspection_reports_active_access_and_refresh_tokens() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-introspect").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let access = tokens["access_token"].as_str().expect("access");
+    let refresh = tokens["refresh_token"].as_str().expect("refresh");
+    let client = app.client_id.0.to_string();
+
+    for (token, expected_type) in [(access, "Bearer"), (refresh, "refresh_token")] {
+        let response = post_form_path(
+            &app,
+            "/oauth/introspect",
+            token_form(&[("client_id", &client), ("token", token)]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["active"], true, "{body}");
+        assert_eq!(body["token_type"], expected_type, "{body}");
+        assert_eq!(body["client_id"], client, "{body}");
+        assert_eq!(body["scope"], "openid profile", "{body}");
+    }
+
+    // Revoking the refresh family makes both tokens inactive.
+    let response = post_form_path(
+        &app,
+        "/oauth/revoke",
+        token_form(&[("client_id", &client), ("token", refresh)]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = post_form_path(
+        &app,
+        "/oauth/introspect",
+        token_form(&[("client_id", &client), ("token", access)]),
+    )
+    .await;
+    assert_eq!(body_json(response).await["active"], false);
+}
+
+#[tokio::test]
+async fn introspection_requires_a_client_and_hides_foreign_tokens() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-introspect-foreign").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let access = tokens["access_token"].as_str().expect("access");
+
+    let response =
+        post_form_path(&app, "/oauth/introspect", token_form(&[("token", access)])).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = post_form_path(
+        &app,
+        "/oauth/introspect",
+        token_form(&[("client_id", "not-a-uuid"), ("token", access)]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

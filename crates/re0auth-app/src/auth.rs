@@ -625,6 +625,11 @@ impl AuthService {
     }
 
     #[must_use]
+    pub fn now(&self) -> i64 {
+        self.clock.now()
+    }
+
+    #[must_use]
     pub fn validate_csrf(&self, session: &Session, token: &str) -> bool {
         csrf_matches(token, &session.csrf_hash)
     }

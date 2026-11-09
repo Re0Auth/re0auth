@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
@@ -15,8 +14,8 @@ use re0auth_api::oauth::{
 };
 use re0auth_api::ports::{
     AuthCode, BindingHints, Client, ClientStatus, Consent, ConsumeAuthCode, DeviceCode,
-    DeviceCodeState, DevicePoll, MissingBinding, NoBindingHints, PendingAuthorization,
-    RefreshToken, RepoError, RotateOutcome, RotateRefreshToken, Storage, UserStatus,
+    DeviceCodeState, DevicePoll, NoBindingHints, PendingAuthorization, RefreshToken, RepoError,
+    RotateOutcome, RotateRefreshToken, Storage, UserStatus,
 };
 use re0auth_api::secret::ClientSecretHasher;
 use re0auth_api::{
@@ -68,101 +67,9 @@ pub enum OAuthError {
     Internal,
 }
 
-#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
-pub struct TokenResponse {
-    pub access_token: String,
-    pub token_type: &'static str,
-    pub expires_in: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id_token: Option<String>,
-    pub scope: String,
-}
-
-/// What a revocation request actually did.
-///
-/// RFC 7009 requires the HTTP response to stay 200 for unknown and non-owned
-/// tokens, but the application layer still needs the distinction for audit and
-/// metrics. Collapsing all three into `Ok(())` is what made the old endpoint
-/// look successful while doing nothing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RevocationOutcome {
-    Revoked,
-    Unknown,
-    NotOwned,
-}
-
-#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
-pub struct UserInfo {
-    pub sub: String,
-    pub name: String,
-}
-
-#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
-pub struct DeviceAuthorizationResponse {
-    pub device_code: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub verification_uri_complete: String,
-    pub expires_in: i64,
-    pub interval: u32,
-}
-
-#[derive(Clone, Debug)]
-pub struct AuthorizeRequest {
-    pub client_id: ClientId,
-    pub redirect_uri: String,
-    pub scopes: Vec<String>,
-    pub state: Option<String>,
-    pub code_challenge: String,
-    pub nonce: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub enum AuthorizeOutcome {
-    Redirect(String),
-    Consent { request_id: String },
-}
-
-#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
-pub struct PendingConsentView {
-    pub request_id: String,
-    pub client_id: String,
-    pub client_name: String,
-    pub redirect_uri: String,
-    pub scopes: Vec<String>,
-    pub expires_at: Unix,
-    /// What the requested scopes need that the user has not connected yet.
-    ///
-    /// Advisory. The consent screen uses it to offer the missing step; the data
-    /// plane re-checks the binding on every read regardless.
-    #[schema(value_type = Vec<MissingBindingShape>)]
-    pub missing_bindings: Vec<MissingBinding>,
-}
-
-/// A schema twin of `re0auth_api::ports::MissingBinding`.
-///
-/// The port type lives in the published `re0auth-api` crate, which must not
-/// depend on utoipa, so the schema needs a local copy. The unit test below pins
-/// the two to the same serialised shape.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-pub(crate) struct MissingBindingShape {
-    upstream_id: String,
-    scopes: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ConsentDecision {
-    Approve,
-    Deny,
-}
-
-#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
-pub struct ConsentOutcome {
-    pub redirect_to: String,
-}
+mod introspection;
+mod types;
+pub use types::*;
 
 #[derive(Clone)]
 pub struct OAuthService {
@@ -277,10 +184,7 @@ impl OAuthService {
             .map(|session| session.user_id))
     }
 
-    /// `correlation_id` is the HTTP `X-Request-Id`, recorded in the audit row as
-    /// `request_id`. Named apart from the local `request_id` below, which is the
-    /// pending-authorization id the consent page uses — two different things
-    /// that would otherwise share a name in this function.
+    /// `correlation_id` is the HTTP `X-Request-Id` recorded in the audit row.
     pub async fn authorize(
         &self,
         session_id: SessionId,
@@ -288,15 +192,30 @@ impl OAuthService {
         request: AuthorizeRequest,
         correlation_id: Option<&str>,
     ) -> Result<AuthorizeOutcome, OAuthError> {
-        self.validate_authorize_request(&request).await?;
-
+        let client = self
+            .validate_client_redirect(request.client_id, &request.redirect_uri)
+            .await?;
+        self.authorize_with_client(session_id, user_id, request, client, false, correlation_id)
+            .await
+    }
+    pub async fn authorize_with_client(
+        &self,
+        session_id: SessionId,
+        user_id: UserId,
+        request: AuthorizeRequest,
+        client: Client,
+        force_consent: bool,
+        correlation_id: Option<&str>,
+    ) -> Result<AuthorizeOutcome, OAuthError> {
+        self.validate_authorize_request(&client, &request)?;
         let consent = self
             .storage
             .consents()
             .find(&user_id, &request.client_id)
             .await
             .map_err(map_repo)?;
-        if let Some(consent) = consent
+        if !force_consent
+            && let Some(consent) = consent
             && scope::is_subset(&request.scopes, &consent.scopes)
         {
             let code = self.issue_code(user_id, &request, correlation_id).await?;
@@ -304,7 +223,6 @@ impl OAuthService {
                 self.redirect_with_code(&request, &code)?,
             ));
         }
-
         let now = self.clock.now();
         let pending = PendingAuthorization {
             id: PendingAuthorizationId::new(),
@@ -317,6 +235,7 @@ impl OAuthService {
             code_challenge: request.code_challenge,
             code_challenge_method: "S256".to_string(),
             nonce: request.nonce,
+            auth_time: request.auth_time,
             created_at: now,
             expires_at: now + pending_authorization_ttl(now),
             consumed_at: None,
@@ -450,6 +369,7 @@ impl OAuthService {
                     state: request.state.clone(),
                     code_challenge: request.code_challenge.clone(),
                     nonce: request.nonce.clone(),
+                    auth_time: request.auth_time,
                 },
                 correlation_id,
             )
@@ -463,14 +383,46 @@ impl OAuthService {
                     state: request.state,
                     code_challenge: request.code_challenge,
                     nonce: request.nonce,
+                    auth_time: request.auth_time,
                 },
                 &code,
             )?,
         })
     }
 
-    async fn validate_authorize_request(
+    /// Validates only what is needed before redirecting an error: the client is
+    /// approved and `redirect_uri` is registered (RFC 6749 §4.1.2.1). The rest
+    /// of the request is validated by `authorize`.
+    pub async fn validate_client_redirect(
         &self,
+        client_id: ClientId,
+        redirect_uri: &str,
+    ) -> Result<Client, OAuthError> {
+        re0auth_api::redirect_uri::validate(redirect_uri)
+            .map_err(|_| OAuthError::InvalidRequest("redirect_uri"))?;
+        let client = self
+            .storage
+            .clients()
+            .get(&client_id)
+            .await
+            .map_err(map_repo)?
+            .ok_or(OAuthError::UnauthorizedClient)?;
+        if client.status != ClientStatus::Approved {
+            return Err(OAuthError::UnauthorizedClient);
+        }
+        if !client
+            .redirect_uris
+            .iter()
+            .any(|candidate| candidate == redirect_uri)
+        {
+            return Err(OAuthError::InvalidRequest("redirect_uri"));
+        }
+        Ok(client)
+    }
+
+    fn validate_authorize_request(
+        &self,
+        client: &Client,
         request: &AuthorizeRequest,
     ) -> Result<(), OAuthError> {
         if request.scopes.is_empty() || request.code_challenge.is_empty() {
@@ -479,13 +431,6 @@ impl OAuthService {
         // 登记规则同源，旧脏数据在这里也会被拒
         re0auth_api::redirect_uri::validate(&request.redirect_uri)
             .map_err(|_| OAuthError::InvalidRequest("redirect_uri"))?;
-        let client = self
-            .storage
-            .clients()
-            .get(&request.client_id)
-            .await
-            .map_err(map_repo)?
-            .ok_or(OAuthError::UnauthorizedClient)?;
         if client.status != ClientStatus::Approved {
             return Err(OAuthError::UnauthorizedClient);
         }
@@ -520,6 +465,7 @@ impl OAuthService {
             code_challenge: Some(request.code_challenge.clone()),
             code_challenge_method: Some("S256".to_string()),
             nonce: request.nonce.clone(),
+            auth_time: request.auth_time,
             created_at: now,
             expires_at: now + re0auth_domain::auth_code_ttl(now),
             consumed_at: None,
@@ -650,16 +596,17 @@ impl OAuthService {
         secret: Option<&str>,
         scopes: Vec<String>,
     ) -> Result<DeviceAuthorizationResponse, OAuthError> {
-        if scopes.is_empty() {
-            return Err(OAuthError::InvalidScope);
-        }
-        // RFC 8628 §3.1: a confidential client authenticates here exactly as it
-        // does at the token endpoint. Public clients keep passing no secret.
+        // RFC 8628 §3.1 reads scope as optional. Omitting it means the
+        // client's registered default set, not an empty grant.
         let client = self.authenticate_client(client_id, secret).await?;
-        if !scope::is_subset(&scopes, &client.allowed_scopes) {
+        let scopes = if scopes.is_empty() {
+            client.allowed_scopes.clone()
+        } else {
+            scopes
+        };
+        if scopes.is_empty() || !scope::is_subset(&scopes, &client.allowed_scopes) {
             return Err(OAuthError::InvalidScope);
         }
-
         let now = self.clock.now();
         let ttl = device::device_code_ttl(now);
         let interval = device::device_poll_interval();
@@ -773,6 +720,8 @@ impl OAuthService {
                     user_id,
                     scopes: scopes.clone(),
                     created_at: now,
+                    family_created_at: now,
+                    auth_time: now,
                     expires_at: now + re0auth_domain::refresh_token_ttl(now),
                     consumed_at: None,
                     revoked_at: None,
@@ -790,6 +739,7 @@ impl OAuthService {
                     now,
                     Some(refresh_raw),
                     None,
+                    Some(now),
                     consent.version,
                     &refresh.family_id,
                 )
@@ -863,6 +813,8 @@ impl OAuthService {
             user_id: grant.user_id,
             scopes: grant.scopes.clone(),
             created_at: now,
+            family_created_at: now,
+            auth_time: now,
             expires_at: now + re0auth_domain::refresh_token_ttl(now),
             consumed_at: None,
             revoked_at: None,
@@ -881,6 +833,7 @@ impl OAuthService {
             now,
             Some(refresh_raw),
             grant.nonce,
+            Some(grant.auth_time),
             consent.version,
             &refresh.family_id,
         )
@@ -953,6 +906,7 @@ impl OAuthService {
         client_id: ClientId,
         client_secret: Option<&str>,
         raw_refresh: &str,
+        requested_scope: Option<&[String]>,
         correlation_id: Option<&str>,
     ) -> Result<TokenResponse, OAuthError> {
         // Before the rotation claim: a wrong secret must not rotate the token.
@@ -972,8 +926,31 @@ impl OAuthService {
         if old.revoked_at.is_some() || old.expires_at <= now {
             return Err(OAuthError::InvalidGrant("expired or revoked"));
         }
+        if now.saturating_sub(old.family_created_at)
+            >= re0auth_domain::refresh_token_absolute_ttl(now)
+        {
+            return Err(OAuthError::InvalidGrant(
+                "refresh token family exceeded its absolute lifetime",
+            ));
+        }
+        // RFC 6749 §6: a requested scope must be a subset of the original
+        // grant; omitting it keeps the original scopes.
+        let scopes = match requested_scope {
+            // An explicit empty scope is not "all scopes"; it is a malformed
+            // request (RFC 6749 §3.3).
+            Some([]) => {
+                return Err(OAuthError::InvalidScope);
+            }
+            Some(requested) => {
+                if !scope::is_subset(requested, &old.scopes) {
+                    return Err(OAuthError::InvalidScope);
+                }
+                requested.to_vec()
+            }
+            None => old.scopes.clone(),
+        };
         let consent = self
-            .require_grant_consent(old.user_id, client_id, &old.scopes)
+            .require_grant_consent(old.user_id, client_id, &scopes)
             .await?;
 
         let (new_raw, new_hash) = new_secret(self.random.as_ref());
@@ -983,8 +960,10 @@ impl OAuthService {
             family_id: old.family_id,
             client_id: old.client_id,
             user_id: old.user_id,
-            scopes: old.scopes.clone(),
+            scopes: scopes.clone(),
             created_at: now,
+            family_created_at: old.family_created_at,
+            auth_time: old.auth_time,
             expires_at: now + re0auth_domain::refresh_token_ttl(now),
             consumed_at: None,
             revoked_at: None,
@@ -1022,6 +1001,7 @@ impl OAuthService {
                     now,
                     Some(new_raw),
                     None,
+                    Some(old.auth_time),
                     consent.version,
                     &token.family_id,
                 )
@@ -1298,6 +1278,7 @@ impl OAuthService {
         now: i64,
         refresh_token: Option<String>,
         nonce: Option<String>,
+        auth_time: Option<Unix>,
         consent_version: ConsentVersion,
         family: &FamilyId,
     ) -> Result<TokenResponse, OAuthError> {
@@ -1325,6 +1306,7 @@ impl OAuthService {
                 exp: now + re0auth_domain::access_token_ttl(now),
                 iat: now,
                 nonce,
+                auth_time,
             });
 
         // Two independent RSA signatures, ~0.76 ms each. Running them on the
@@ -1383,6 +1365,13 @@ pub fn parse_scope(raw: &str) -> Vec<String> {
     scope::parse_scope(raw)
 }
 
+/// RFC 7636 §4.2 challenge syntax, re-exported so the HTTP layer stays
+/// dependent on `re0auth-app` rather than the domain crate.
+#[must_use]
+pub fn is_valid_challenge(challenge: &str) -> bool {
+    pkce::is_valid_challenge(challenge)
+}
+
 fn parse_request_id(value: &str) -> Result<PendingAuthorizationId, OAuthError> {
     Uuid::parse_str(value)
         .map(PendingAuthorizationId)
@@ -1413,6 +1402,8 @@ fn map_repo(error: RepoError) -> OAuthError {
 
 #[cfg(test)]
 mod tests {
+    use re0auth_api::ports::MissingBinding;
+
     /// The schema twin must stay field-for-field equal to the port type it
     /// stands in for; nothing else can catch the two drifting apart.
     #[test]

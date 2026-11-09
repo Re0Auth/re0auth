@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use axum::extract::{ConnectInfo, Form, OriginalUri, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Json, Redirect, Response};
+use maud::{PreEscaped, html};
 use re0auth_api::oauth::SUPPORTED_SCOPES;
 use re0auth_app::auth::AuthError;
 use re0auth_app::oauth::{
@@ -129,7 +130,7 @@ pub(crate) async fn jwks(State(state): State<AppState>) -> Result<Response, ApiE
         .into_response())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct AuthorizeQuery {
     response_type: Option<String>,
     client_id: Option<String>,
@@ -140,6 +141,9 @@ pub(crate) struct AuthorizeQuery {
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
     nonce: Option<String>,
+    prompt: Option<String>,
+    max_age: Option<String>,
+    response_mode: Option<String>,
 }
 
 #[utoipa::path(
@@ -155,7 +159,10 @@ pub(crate) struct AuthorizeQuery {
         ("state" = Option<String>, Query),
         ("code_challenge" = String, Query, description = "PKCE challenge; S256 only."),
         ("code_challenge_method" = String, Query, description = "Must be S256."),
-        ("nonce" = Option<String>, Query)
+        ("nonce" = Option<String>, Query),
+        ("prompt" = Option<String>, Query, description = "none, login, consent, or select_account."),
+        ("max_age" = Option<String>, Query, description = "Maximum seconds since authentication."),
+        ("response_mode" = Option<String>, Query, description = "query (default) or form_post.")
     ),
     responses(
         (status = 302, description = "To the client's redirect_uri with a code, or to the consent screen."),
@@ -168,45 +175,278 @@ pub(crate) async fn authorize(
     OriginalUri(original): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    if query.response_type.as_deref() != Some("code") {
-        return Err(invalid_request(
-            "response_type must be code",
-            Shape::Rfc6749,
-        ));
+    authorize_inner(state, query, original, headers).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/oauth/authorize",
+    tag = "protocol",
+    security(("session" = [])),
+    request_body(content = AuthorizeQuery, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 302, description = "To the client's redirect_uri with a code, or to the consent screen."),
+        (status = 400, body = crate::OAuthErrorBody, content_type = "application/json")
+    )
+)]
+pub(crate) async fn authorize_post(
+    State(state): State<AppState>,
+    OriginalUri(original): OriginalUri,
+    headers: HeaderMap,
+    Form(query): Form<AuthorizeQuery>,
+) -> Result<Response, ApiError> {
+    // A POST has no query string, so the login redirect must carry the form
+    // parameters explicitly or the user would return to an empty authorize.
+    let original = return_uri_with_query(&original, &query);
+    authorize_inner(state, query, original, headers).await
+}
+
+fn return_uri_with_query(original: &axum::http::Uri, query: &AuthorizeQuery) -> axum::http::Uri {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    for (name, value) in [
+        ("response_type", &query.response_type),
+        ("client_id", &query.client_id),
+        ("redirect_uri", &query.redirect_uri),
+        ("scope", &query.scope),
+        ("state", &query.oauth_state),
+        ("code_challenge", &query.code_challenge),
+        ("code_challenge_method", &query.code_challenge_method),
+        ("nonce", &query.nonce),
+        ("prompt", &query.prompt),
+        ("max_age", &query.max_age),
+        ("response_mode", &query.response_mode),
+    ] {
+        if let Some(value) = value {
+            serializer.append_pair(name, value);
+        }
     }
-    if query.code_challenge_method.as_deref() != Some("S256") {
-        return Err(invalid_request(
-            "code_challenge_method must be S256",
-            Shape::Rfc6749,
-        ));
+    format!("{}?{}", original.path(), serializer.finish())
+        .parse()
+        .unwrap_or_else(|_| original.clone())
+}
+
+#[derive(Clone, Copy)]
+enum ResponseMode {
+    Query,
+    FormPost,
+}
+
+/// OIDC `response_mode=form_post`: the client receives code/state in a form
+/// body rather than the query string. `action` is the registered redirect URI,
+/// so its own query parameters survive alongside the form fields.
+fn form_post_response(action: &str, params: &[(String, String)]) -> Response {
+    let document = html! {
+        (PreEscaped("<!doctype html>"))
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                title { "Redirecting" }
+            }
+            body {
+                form method="post" action=(action) {
+                    @for (name, value) in params {
+                        input type="hidden" name=(name) value=(value);
+                    }
+                    noscript { button type="submit" { "Continue" } }
+                }
+                script { "document.forms[0].submit();" }
+            }
+        }
+    };
+    let mut response = (StatusCode::OK, document.into_string()).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::X_FRAME_OPTIONS,
+        header::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    if let Ok(url) = url::Url::parse(action) {
+        let csp = format!(
+            "default-src 'none'; script-src 'unsafe-inline'; form-action {}; base-uri 'none'; frame-ancestors 'none'",
+            url.origin().ascii_serialization()
+        );
+        if let Ok(value) = header::HeaderValue::from_str(&csp) {
+            headers.insert(header::CONTENT_SECURITY_POLICY, value);
+        }
     }
+    response
+}
+
+async fn authorize_inner(
+    state: AppState,
+    query: AuthorizeQuery,
+    original: axum::http::Uri,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    // RFC 6749 §4.1.2.1: only a valid client and redirect_uri let us redirect
+    // errors back; anything else must be reported in place.
     let client_id = parse_client_id(query.client_id.as_deref())?;
     let redirect_uri = query
         .redirect_uri
         .as_deref()
         .ok_or_else(|| invalid_request("redirect_uri is required", Shape::Rfc6749))?;
+    let client = state
+        .oauth
+        .validate_client_redirect(client_id, redirect_uri)
+        .await
+        .map_err(|error| oauth_error(error, Shape::Rfc6749))?;
+
+    let state_param = query.oauth_state.clone();
+    let (response_mode, invalid_mode) = match query.response_mode.as_deref() {
+        None | Some("") | Some("query") => (ResponseMode::Query, false),
+        Some("form_post") => (ResponseMode::FormPost, false),
+        Some(_) => (ResponseMode::Query, true),
+    };
+    let redirect_error = |code: &str, description: &str| -> Response {
+        let params = || {
+            let mut params = vec![
+                ("error".to_string(), code.to_string()),
+                ("error_description".to_string(), description.to_string()),
+            ];
+            if let Some(state) = state_param.as_deref() {
+                params.push(("state".to_string(), state.to_string()));
+            }
+            params
+        };
+        match response_mode {
+            ResponseMode::Query => {
+                let mut url = url::Url::parse(redirect_uri).expect("validated redirect_uri");
+                for (name, value) in params() {
+                    url.query_pairs_mut().append_pair(&name, &value);
+                }
+                Redirect::to(url.as_str()).into_response()
+            }
+            ResponseMode::FormPost => form_post_response(redirect_uri, &params()),
+        }
+    };
+    if invalid_mode {
+        return Ok(redirect_error(
+            "invalid_request",
+            "unsupported response_mode",
+        ));
+    }
+
+    match query.response_type.as_deref() {
+        Some("code") => {}
+        None | Some("") => {
+            return Ok(redirect_error(
+                "invalid_request",
+                "response_type is required",
+            ));
+        }
+        Some(_) => {
+            return Ok(redirect_error(
+                "unsupported_response_type",
+                "the response type is not supported",
+            ));
+        }
+    }
+    if query.code_challenge_method.as_deref() != Some("S256") {
+        return Ok(redirect_error(
+            "invalid_request",
+            "code_challenge_method must be S256",
+        ));
+    }
     let code_challenge = query
         .code_challenge
         .as_deref()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| invalid_request("code_challenge is required", Shape::Rfc6749))?;
+        .filter(|value| !value.is_empty());
+    let Some(code_challenge) = code_challenge else {
+        return Ok(redirect_error(
+            "invalid_request",
+            "code_challenge is required",
+        ));
+    };
+    if !re0auth_app::oauth::is_valid_challenge(code_challenge) {
+        return Ok(redirect_error(
+            "invalid_request",
+            "code_challenge is invalid",
+        ));
+    }
     let scopes = parse_scope(query.scope.as_deref().unwrap_or(""));
     if scopes.is_empty() {
-        return Err(oauth_error(OAuthError::InvalidScope, Shape::Rfc6749));
+        return Ok(redirect_error("invalid_scope", "scope is required"));
     }
 
+    // OIDC Core §3.1.2.1: `none` is exclusive; the other values ask for UI.
+    let prompts: Vec<&str> = query
+        .prompt
+        .as_deref()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    if prompts.contains(&"none") && prompts.len() > 1 {
+        return Ok(redirect_error(
+            "invalid_request",
+            "prompt=none cannot be combined",
+        ));
+    }
+    let prompt_none = prompts.contains(&"none");
+    let force_login = prompts
+        .iter()
+        .any(|value| matches!(*value, "login" | "select_account"));
+    let force_consent = prompts.contains(&"consent");
+    let max_age = match query.max_age.as_deref() {
+        None => None,
+        Some(raw) => match raw.parse::<i64>() {
+            Ok(value) if value >= 0 => Some(value),
+            _ => {
+                return Ok(redirect_error(
+                    "invalid_request",
+                    "max_age must be a non-negative integer",
+                ));
+            }
+        },
+    };
+
     let Some(raw_session) = session_cookie(&headers, state.auth.secure_cookies()) else {
-        return Ok(login_redirect(&original));
+        return Ok(if prompt_none {
+            redirect_error("login_required", "authentication is required")
+        } else {
+            login_redirect(&original)
+        });
     };
     let session = match state.auth.session_context(&raw_session).await {
         Ok(session) => session,
+        Err(AuthError::LoginRequired) if prompt_none => {
+            return Ok(redirect_error(
+                "login_required",
+                "authentication is required",
+            ));
+        }
         Err(AuthError::LoginRequired) => return Ok(login_redirect(&original)),
         Err(error) => return Err(auth_error(error)),
     };
+    if force_login
+        || max_age.is_some_and(|max_age| {
+            session.session.created_at.saturating_add(max_age) <= state.auth.now()
+        })
+    {
+        return Ok(if prompt_none {
+            redirect_error("login_required", "authentication is required")
+        } else {
+            login_redirect(&original)
+        });
+    }
 
-    let outcome = state
+    let outcome = match state
         .oauth
-        .authorize(
+        .authorize_with_client(
             session.session.id,
             session.user.id,
             AuthorizeRequest {
@@ -216,14 +456,44 @@ pub(crate) async fn authorize(
                 state: query.oauth_state,
                 code_challenge: code_challenge.to_string(),
                 nonce: query.nonce,
+                auth_time: session.session.created_at,
             },
+            client,
+            force_consent,
             request_id::of(&headers),
         )
         .await
-        .map_err(|error| oauth_error(error, Shape::Rfc6749))?;
+    {
+        Ok(outcome) => outcome,
+        // The redirect_uri is already trusted, so protocol errors go back to it.
+        Err(OAuthError::InvalidScope) => {
+            return Ok(redirect_error(
+                "invalid_scope",
+                "requested scope is not allowed",
+            ));
+        }
+        Err(OAuthError::InvalidRequest(detail)) => {
+            return Ok(redirect_error("invalid_request", detail));
+        }
+        Err(error) => return Err(oauth_error(error, Shape::Rfc6749)),
+    };
 
     match outcome {
-        AuthorizeOutcome::Redirect(url) => Ok(Redirect::to(&url).into_response()),
+        AuthorizeOutcome::Redirect(url) => Ok(match response_mode {
+            ResponseMode::Query => Redirect::to(&url).into_response(),
+            ResponseMode::FormPost => {
+                let parsed = url::Url::parse(&url).expect("validated redirect_uri");
+                let params: Vec<(String, String)> = parsed
+                    .query_pairs()
+                    .filter(|(name, _)| name == "code" || name == "state")
+                    .map(|(name, value)| (name.into_owned(), value.into_owned()))
+                    .collect();
+                form_post_response(redirect_uri, &params)
+            }
+        }),
+        AuthorizeOutcome::Consent { .. } if prompt_none => {
+            Ok(redirect_error("consent_required", "consent is required"))
+        }
         AuthorizeOutcome::Consent { request_id } => {
             let mut serializer = form_urlencoded::Serializer::new(String::new());
             serializer.append_pair("request", &request_id);
@@ -341,13 +611,68 @@ pub(crate) async fn device_authorization(
         form.client_id.as_deref(),
         form.client_secret.as_deref(),
     )?;
-    let scopes = parse_scope(form.scope.as_deref().unwrap_or(""));
-    if scopes.is_empty() {
-        return Err(oauth_error(OAuthError::InvalidScope, Shape::Rfc6749));
-    }
+    // RFC 8628 §3.1: scope is optional. Omitting it uses the client's
+    // registered scope set; an explicitly empty value is still malformed.
+    let scopes = match form.scope.as_deref() {
+        None => Vec::new(),
+        Some(raw) => {
+            let parsed = parse_scope(raw);
+            if parsed.is_empty() {
+                return Err(oauth_error(OAuthError::InvalidScope, Shape::Rfc6749));
+            }
+            parsed
+        }
+    };
     let response = state
         .oauth
         .device_authorization(credentials.id, credentials.secret.as_deref(), scopes)
+        .await
+        .map_err(|error| oauth_error(error, Shape::Rfc6749))?;
+    Ok(no_store(Json(response).into_response()))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct IntrospectionForm {
+    token: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/oauth/introspect",
+    tag = "protocol",
+    request_body(content = IntrospectionForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, body = re0auth_app::oauth::IntrospectionResponse),
+        (status = 400, body = crate::OAuthErrorBody, content_type = "application/json"),
+        (status = 401, body = crate::OAuthErrorBody, content_type = "application/json")
+    )
+)]
+pub(crate) async fn introspect(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Form(form): Form<IntrospectionForm>,
+) -> Result<Response, ApiError> {
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Rfc6749,
+    )?;
+    let credentials = client_credentials(
+        &headers,
+        form.client_id.as_deref(),
+        form.client_secret.as_deref(),
+    )?;
+    let token = form
+        .token
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| invalid_request("token is required", Shape::Rfc6749))?;
+    let response = state
+        .oauth
+        .introspect(token, credentials.id, credentials.secret.as_deref())
         .await
         .map_err(|error| oauth_error(error, Shape::Rfc6749))?;
     Ok(no_store(Json(response).into_response()))
@@ -363,6 +688,7 @@ pub(crate) struct TokenForm {
     code_verifier: Option<String>,
     refresh_token: Option<String>,
     device_code: Option<String>,
+    scope: Option<String>,
 }
 
 #[utoipa::path(
@@ -420,9 +746,16 @@ pub(crate) async fn token(
                 .refresh_token
                 .as_deref()
                 .ok_or_else(|| invalid_request("refresh_token is required", Shape::Rfc6749))?;
+            let requested = form.scope.as_deref().map(parse_scope);
             state
                 .oauth
-                .refresh(client_id, secret, refresh_token, request_id::of(&headers))
+                .refresh(
+                    client_id,
+                    secret,
+                    refresh_token,
+                    requested.as_deref(),
+                    request_id::of(&headers),
+                )
                 .await
                 .map_err(|error| oauth_error(error, Shape::Rfc6749))?
         }
@@ -467,6 +800,62 @@ pub(crate) async fn userinfo(
     )?;
     let token = bearer_token(&headers)
         .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Rfc6749))?;
+    userinfo_with(&state, token).await
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct UserInfoForm {
+    access_token: Option<String>,
+}
+
+/// OIDC Core §5.3.1: the UserInfo Endpoint MUST accept GET and POST. On POST
+/// the token may arrive as a form parameter (RFC 6750 §2.2), but not in
+/// addition to an Authorization header (RFC 6750 §2).
+#[utoipa::path(
+    post,
+    path = "/userinfo",
+    tag = "protocol",
+    request_body(content = UserInfoForm, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, body = re0auth_app::oauth::UserInfo),
+        (status = 400, body = crate::OAuthErrorBody, content_type = "application/json"),
+        (status = 401, body = crate::OAuthErrorBody, content_type = "application/json")
+    )
+)]
+pub(crate) async fn userinfo_post(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Form(form): Form<UserInfoForm>,
+) -> Result<Json<re0auth_app::oauth::UserInfo>, ApiError> {
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Rfc6749,
+    )?;
+    let body_token = form
+        .access_token
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    let token = match (bearer_token(&headers), body_token) {
+        (Some(_), Some(_)) => {
+            return Err(invalid_request(
+                "use only one bearer token method",
+                Shape::Rfc6749,
+            ));
+        }
+        (Some(token), None) | (None, Some(token)) => token,
+        (None, None) => {
+            return Err(oauth_error(OAuthError::InvalidToken, Shape::Rfc6749));
+        }
+    };
+    userinfo_with(&state, token).await
+}
+
+async fn userinfo_with(
+    state: &AppState,
+    token: &str,
+) -> Result<Json<re0auth_app::oauth::UserInfo>, ApiError> {
     state
         .oauth
         .userinfo(token)
