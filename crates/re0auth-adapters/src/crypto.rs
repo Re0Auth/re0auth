@@ -18,14 +18,16 @@ use std::sync::RwLock;
 
 use anyhow::{Context, bail};
 use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::rsa::{KeyPair, KeySize, PublicKey};
 use aws_lc_rs::signature::KeyPair as _;
+use aws_lc_rs::signature::RSA_PKCS1_SHA256;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jsonwebtoken::jwk::{
     AlgorithmParameters, CommonParameters, Jwk, PublicKeyUse, RSAKeyParameters, RSAKeyType,
 };
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode};
 use sha2::{Digest, Sha256};
 
 use re0auth_api::oauth::{
@@ -38,7 +40,11 @@ use re0auth_api::{Re0Error, Re0Result, Unix};
 /// One usable key: the private half plus its derived public record.
 pub struct SigningKey {
     pub record: SigningKeyRecord,
-    encoding: EncodingKey,
+    /// The parsed private key, reused for every signature.
+    ///
+    /// `jsonwebtoken::encode` re-parses the DER on every call; holding the key
+    /// pair removes that work from the token path.
+    key_pair: KeyPair,
     decoding: DecodingKey,
 }
 
@@ -135,14 +141,7 @@ impl SigningKey {
             }),
         };
         let public_jwk_json = serde_json::to_string(&public_jwk).context("serialize public JWK")?;
-
-        // `EncodingKey::from_rsa_der` only accepts a PKCS#1 RSAPrivateKey, not the
-        // PKCS#8 document aws-lc-rs produces, so the private half goes back
-        // through PEM. `from_rsa_pem` does accept PKCS#8.
-        let private_der =
-            AsDer::<Pkcs8V1Der>::as_der(&key_pair).context("encode RSA private key as PKCS#8")?;
-        let encoding = EncodingKey::from_rsa_pem(pkcs8_pem(private_der.as_ref()).as_bytes())
-            .context("load RSA signing key")?;
+        let decoding = DecodingKey::from_rsa_der(public_der.as_ref());
 
         Ok(Self {
             record: SigningKeyRecord {
@@ -153,8 +152,8 @@ impl SigningKey {
                 activated_at: now,
                 retired_at: None,
             },
-            encoding,
-            decoding: DecodingKey::from_rsa_der(public_der.as_ref()),
+            key_pair,
+            decoding,
         })
     }
 
@@ -162,6 +161,27 @@ impl SigningKey {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(self.record.kid.clone());
         header
+    }
+
+    /// Builds `header.payload.signature` with the already-parsed key pair.
+    fn sign_jws<T: serde::Serialize>(&self, claims: &T) -> Re0Result<String> {
+        let header_b64 =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&self.header()).map_err(internal)?);
+        let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).map_err(internal)?);
+        let signing_input = format!("{header_b64}.{payload_b64}");
+        let mut signature = vec![0u8; self.key_pair.public_modulus_len()];
+        self.key_pair
+            .sign(
+                &RSA_PKCS1_SHA256,
+                &SystemRandom::new(),
+                signing_input.as_bytes(),
+                &mut signature,
+            )
+            .map_err(|_| internal("signing failed"))?;
+        Ok(format!(
+            "{signing_input}.{}",
+            URL_SAFE_NO_PAD.encode(signature)
+        ))
     }
 }
 
@@ -373,7 +393,8 @@ impl RsaTokenSigner {
         Ok(())
     }
 
-    fn active_key(&self) -> Re0Result<(String, Header, EncodingKey)> {
+    /// Signs with the active key without re-parsing its DER.
+    fn sign_with_active<T: serde::Serialize>(&self, claims: &T) -> Re0Result<String> {
         let active = self
             .active
             .read()
@@ -384,10 +405,9 @@ impl RsaTokenSigner {
             .keys
             .read()
             .map_err(|_| internal("signing key lock poisoned"))?;
-        let key = keys
-            .get(&active)
-            .ok_or_else(|| internal("active key is missing from the key set"))?;
-        Ok((active, key.header(), key.encoding.clone()))
+        keys.get(&active)
+            .ok_or_else(|| internal("active key is missing from the key set"))?
+            .sign_jws(claims)
     }
 
     /// Picks the decoding key named by the token's `kid`.
@@ -442,18 +462,15 @@ fn pem_body(pem: &str) -> anyhow::Result<Vec<u8>> {
 
 impl TokenSigner for RsaTokenSigner {
     fn sign_access(&self, claims: &AccessTokenClaims) -> Re0Result<String> {
-        let (_, header, encoding) = self.active_key()?;
-        encode(&header, claims, &encoding).map_err(internal)
+        self.sign_with_active(claims)
     }
 
     fn sign_id(&self, claims: &IdTokenClaims) -> Re0Result<String> {
-        let (_, header, encoding) = self.active_key()?;
-        encode(&header, claims, &encoding).map_err(internal)
+        self.sign_with_active(claims)
     }
 
     fn sign_approval_ticket(&self, claims: &ApprovalTicketClaims) -> Re0Result<String> {
-        let (_, header, encoding) = self.active_key()?;
-        encode(&header, claims, &encoding).map_err(internal)
+        self.sign_with_active(claims)
     }
 
     fn verify_access(&self, token: &str) -> Re0Result<AccessTokenClaims> {
@@ -886,6 +903,40 @@ mod s09_tests {
 
         assert!(!signer.records().iter().any(|record| record.kid == old));
         assert!(!path.exists(), "the configured PEM must be removed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod p08_tests {
+    use super::*;
+    use re0auth_api::oauth::{ACCESS_TOKEN_USE, ConsentVersion};
+    use re0auth_api::{ClientId, FamilyId, UserId};
+
+    #[test]
+    fn p08_manual_jws_verifies_through_the_decoder() {
+        let dir = std::env::temp_dir().join(format!("re0auth-jws-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("signing-key.pem");
+        let signer = RsaTokenSigner::load_or_generate(&path, "https://issuer.test", 1_000, &[])
+            .expect("signer");
+        let claims = AccessTokenClaims {
+            iss: "https://issuer.test".to_string(),
+            sub: UserId::new().0.to_string(),
+            aud: "https://issuer.test/api/v1".to_string(),
+            client_id: ClientId::new().0.to_string(),
+            scope: "openid".to_string(),
+            exp: 4_000_000_000,
+            iat: 1_000,
+            jti: "jti".to_string(),
+            token_use: ACCESS_TOKEN_USE.to_string(),
+            family_id: FamilyId::new().0.to_string(),
+            consent_version: ConsentVersion(1),
+        };
+        let token = signer.sign_access(&claims).expect("sign");
+        let verified = signer.verify_access(&token).expect("verify");
+        assert_eq!(verified.sub, claims.sub);
+        assert_eq!(verified.scope, claims.scope);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
