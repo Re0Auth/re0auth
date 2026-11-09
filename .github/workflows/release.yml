@@ -156,6 +156,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # Pinned: the action's default is "latest", a binary fetched at run
+          # time with packages:write in scope.
+          version: v0.38.2
 
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
@@ -180,12 +184,17 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-or-later
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+          provenance: mode=max
+          sbom: true
 
       - name: record digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -eu
           mkdir -p /tmp/digests
-          echo "${{ steps.build.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}"
+          echo "$DIGEST" > "/tmp/digests/$ARCH"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -210,12 +219,17 @@ jobs:
           merge-multiple: true
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: v0.38.2
 
       - name: log in
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
         run: |
           set -eu
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          echo "${{ secrets.CNB_TOKEN }}" | docker login docker.cnb.cool -u cnb --password-stdin
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          printf '%s' "$CNB_TOKEN" | docker login docker.cnb.cool -u cnb --password-stdin
 
       - name: assemble multi-arch manifest
         env:
@@ -226,10 +240,13 @@ jobs:
           # build-push-action already prints sha256:<hex>, so the ref is
           # image@<file contents> verbatim.
           refs=$(for f in *; do printf '%s@%s ' "$GHCR_IMAGE" "$(cat "$f")"; done)
-          docker buildx imagetools create \
-            -t "$GHCR_IMAGE:$VERSION" \
-            -t "$GHCR_IMAGE:latest" \
-            $refs
+          # A prerelease must not move `latest`; production pulls that tag.
+          tags="-t $GHCR_IMAGE:$VERSION"
+          case "$VERSION" in
+            *-*) ;;
+            *) tags="$tags -t $GHCR_IMAGE:latest" ;;
+          esac
+          docker buildx imagetools create $tags $refs
 
       - name: copy to CNB
         env:
@@ -240,7 +257,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends skopeo
           # --all keeps the multi-arch manifest intact; --authfile reuses the
           # docker logins above so no token reaches a command line.
-          for tag in "$VERSION" latest; do
+          tags="$VERSION"
+          case "$VERSION" in
+            *-*) ;;
+            *) tags="$tags latest" ;;
+          esac
+          for tag in $tags; do
             skopeo copy --all --authfile "$HOME/.docker/config.json" \
               "docker://$GHCR_IMAGE:$tag" \
               "docker://$CNB_IMAGE:$tag"
@@ -256,6 +278,13 @@ jobs:
             docker buildx imagetools inspect "$image:$VERSION" \
               | grep -E 'Platform|Digest'
           done
+          ghcr=$(docker buildx imagetools inspect "$GHCR_IMAGE:$VERSION" --format '{{.Manifest.Digest}}')
+          cnb=$(docker buildx imagetools inspect "$CNB_IMAGE:$VERSION" --format '{{.Manifest.Digest}}')
+          if [ "$ghcr" != "$cnb" ]; then
+            echo "两家仓库 digest 不一致：$ghcr != $cnb" >&2
+            exit 1
+          fi
+          echo "digest: $ghcr"
 
       # The image tag promises a specific commit. Publish the matching source
       # tag and GitHub Release here so `git describe` and the Releases page agree
