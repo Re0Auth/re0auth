@@ -19,11 +19,14 @@
 //! that owns its own clock would make TTL untestable and could not distinguish
 //! "expired but still usable during an outage" from "gone".
 
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::BindingId;
+use crate::connector::ValidatedParamValue;
 
 /// A cached upstream response.
 ///
@@ -101,6 +104,37 @@ impl CachedResponse {
 #[must_use]
 pub fn key(binding: &BindingId, connector: &str, resource: &str) -> String {
     format!("binding:{}:{connector}:{resource}", binding.0)
+}
+
+/// Extends [`key`] with the validated parameter map. The parameter order is
+/// canonical because `BTreeMap` iterates sorted; each value carries its wire
+/// type and its own length so no delimiter can make two different maps collide.
+#[must_use]
+pub fn key_with_params(
+    binding: &BindingId,
+    connector: &str,
+    resource: &str,
+    params: &BTreeMap<String, ValidatedParamValue>,
+) -> String {
+    let mut key = key(binding, connector, resource);
+    for (name, value) in params {
+        let (kind, value) = match value {
+            ValidatedParamValue::String(value) => ("s", value.clone()),
+            ValidatedParamValue::Integer(value) => ("i", value.to_string()),
+            ValidatedParamValue::Number { raw, .. } => ("n", raw.clone()),
+            ValidatedParamValue::Boolean(value) => ("b", value.to_string()),
+        };
+        let _ = write!(
+            key,
+            ":{}:{}:{}:{}:{}",
+            name.len(),
+            name,
+            kind,
+            value.len(),
+            value
+        );
+    }
+    key
 }
 
 /// Every key belonging to one binding.
@@ -200,5 +234,66 @@ mod tests {
         let binding = BindingId::new();
         assert_ne!(key(&binding, "a", "scores"), key(&binding, "a", "profile"));
         assert_ne!(key(&binding, "a", "scores"), key(&binding, "b", "scores"));
+    }
+
+    #[test]
+    fn empty_parameters_keep_the_old_key_and_order_is_irrelevant() {
+        let binding = BindingId::new();
+        assert_eq!(
+            key_with_params(&binding, "phigros", "scores", &BTreeMap::new()),
+            key(&binding, "phigros", "scores")
+        );
+        let first = BTreeMap::from([
+            (
+                "a".to_string(),
+                ValidatedParamValue::String("1".to_string()),
+            ),
+            ("b".to_string(), ValidatedParamValue::Boolean(false)),
+        ]);
+        let second = BTreeMap::from([
+            ("b".to_string(), ValidatedParamValue::Boolean(false)),
+            (
+                "a".to_string(),
+                ValidatedParamValue::String("1".to_string()),
+            ),
+        ]);
+        assert_eq!(
+            key_with_params(&binding, "phigros", "scores", &first),
+            key_with_params(&binding, "phigros", "scores", &second)
+        );
+    }
+
+    #[test]
+    fn keys_separate_parameter_names_values_and_wire_types() {
+        let binding = BindingId::new();
+        let integer = BTreeMap::from([("limit".to_string(), ValidatedParamValue::Integer(10))]);
+        let string = BTreeMap::from([(
+            "limit".to_string(),
+            ValidatedParamValue::String("10".to_string()),
+        )]);
+        let other_value = BTreeMap::from([("limit".to_string(), ValidatedParamValue::Integer(11))]);
+        let other_name = BTreeMap::from([("rank".to_string(), ValidatedParamValue::Integer(10))]);
+        let base = key_with_params(&binding, "phigros", "scores", &integer);
+        assert_ne!(
+            base,
+            key_with_params(&binding, "phigros", "scores", &string)
+        );
+        assert_ne!(
+            base,
+            key_with_params(&binding, "phigros", "scores", &other_value)
+        );
+        assert_ne!(
+            base,
+            key_with_params(&binding, "phigros", "scores", &other_name)
+        );
+        assert_eq!(
+            base,
+            key_with_params(
+                &binding,
+                "phigros",
+                "scores",
+                &BTreeMap::from([("limit".to_string(), ValidatedParamValue::Integer(10))])
+            )
+        );
     }
 }

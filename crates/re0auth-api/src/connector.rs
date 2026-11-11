@@ -37,6 +37,66 @@ pub struct ResourceSpec {
     /// Declarative view for the normalized endpoint (ADR-0049). `None` means
     /// the envelope carries the upstream JSON unchanged.
     pub view: Option<ViewSpec>,
+    /// Declared downstream query parameters and their upstream mapping.
+    pub params: Vec<ParamSpec>,
+}
+
+/// Where a declared downstream parameter is injected upstream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParamLocation {
+    Query,
+    Body,
+}
+
+/// The validated wire kind of one declared downstream parameter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParamKind {
+    String,
+    Enum,
+    Integer,
+    Number,
+    Boolean,
+}
+
+/// One allow-listed downstream parameter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParamSpec {
+    pub name: String,
+    pub upstream: String,
+    pub location: ParamLocation,
+    pub kind: ParamKind,
+    pub required: bool,
+    pub min_len: Option<usize>,
+    pub max_len: Option<usize>,
+    pub min: Option<serde_json::Number>,
+    pub max: Option<serde_json::Number>,
+    pub values: Vec<String>,
+}
+
+/// A downstream parameter after validation. The type is preserved so the
+/// broker never reparses a value that already passed the boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ValidatedParamValue {
+    String(String),
+    Integer(i64),
+    Number {
+        raw: String,
+        value: serde_json::Number,
+    },
+    Boolean(bool),
+}
+
+impl ValidatedParamValue {
+    /// Canonical query/cache spelling. Numbers keep the caller's raw literal.
+    #[must_use]
+    pub fn as_query_string(&self) -> String {
+        match self {
+            Self::String(value) => value.clone(),
+            Self::Integer(value) => value.to_string(),
+            Self::Number { raw, .. } => raw.clone(),
+            Self::Boolean(value) => value.to_string(),
+        }
+    }
 }
 
 /// The HTTP method a resource is read with.
@@ -136,6 +196,7 @@ impl ResourceSpec {
             body: Vec::new(),
             idempotent: true,
             view: None,
+            params: Vec::new(),
         })
     }
 
@@ -143,6 +204,13 @@ impl ResourceSpec {
     #[must_use]
     pub fn with_view(mut self, view: ViewSpec) -> Self {
         self.view = Some(view);
+        self
+    }
+
+    /// Attaches the already validated parameter declarations.
+    #[must_use]
+    pub fn with_params(mut self, params: Vec<ParamSpec>) -> Self {
+        self.params = params;
         self
     }
 
@@ -331,6 +399,7 @@ impl ConnectorEndpoint {
 pub struct ResourceRequest {
     pub resource: String,
     pub subject: String,
+    pub params: std::collections::BTreeMap<String, ValidatedParamValue>,
 }
 
 impl ResourceRequest {
@@ -339,7 +408,17 @@ impl ResourceRequest {
         Self {
             resource: resource.into(),
             subject: subject.into(),
+            params: std::collections::BTreeMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_params(
+        mut self,
+        params: std::collections::BTreeMap<String, ValidatedParamValue>,
+    ) -> Self {
+        self.params = params;
+        self
     }
 }
 
