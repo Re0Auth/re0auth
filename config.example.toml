@@ -205,6 +205,8 @@ inbound_body_bytes = 1048576
 # 读取方法对上游无感（ADR-0046）：默认 GET。上游只提供 POST + 请求体时，
 # 声明 method 与 body；body 的值只能是常量、{subject} 或 {credential}，
 # 由服务端生成，请求方无法添加字段。
+# 上游确实不需要请求体时，显式写 `body = {}`（发送 JSON 空对象）；
+# 完全不写 body 仍视为配置错误，避免漏写。
 # idempotent 默认：GET 为 true，POST 为 false（POST 未被声明为可重试前不重试）。
 # [[connectors.resources]]
 # name = "read_scores"

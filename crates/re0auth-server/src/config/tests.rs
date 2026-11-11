@@ -1297,3 +1297,18 @@ values = ["EZ", "HD"]
         vec!["EZ".to_string(), "HD".to_string()]
     );
 }
+#[test]
+fn a_post_resource_may_declare_an_empty_body() {
+    let mut empty = resource_with_params(Vec::new(), "post");
+    empty.body = Some(std::collections::BTreeMap::new());
+    let spec = empty.to_spec().expect("an explicit empty body is allowed");
+    assert!(spec.body.is_empty());
+
+    let mut absent = resource_with_params(Vec::new(), "post");
+    absent.body = None;
+    assert!(
+        absent.to_spec().is_err(),
+        "an absent body is still a misconfiguration"
+    );
+}
+

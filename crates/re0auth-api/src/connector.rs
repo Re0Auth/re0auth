@@ -233,12 +233,29 @@ impl ResourceSpec {
     /// state must say so rather than inherit "reads are safe" by accident
     /// (ADR-0046).
     pub fn with_transport(
-        mut self,
+        self,
         method: ResourceMethod,
         body: Vec<BodyField>,
         idempotent: bool,
     ) -> Re0Result<Self> {
-        validate_transport(method, &body).map_err(|reason| {
+        let declared = !body.is_empty();
+        self.with_transport_declared(method, body, idempotent, declared)
+    }
+
+    /// Like [`Self::with_transport`], but states whether the configuration
+    /// declared a body at all.
+    ///
+    /// An explicit empty body (`body = {}`) is a legitimate shape for a POST
+    /// endpoint that takes no fields: the broker then sends `{}`. An absent
+    /// body is still a misconfiguration, and the two must not be conflated.
+    pub fn with_transport_declared(
+        mut self,
+        method: ResourceMethod,
+        body: Vec<BodyField>,
+        idempotent: bool,
+        body_declared: bool,
+    ) -> Re0Result<Self> {
+        validate_transport(method, &body, body_declared).map_err(|reason| {
             crate::Re0Error::Internal(format!("resource {}: {reason}", self.name))
         })?;
         self.method = method;
@@ -251,16 +268,26 @@ impl ResourceSpec {
 /// A transport declaration must be internally consistent.
 ///
 /// `Get` never carries a body (nothing to inject, and a body on GET is a
-/// smuggling surface); `Post` must carry one or it is indistinguishable from a
-/// misconfiguration. Field names must be unique so a later field cannot silently
-/// win over an earlier one.
-fn validate_transport(method: ResourceMethod, body: &[BodyField]) -> Result<(), String> {
+/// smuggling surface); `Post` must declare one, because an absent body is
+/// indistinguishable from a misconfiguration. "Declared" is not the same as
+/// "non-empty": an explicit empty body is allowed for upstreams that take none.
+/// Field names must be unique so a later field cannot silently win over an
+/// earlier one.
+fn validate_transport(
+    method: ResourceMethod,
+    body: &[BodyField],
+    body_declared: bool,
+) -> Result<(), String> {
     match method {
         ResourceMethod::Get if !body.is_empty() => {
             return Err("a GET resource must not declare a body".to_string());
         }
-        ResourceMethod::Post if body.is_empty() => {
-            return Err("a POST resource must declare a body".to_string());
+        ResourceMethod::Post if !body_declared => {
+            return Err(
+                "a POST resource must declare a body (write `body = {}` when the \
+                 upstream takes none)"
+                    .to_string(),
+            );
         }
         _ => {}
     }
@@ -742,6 +769,24 @@ mod tests {
         assert!(
             result.is_err(),
             "a POST without a body is a misconfiguration"
+        );
+    }
+
+    #[test]
+    fn a_post_resource_may_declare_an_empty_body() {
+        let spec = ResourceSpec::new("player", "/v1/player")
+            .expect("spec")
+            .with_transport_declared(ResourceMethod::Post, Vec::new(), true, true)
+            .expect("an explicit empty body is allowed");
+        assert_eq!(spec.method, ResourceMethod::Post);
+        assert!(spec.body.is_empty(), "the broker sends an empty object");
+
+        let absent = ResourceSpec::new("player", "/v1/player")
+            .expect("spec")
+            .with_transport_declared(ResourceMethod::Post, Vec::new(), true, false);
+        assert!(
+            absent.is_err(),
+            "an absent body is still a misconfiguration"
         );
     }
 

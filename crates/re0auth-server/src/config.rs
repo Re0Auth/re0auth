@@ -285,7 +285,7 @@ impl ResourceConfig {
         let spec = ResourceSpec::new(self.name.clone(), self.path.clone())
             .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?;
         let spec = spec
-            .with_transport(method, body, idempotent)
+            .with_transport_declared(method, body, idempotent, self.body.is_some())
             .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?;
         let spec = match &self.view {
             Some(view) => spec.with_view(view.to_spec(&self.name)?),
