@@ -137,6 +137,9 @@ GET    /device/start
 GET    /device/qr.svg
 POST   /device/approve
 POST   /device/deny
+GET    /openapi.json
+GET    /api/v1/upstreams
+GET    /api/v1/upstreams/{connector}/{resource}/schema
 GET    /api/v1/upstreams/{connector}/{resource}
 GET    /api/v1/raw/{connector}/{resource}
 GET    /api/admin/stats

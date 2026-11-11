@@ -6,11 +6,17 @@
 //! with `re0auth_http::router()`, so a route added without a declaration fails
 //! the build instead of drifting.
 
+use std::fmt::Write as _;
+
+use axum::Json;
+use axum::extract::State;
+use serde_json::{Map, Value, json};
 use utoipa::OpenApi;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, Http, HttpAuthScheme, SecurityScheme};
 
+use crate::catalog::{Catalog, CatalogParam};
 use crate::routes::{device, gateway, oauth, session};
-use crate::{admin, binding_routes};
+use crate::{AppState, admin, binding_routes};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -57,6 +63,9 @@ use crate::{admin, binding_routes};
         device::device_qr,
         device::device_approve,
         device::device_deny,
+        serve_document,
+        gateway::list_upstreams,
+        gateway::resource_schema,
         gateway::fetch_upstream,
         gateway::fetch_raw,
         admin::stats,
@@ -117,9 +126,163 @@ use crate::{admin, binding_routes};
         re0auth_app::admin_service::RotatedSecretView,
         re0auth_app::gateway::Envelope,
         re0auth_app::gateway::PageBody,
+        crate::catalog::Catalog,
+        crate::catalog::CatalogConnector,
+        crate::catalog::CatalogResource,
+        re0auth_app::upstream_models::UpstreamData,
+        re0auth_app::upstream_models::PhihubSaveInfoData,
+        re0auth_app::upstream_models::PhihubSaveData,
+        re0auth_app::upstream_models::PhihubHistoryData,
+        re0auth_app::upstream_models::PhigrosQuerySaveData,
+        re0auth_app::upstream_models::PhigrosQuerySaveRksData,
+        re0auth_app::upstream_models::PhigrosQueryParsedSave,
+        re0auth_app::upstream_models::PhigrosDifficultyRecord,
+        re0auth_app::upstream_models::PhigrosDifficulty,
+        re0auth_app::upstream_models::PhigrosPushAccHint,
+        re0auth_app::upstream_models::PhigrosGameProgress,
+        re0auth_app::upstream_models::PhigrosUser,
+        re0auth_app::upstream_models::PhigrosSettings,
+        re0auth_app::upstream_models::PhigrosSummary,
+        re0auth_app::upstream_models::PhigrosGameKey,
+        re0auth_app::upstream_models::PhigrosPlayerRks,
+        re0auth_app::upstream_models::PhigrosChartRankingScore,
+        re0auth_app::upstream_models::PhigrosGradeCounts,
+        re0auth_app::upstream_models::PhigrosCfcPCounts,
     ))
 )]
 pub struct ApiDoc;
+
+/// `GET /openapi.json`: the deployment-specific document.
+#[utoipa::path(
+    get,
+    path = "/openapi.json",
+    tag = "gateway",
+    responses((status = 200, description = "The deployment-specific OpenAPI document."))
+)]
+pub(crate) async fn serve_document(State(state): State<AppState>) -> Json<Value> {
+    let base = serde_json::to_value(document()).expect("the document serialises");
+    Json(augment_document(base, &state.catalog))
+}
+
+/// Adds one concrete GET path per public resource and removes the generic
+/// wildcard paths so strict OpenAPI consumers never see both shapes.
+#[must_use]
+pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
+    let Some(paths) = base.get_mut("paths").and_then(Value::as_object_mut) else {
+        return base;
+    };
+    paths.remove("/api/v1/upstreams/{connector}/{resource}");
+    paths.remove("/api/v1/raw/{connector}/{resource}");
+
+    for connector in &catalog.connectors {
+        if !connector.openapi_public {
+            continue;
+        }
+        for resource in &connector.resources {
+            let mut parameters = Vec::new();
+            for param in &resource.params {
+                parameters.push(json!({
+                    "name": param.name,
+                    "in": "query",
+                    "required": param.required,
+                    "schema": param_schema(param),
+                }));
+            }
+            if resource.paginated {
+                parameters.push(json!({
+                    "name": "limit", "in": "query", "required": false,
+                    "schema": {"type": "integer", "format": "int32", "minimum": 1, "maximum": 100}
+                }));
+                parameters.push(json!({
+                    "name": "cursor", "in": "query", "required": false,
+                    "schema": {"type": "string"}
+                }));
+            }
+            let mut operation = json!({
+                "tags": ["gateway"],
+                "summary": format!("Fetch {}/{}", connector.id, resource.name),
+                "operationId": format!(
+                    "fetch_upstream_{}_{}",
+                    hex_name(&connector.id),
+                    hex_name(&resource.name)
+                ),
+                "security": [{"bearer": []}],
+                "parameters": parameters,
+                "responses": {
+                    "200": {"description": "The normalized envelope.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}},
+                    "400": {"description": "Invalid request."},
+                    "401": {"description": "Invalid or missing token."},
+                    "403": {"description": "Insufficient scope or raw access."},
+                    "404": {"description": "Unknown connector or resource."},
+                    "502": {"description": "Upstream contract changed or unavailable."}
+                }
+            });
+            if let Some(schema) = &resource.data_schema {
+                operation
+                    .as_object_mut()
+                    .expect("operation is an object")
+                    .insert(
+                        "x-re0auth-data-schema".to_string(),
+                        Value::String(format!("#/components/schemas/{schema}")),
+                    );
+            }
+            paths.insert(resource.path.clone(), json!({"get": operation}));
+        }
+    }
+    base
+}
+
+fn param_schema(param: &CatalogParam) -> Value {
+    let mut schema = Map::new();
+    match param.kind.as_str() {
+        "string" => {
+            schema.insert("type".to_string(), Value::String("string".into()));
+            if let Some(min) = param.min_len {
+                schema.insert("minLength".to_string(), json!(min));
+            }
+            if let Some(max) = param.max_len {
+                schema.insert("maxLength".to_string(), json!(max));
+            }
+        }
+        "enum" => {
+            schema.insert("type".to_string(), Value::String("string".into()));
+            schema.insert("enum".to_string(), json!(param.values));
+        }
+        "integer" => {
+            schema.insert("type".to_string(), Value::String("integer".into()));
+            if let Some(min) = param.min {
+                schema.insert("minimum".to_string(), json!(min));
+            }
+            if let Some(max) = param.max {
+                schema.insert("maximum".to_string(), json!(max));
+            }
+        }
+        "number" => {
+            schema.insert("type".to_string(), Value::String("number".into()));
+            if let Some(min) = param.min {
+                schema.insert("minimum".to_string(), json!(min));
+            }
+            if let Some(max) = param.max {
+                schema.insert("maximum".to_string(), json!(max));
+            }
+        }
+        "boolean" => {
+            schema.insert("type".to_string(), Value::String("boolean".into()));
+        }
+        _ => {
+            schema.insert("type".to_string(), Value::String("string".into()));
+        }
+    }
+    Value::Object(schema)
+}
+
+fn hex_name(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.bytes() {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
 
 /// The document, built from the same declarations the router serves.
 ///
@@ -234,5 +397,150 @@ mod tests {
                 first.as_ref().map_or("<none>", |(_, _, b)| b.as_str()),
             );
         }
+    }
+
+    #[test]
+    fn gateway_data_is_a_union_of_declared_models() {
+        let json = serde_json::to_value(super::document()).expect("the document serialises");
+        let envelope = &json["components"]["schemas"]["Envelope"]["properties"]["data"];
+        assert_eq!(
+            envelope["$ref"], "#/components/schemas/UpstreamData",
+            "Envelope.data must point at the declared union"
+        );
+        let schemas = json["components"]["schemas"]
+            .as_object()
+            .expect("components schemas");
+        for name in [
+            "PhihubSaveInfoData",
+            "PhihubSaveData",
+            "PhihubHistoryData",
+            "PhigrosQuerySaveData",
+            "PhigrosQuerySaveRksData",
+        ] {
+            assert!(schemas.contains_key(name), "missing schema {name}");
+        }
+        let union = &json["components"]["schemas"]["UpstreamData"]["oneOf"];
+        assert_eq!(
+            union.as_array().map(Vec::len),
+            Some(6),
+            "the union carries five resource models plus PageBody"
+        );
+    }
+
+    #[test]
+    fn the_deployment_document_exposes_only_public_concrete_paths() {
+        use crate::catalog::{Catalog, CatalogConnector, CatalogParam, CatalogResource};
+
+        let catalog = Catalog::new(vec![
+            CatalogConnector {
+                id: "phigros".to_string(),
+                bindable: true,
+                openapi_public: true,
+                resources: vec![CatalogResource {
+                    name: "save".to_string(),
+                    method: "get".to_string(),
+                    upstream_method: "post".to_string(),
+                    scope: "phigros.save.read".to_string(),
+                    path: "/api/v1/upstreams/phigros/save".to_string(),
+                    raw_path: "/api/v1/raw/phigros/save".to_string(),
+                    data_schema: Some("PhigrosQuerySaveData".to_string()),
+                    schema_url: Some("/api/v1/upstreams/phigros/save/schema".to_string()),
+                    params: vec![CatalogParam {
+                        name: "song_id".to_string(),
+                        location: "query".to_string(),
+                        upstream: "song_id".to_string(),
+                        kind: "string".to_string(),
+                        required: true,
+                        min_len: Some(1),
+                        max_len: Some(64),
+                        min: None,
+                        max: None,
+                        values: Vec::new(),
+                    }],
+                    paginated: true,
+                }],
+            },
+            CatalogConnector {
+                id: "private".to_string(),
+                bindable: false,
+                openapi_public: false,
+                resources: Vec::new(),
+            },
+        ]);
+        let document = super::augment_document(
+            serde_json::to_value(super::document()).expect("document"),
+            &catalog,
+        );
+        let paths = document["paths"].as_object().expect("paths");
+        assert!(!paths.contains_key("/api/v1/upstreams/{connector}/{resource}"));
+        assert!(!paths.contains_key("/api/v1/raw/{connector}/{resource}"));
+        let operation = &paths["/api/v1/upstreams/phigros/save"]["get"];
+        assert_eq!(
+            operation["operationId"],
+            "fetch_upstream_70686967726f73_73617665"
+        );
+        assert_eq!(
+            operation["x-re0auth-data-schema"],
+            "#/components/schemas/PhigrosQuerySaveData"
+        );
+        let parameters = operation["parameters"].as_array().expect("parameters");
+        assert!(parameters.iter().any(|p| p["name"] == "song_id"));
+        assert_eq!(parameters[0]["schema"]["maxLength"], 64);
+        assert!(parameters.iter().any(|p| p["name"] == "limit"));
+        assert!(parameters.iter().any(|p| p["name"] == "cursor"));
+        assert!(!paths.keys().any(|path| path.contains("private")));
+    }
+
+    #[test]
+    fn operation_ids_are_unambiguous_and_private_resources_are_hidden() {
+        use crate::catalog::{Catalog, CatalogConnector, CatalogResource};
+
+        fn resource(connector: &str, name: &str) -> CatalogResource {
+            CatalogResource {
+                name: name.to_string(),
+                method: "get".to_string(),
+                upstream_method: "get".to_string(),
+                scope: format!("{connector}.read"),
+                path: format!("/api/v1/upstreams/{connector}/{name}"),
+                raw_path: format!("/api/v1/raw/{connector}/{name}"),
+                data_schema: None,
+                schema_url: None,
+                params: Vec::new(),
+                paginated: false,
+            }
+        }
+
+        let catalog = Catalog::new(vec![
+            CatalogConnector {
+                id: "a".to_string(),
+                bindable: false,
+                openapi_public: true,
+                resources: vec![resource("a", "bc")],
+            },
+            CatalogConnector {
+                id: "ab".to_string(),
+                bindable: false,
+                openapi_public: true,
+                resources: vec![resource("ab", "c")],
+            },
+            CatalogConnector {
+                id: "private".to_string(),
+                bindable: false,
+                openapi_public: false,
+                resources: vec![resource("private", "save")],
+            },
+        ]);
+        let document = super::augment_document(
+            serde_json::to_value(super::document()).expect("document"),
+            &catalog,
+        );
+        let paths = document["paths"].as_object().expect("paths");
+        let first = &paths["/api/v1/upstreams/a/bc"]["get"]["operationId"];
+        let second = &paths["/api/v1/upstreams/ab/c"]["get"]["operationId"];
+        assert_ne!(
+            first, second,
+            "hex encoding must avoid simple concatenation collisions"
+        );
+        assert!(!paths.contains_key("/api/v1/upstreams/private/save"));
     }
 }

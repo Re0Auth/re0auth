@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -134,6 +136,11 @@ async fn harness_with_cache(cache: Arc<dyn re0auth_api::cache::Cache>) -> Harnes
     }
 }
 
+fn empty_params() -> &'static BTreeMap<String, String> {
+    static EMPTY: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+    EMPTY.get_or_init(BTreeMap::new)
+}
+
 impl Harness {
     fn set_now(&self, now: i64) {
         *self.clock.0.lock().expect("clock") = now;
@@ -156,6 +163,7 @@ fn request<'a>(
         raw: false,
         correlation_id: None,
         pagination: Pagination::default(),
+        params: empty_params(),
     }
 }
 
@@ -732,6 +740,7 @@ fn raw_request<'a>(
         raw: true,
         correlation_id: None,
         pagination: Pagination::default(),
+        params: empty_params(),
     }
 }
 
@@ -833,6 +842,7 @@ async fn the_non_raw_path_never_consults_the_client_record() {
             raw: false,
             correlation_id: None,
             pagination: Pagination::default(),
+            params: empty_params(),
         })
         .await
         .expect("non-raw fetch must not need a client record");
@@ -1370,4 +1380,34 @@ async fn transient_refresh_failure_keeps_the_binding_active() {
         .expect("get")
         .expect("binding");
     assert_eq!(binding.status, BindingStatus::Active);
+}
+
+#[tokio::test]
+async fn pagination_on_a_non_list_resource_is_rejected_before_the_upstream() {
+    let app = harness().await;
+    let granted = scopes();
+    let params = BTreeMap::from([
+        ("limit".to_string(), "1".to_string()),
+        ("cursor".to_string(), "x".to_string()),
+    ]);
+    let error = app
+        .service
+        .fetch(GatewayRequest {
+            user_id: app.user.id,
+            client_id: "00000000-0000-0000-0000-000000000000",
+            granted_scopes: &granted,
+            connector_id: app.connector_id,
+            resource: "scores",
+            raw: false,
+            correlation_id: None,
+            pagination: Pagination {
+                limit: Some(1),
+                cursor: Some("x".to_string()),
+            },
+            params: &params,
+        })
+        .await
+        .expect_err("pagination on a non-list resource");
+    assert!(matches!(error, GatewayError::InvalidRequest(_)));
+    assert!(app.connector.calls().is_empty());
 }

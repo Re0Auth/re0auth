@@ -1,0 +1,76 @@
+{
+  "save": {
+    "game_record": {
+      "song-a": [
+        {
+          "difficulty": "IN",
+          "score": 1000000,
+          "accuracy": 100.0,
+          "is_full_combo": true,
+          "chart_constant": 15.6,
+          "push_acc": 15.6,
+          "push_acc_hint": {
+            "type": "already_phi"
+          }
+        }
+      ]
+    },
+    "game_progress": {
+      "version": 1,
+      "is_first_run": true
+    },
+    "user": {
+      "show_player_id": true,
+      "self_intro": "hello",
+      "avatar": "avatar.png",
+      "background": "background.png"
+    },
+    "settings": {
+      "chord_support": true,
+      "fc_ap_indicator": true,
+      "enable_hit_sound": true,
+      "low_resolution_mode": false,
+      "device_name": "device",
+      "bright": 1.0,
+      "music_volume": 1.0,
+      "effect_volume": 1.0,
+      "hit_sound_volume": 1.0,
+      "sound_offset": 0.0,
+      "note_scale": 1.0
+    },
+    "game_key": {
+      "version": 1,
+      "keys": {
+        "song-a": {}
+      },
+      "lanota_read_keys": 0,
+      "camellia_read_key": false
+    },
+    "summaryParsed": {
+      "save_version": 1,
+      "challenge_mode_rank": 1234,
+      "ranking_score": 14.56,
+      "game_version": 3,
+      "avatar": "avatar.png",
+      "progress": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    "updatedAt": "2026-11-01T00:00:00Z"
+  },
+  "rks": {
+    "totalRks": 14.56,
+    "b30Charts": [
+      {
+        "songId": "song-a",
+        "difficulty": "IN",
+        "rks": 15.6
+      }
+    ]
+  },
+  "gradeCounts": {
+    "EZ": {"C": 0, "FC": 0, "P": 0},
+    "HD": {"C": 0, "FC": 0, "P": 0},
+    "IN": {"C": 1, "FC": 1, "P": 1},
+    "AT": {"C": 0, "FC": 0, "P": 0}
+  },
+  "nickname": "player"
+}

@@ -59,6 +59,7 @@ pub fn is_reserved_path(path: &str) -> bool {
             | "/oauth"
             | "/userinfo"
             | "/jwks.json"
+            | "/openapi.json"
             | "/.well-known"
             | "/healthz"
             | "/readyz"

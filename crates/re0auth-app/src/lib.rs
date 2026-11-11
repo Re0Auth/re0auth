@@ -16,6 +16,7 @@ pub mod housekeeping;
 pub mod oauth;
 pub mod return_to;
 pub mod rotation;
+pub mod upstream_models;
 
 pub use auth::{AuthError, AuthService, CreatedSession, LoginOutcome};
 

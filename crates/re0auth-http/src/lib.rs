@@ -4,6 +4,7 @@
 
 mod admin;
 mod binding_routes;
+pub mod catalog;
 mod client_address;
 mod cookies;
 mod copy;
@@ -33,7 +34,7 @@ use re0auth_app::auth::AuthService;
 use re0auth_app::gateway::GatewayService;
 use re0auth_app::oauth::OAuthService;
 use routes::device::{device_approve, device_deny, device_qr, device_start};
-use routes::gateway::{fetch_raw, fetch_upstream};
+use routes::gateway::{fetch_raw, fetch_upstream, list_upstreams, resource_schema};
 use routes::oauth::{
     authorize, authorize_post, device_authorization, discovery, introspect, jwks, oauth_consent,
     oauth_pending, revoke, token, userinfo, userinfo_post,
@@ -63,6 +64,8 @@ pub struct AppState {
     pub auth: Arc<AuthService>,
     /// Absent when no connector is configured; identity flows never read it.
     pub gateway: Option<Arc<GatewayService>>,
+    /// Runtime catalog derived from `[[connectors]]`; empty when none are configured.
+    pub catalog: Arc<catalog::Catalog>,
     /// Starts and completes binding flows. Absent when no connector declares an
     /// authorization endpoint, in which case the routes answer 404 rather than
     /// pretending binding is available.
@@ -97,6 +100,7 @@ impl AppState {
             oauth: Arc::new(oauth),
             auth: Arc::new(auth),
             gateway: None,
+            catalog: Arc::new(catalog::Catalog::default()),
             binding: None,
             admin: None,
             rate: Arc::new(re0auth_api::rate::Unlimited),
@@ -117,6 +121,12 @@ impl AppState {
     #[must_use]
     pub fn with_gateway(mut self, gateway: Arc<GatewayService>) -> Self {
         self.gateway = Some(gateway);
+        self
+    }
+
+    #[must_use]
+    pub fn with_catalog(mut self, catalog: Arc<catalog::Catalog>) -> Self {
+        self.catalog = catalog;
         self
     }
 
@@ -168,6 +178,7 @@ pub fn router(state: AppState) -> Router {
     let metrics_state = state.clone();
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/openapi.json", get(openapi::serve_document))
         .route("/metrics", get(metrics::endpoint))
         // INV-READY-01: readiness means "can serve requests", not "process is
         // up". The probe touches storage so an orchestrator stops routing to an
@@ -216,6 +227,11 @@ pub fn router(state: AppState) -> Router {
         .route("/device/qr.svg", get(device_qr))
         .route("/device/approve", post(device_approve))
         .route("/device/deny", post(device_deny))
+        .route("/api/v1/upstreams", get(list_upstreams))
+        .route(
+            "/api/v1/upstreams/{connector}/{resource}/schema",
+            get(resource_schema),
+        )
         .route(
             "/api/v1/upstreams/{connector}/{resource}",
             get(fetch_upstream),

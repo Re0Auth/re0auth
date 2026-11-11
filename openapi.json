@@ -1620,6 +1620,112 @@
         }
       }
     },
+    "/openapi.json": {
+      "get": {
+        "tags": [
+          "gateway"
+        ],
+        "summary": "`GET /openapi.json`: the deployment-specific document.",
+        "operationId": "serve_document",
+        "responses": {
+          "200": {
+            "description": "The deployment-specific OpenAPI document."
+          }
+        }
+      }
+    },
+    "/api/v1/upstreams": {
+      "get": {
+        "tags": [
+          "gateway"
+        ],
+        "summary": "`GET /api/v1/upstreams`: the deployment's resource catalog.",
+        "operationId": "list_upstreams",
+        "responses": {
+          "200": {
+            "description": "Connectors and their configured resources.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalog"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/upstreams/{connector}/{resource}/schema": {
+      "get": {
+        "tags": [
+          "gateway"
+        ],
+        "summary": "`GET /api/v1/upstreams/{connector}/{resource}/schema`: the declared data schema.",
+        "operationId": "resource_schema",
+        "parameters": [
+          {
+            "name": "connector",
+            "in": "path",
+            "description": "The configured connector id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource",
+            "in": "path",
+            "description": "A resource name declared in that connector's config.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A JSON Schema document for the resource's data field."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/upstreams/{connector}/{resource}": {
       "get": {
         "tags": [
@@ -3403,6 +3509,167 @@
           }
         }
       },
+      "Catalog": {
+        "type": "object",
+        "required": [
+          "connectors"
+        ],
+        "properties": {
+          "connectors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogConnector"
+            }
+          }
+        }
+      },
+      "CatalogConnector": {
+        "type": "object",
+        "required": [
+          "id",
+          "bindable",
+          "openapi_public",
+          "resources"
+        ],
+        "properties": {
+          "bindable": {
+            "type": "boolean",
+            "description": "Whether this deployment exposes a binding flow for the connector."
+          },
+          "id": {
+            "type": "string"
+          },
+          "openapi_public": {
+            "type": "boolean",
+            "description": "Whether the connector may appear in the public OpenAPI document."
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogResource"
+            }
+          }
+        }
+      },
+      "CatalogParam": {
+        "type": "object",
+        "required": [
+          "name",
+          "in",
+          "upstream",
+          "kind",
+          "required",
+          "values"
+        ],
+        "properties": {
+          "in": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "max_len": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "min": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "min_len": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "upstream": {
+            "type": "string"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CatalogResource": {
+        "type": "object",
+        "required": [
+          "name",
+          "method",
+          "upstream_method",
+          "scope",
+          "path",
+          "raw_path",
+          "params",
+          "paginated"
+        ],
+        "properties": {
+          "data_schema": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the schema in `openapi.json` components, if one is declared."
+          },
+          "method": {
+            "type": "string",
+            "description": "The public downstream method. The gateway always exposes GET; the\nupstream method is an implementation detail."
+          },
+          "name": {
+            "type": "string"
+          },
+          "paginated": {
+            "type": "boolean"
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogParam"
+            }
+          },
+          "path": {
+            "type": "string"
+          },
+          "raw_path": {
+            "type": "string"
+          },
+          "schema_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the schema can be fetched directly, if one is declared."
+          },
+          "scope": {
+            "type": "string"
+          },
+          "upstream_method": {
+            "type": "string"
+          }
+        }
+      },
       "ConsentBody": {
         "type": "object",
         "required": [
@@ -3660,7 +3927,9 @@
           "data"
         ],
         "properties": {
-          "data": {},
+          "data": {
+            "$ref": "#/components/schemas/UpstreamData"
+          },
           "endpoint": {
             "type": "string"
           },
@@ -4291,6 +4560,862 @@
           }
         }
       },
+      "PhigrosCfcPCounts": {
+        "type": "object",
+        "required": [
+          "C",
+          "FC",
+          "P"
+        ],
+        "properties": {
+          "C": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "FC": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "P": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhigrosChartRankingScore": {
+        "type": "object",
+        "required": [
+          "songId",
+          "difficulty",
+          "rks"
+        ],
+        "properties": {
+          "difficulty": {
+            "$ref": "#/components/schemas/PhigrosDifficulty"
+          },
+          "rks": {
+            "type": "number",
+            "format": "double"
+          },
+          "songId": {
+            "type": "string"
+          }
+        }
+      },
+      "PhigrosDifficulty": {
+        "type": "string",
+        "enum": [
+          "EZ",
+          "HD",
+          "IN",
+          "AT"
+        ]
+      },
+      "PhigrosDifficultyRecord": {
+        "type": "object",
+        "required": [
+          "difficulty",
+          "score",
+          "accuracy",
+          "is_full_combo"
+        ],
+        "properties": {
+          "accuracy": {
+            "type": "number",
+            "format": "double"
+          },
+          "chart_constant": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/PhigrosDifficulty"
+          },
+          "is_full_combo": {
+            "type": "boolean"
+          },
+          "push_acc": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "push_acc_hint": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhigrosPushAccHint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhigrosGameKey": {
+        "type": "object",
+        "required": [
+          "version",
+          "keys"
+        ],
+        "properties": {
+          "camellia_read_key": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "keys": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "lanota_read_keys": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "old_score_cleared_v390": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "overflow": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "side_story4_begin_read_key": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhigrosGameProgress": {
+        "type": "object",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "already_show_auto_unlock_in_tip": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "already_show_collection_tip": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "challenge_mode_rank": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "chapter8_passed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "chapter8_song_unlocked": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "chapter8_unlock_begin": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "chapter8_unlock_second_phase": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "completed": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flag_of_song_record_key": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "flag_of_song_record_key_takumi": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "boolean"
+            }
+          },
+          "is_first_run": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "legacy_chapter_finished": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "money": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "overflow": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "random_version_unlocked": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "song_update_info": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "unlock_flag_of_igallta": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "unlock_flag_of_rrharil": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "unlock_flag_of_spasmodic": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhigrosGradeCounts": {
+        "type": "object",
+        "required": [
+          "EZ",
+          "HD",
+          "IN",
+          "AT"
+        ],
+        "properties": {
+          "AT": {
+            "$ref": "#/components/schemas/PhigrosCfcPCounts"
+          },
+          "EZ": {
+            "$ref": "#/components/schemas/PhigrosCfcPCounts"
+          },
+          "HD": {
+            "$ref": "#/components/schemas/PhigrosCfcPCounts"
+          },
+          "IN": {
+            "$ref": "#/components/schemas/PhigrosCfcPCounts"
+          }
+        }
+      },
+      "PhigrosPlayerRks": {
+        "type": "object",
+        "required": [
+          "totalRks",
+          "b30Charts"
+        ],
+        "properties": {
+          "b30Charts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhigrosChartRankingScore"
+            }
+          },
+          "totalRks": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "PhigrosPushAccHint": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "acc",
+              "type"
+            ],
+            "properties": {
+              "acc": {
+                "type": "number",
+                "format": "double"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "target_acc"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "phi_only"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "unreachable"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "already_phi"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "PhigrosQueryParsedSave": {
+        "type": "object",
+        "required": [
+          "game_record"
+        ],
+        "properties": {
+          "game_key": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhigrosGameKey"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "game_progress": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhigrosGameProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "game_record": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PhigrosDifficultyRecord"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "settings": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhigrosSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summaryParsed": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhigrosSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhigrosUser"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "PhigrosQuerySaveData": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/PhigrosQueryParsedSave"
+          },
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PhigrosQuerySaveRksData": {
+        "type": "object",
+        "required": [
+          "save",
+          "rks",
+          "gradeCounts"
+        ],
+        "properties": {
+          "gradeCounts": {
+            "$ref": "#/components/schemas/PhigrosGradeCounts"
+          },
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rks": {
+            "$ref": "#/components/schemas/PhigrosPlayerRks"
+          },
+          "save": {
+            "$ref": "#/components/schemas/PhigrosQueryParsedSave"
+          }
+        }
+      },
+      "PhigrosSettings": {
+        "type": "object",
+        "required": [
+          "chord_support",
+          "fc_ap_indicator",
+          "enable_hit_sound",
+          "low_resolution_mode",
+          "device_name",
+          "bright",
+          "music_volume",
+          "effect_volume",
+          "hit_sound_volume",
+          "sound_offset",
+          "note_scale"
+        ],
+        "properties": {
+          "bright": {
+            "type": "number",
+            "format": "double"
+          },
+          "chord_support": {
+            "type": "boolean"
+          },
+          "device_name": {
+            "type": "string"
+          },
+          "effect_volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "enable_hit_sound": {
+            "type": "boolean"
+          },
+          "fc_ap_indicator": {
+            "type": "boolean"
+          },
+          "hit_sound_volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "low_resolution_mode": {
+            "type": "boolean"
+          },
+          "music_volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "note_scale": {
+            "type": "number",
+            "format": "double"
+          },
+          "sound_offset": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "PhigrosSummary": {
+        "type": "object",
+        "required": [
+          "save_version",
+          "challenge_mode_rank",
+          "ranking_score",
+          "game_version",
+          "avatar",
+          "progress"
+        ],
+        "properties": {
+          "avatar": {
+            "type": "string"
+          },
+          "challenge_mode_rank": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "game_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "progress": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          "ranking_score": {
+            "type": "number",
+            "format": "double"
+          },
+          "save_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhigrosUser": {
+        "type": "object",
+        "required": [
+          "show_player_id",
+          "self_intro",
+          "avatar",
+          "background"
+        ],
+        "properties": {
+          "avatar": {
+            "type": "string"
+          },
+          "background": {
+            "type": "string"
+          },
+          "self_intro": {
+            "type": "string"
+          },
+          "show_player_id": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PhihubGameUser": {
+        "type": "object",
+        "required": [
+          "name",
+          "version",
+          "showPlayerId",
+          "selfIntro",
+          "avatar",
+          "background"
+        ],
+        "properties": {
+          "avatar": {
+            "type": "string"
+          },
+          "background": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "selfIntro": {
+            "type": "string"
+          },
+          "showPlayerId": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhihubHistoryData": {
+        "type": "object",
+        "description": "PhiHub's v4 history is date-bucket encoded; the exact bucket shape is\nupstream-owned, so its arrays stay as JSON while the top-level fields are\ndeclared.",
+        "required": [
+          "version",
+          "timezone",
+          "rks",
+          "data",
+          "challengeModeRank",
+          "scoreHistory"
+        ],
+        "properties": {
+          "challengeModeRank": {
+            "type": "array",
+            "items": {}
+          },
+          "data": {
+            "type": "array",
+            "items": {}
+          },
+          "rks": {
+            "type": "array",
+            "items": {}
+          },
+          "scoreHistory": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {}
+              },
+              "propertyNames": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhihubRecord": {
+        "type": "object",
+        "required": [
+          "score",
+          "acc",
+          "fc"
+        ],
+        "properties": {
+          "acc": {
+            "type": "number",
+            "format": "double"
+          },
+          "fc": {
+            "type": "boolean"
+          },
+          "score": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhihubSaveData": {
+        "type": "object",
+        "required": [
+          "player_id",
+          "updated_at",
+          "rks",
+          "challenge_mode_rank",
+          "avatar",
+          "game_user",
+          "records"
+        ],
+        "properties": {
+          "avatar": {
+            "type": "string"
+          },
+          "challenge_mode_rank": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "game_user": {
+            "$ref": "#/components/schemas/PhihubGameUser"
+          },
+          "player_id": {
+            "type": "string"
+          },
+          "records": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/PhihubRecord"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "rks": {
+            "type": "number",
+            "format": "double"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "PhihubSaveInfoData": {
+        "type": "object",
+        "required": [
+          "player_id",
+          "updated_at",
+          "rks",
+          "challenge_mode_rank",
+          "avatar",
+          "game_version",
+          "save_version"
+        ],
+        "properties": {
+          "avatar": {
+            "type": "string"
+          },
+          "challenge_mode_rank": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "game_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "player_id": {
+            "type": "string"
+          },
+          "rks": {
+            "type": "number",
+            "format": "double"
+          },
+          "save_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
       "ProblemBody": {
         "type": "object",
         "description": "RFC 9457 problem details, for the lanes that are not the OAuth protocol.\n\nTwo shapes coexist because the standards disagree: RFC 6749 §5.2 fixes\n`error` / `error_description` for the token endpoint, while the gateway and\nsession lanes have no such constraint and can use the general format. Which one\napplies is decided by the lane, not by the error code — the `token` and\n`device_authorization` handlers answer RFC 6749 even for errors the gateway\nshares a spelling with.\n\n`type` is `about:blank`, which the spec allows when the problem is not further\nspecified. It is the honest value: we host no problem-type registry, so a URI\nunder our own domain would not resolve and would be a promise we cannot keep.\nThe identifier a client can actually branch on is `code`, which is the same\nstring the error tables are keyed on. For `about:blank` the spec points clients\nat the HTTP status, so `title` is the canonical reason phrase and `detail`\ncarries our explanation.\nThe RFC 9457 body, named so the schema derives from the type that\nserialises the response rather than from a hand-written copy.",
@@ -4557,6 +5682,30 @@
             ]
           }
         }
+      },
+      "UpstreamData": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/PhihubSaveInfoData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubSaveData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubHistoryData"
+          },
+          {
+            "$ref": "#/components/schemas/PhigrosQuerySaveData"
+          },
+          {
+            "$ref": "#/components/schemas/PhigrosQuerySaveRksData"
+          },
+          {
+            "$ref": "#/components/schemas/PageBody"
+          }
+        ],
+        "title": "UpstreamData",
+        "description": "One of the normalized data shapes exposed by `/api/v1/upstreams/*`."
       },
       "UserInfo": {
         "type": "object",

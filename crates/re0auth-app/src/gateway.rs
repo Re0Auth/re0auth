@@ -3,6 +3,7 @@
 //! Identity flows do not depend on this module (INV-LOGIN-03).
 use re0auth_api::audit::{AccessSource, AccessTelemetry, AuditAction, SecurityFact};
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use base64::Engine;
@@ -13,8 +14,8 @@ use serde_json::Value;
 
 use re0auth_api::cache::Cache;
 use re0auth_api::connector::{
-    BindingAction, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, FaultClass,
-    ResourceRequest, UpstreamError, UpstreamPayload,
+    BindingAction, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, FaultClass, ParamKind,
+    ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload, ValidatedParamValue,
 };
 use re0auth_api::ports::{Binding, BindingStatus, NoTelemetry, Storage, TelemetrySink, UserStatus};
 use re0auth_api::secret::SecretSealer;
@@ -25,6 +26,7 @@ use uuid::Uuid;
 
 use crate::circuit::{CircuitKey, CircuitTracker, Outcome, Probe};
 use crate::credentials::{CredentialError, CredentialSource};
+use crate::upstream_models::UpstreamData;
 
 #[derive(Clone, Debug)]
 pub struct GatewayRequest<'a> {
@@ -42,6 +44,8 @@ pub struct GatewayRequest<'a> {
     pub correlation_id: Option<&'a str>,
     /// `limit`/`cursor` from the query string. Only list views accept them.
     pub pagination: Pagination,
+    /// Complete raw query map, including `limit`/`cursor`; validated below.
+    pub params: &'a BTreeMap<String, String>,
 }
 
 /// Query-string pagination, before it is checked against the resource's view.
@@ -118,6 +122,7 @@ pub struct Envelope<'a> {
     fetched_at: i64,
     request_id: Option<&'a str>,
     stability: &'static str,
+    #[schema(value_type = UpstreamData)]
     data: Value,
 }
 
@@ -319,6 +324,96 @@ pub struct GatewayService {
     credentials: Option<Arc<dyn CredentialSource>>,
 }
 
+/// Applies the resource's declarative allow-list to the complete raw query map.
+fn validate_params(
+    spec: &ResourceSpec,
+    supplied: &BTreeMap<String, String>,
+    allow_pagination: bool,
+) -> Result<BTreeMap<String, ValidatedParamValue>, GatewayError> {
+    let mut validated = BTreeMap::new();
+    for param in &spec.params {
+        let Some(raw) = supplied.get(&param.name) else {
+            if param.required {
+                return Err(GatewayError::InvalidRequest("missing required parameter"));
+            }
+            continue;
+        };
+        let value = match param.kind {
+            ParamKind::String => {
+                let length = raw.chars().count();
+                let min = param.min_len.unwrap_or(0);
+                let max = param.max_len.unwrap_or(usize::MAX);
+                if !(min..=max).contains(&length) {
+                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
+                }
+                ValidatedParamValue::String(raw.clone())
+            }
+            ParamKind::Enum => {
+                if !param.values.iter().any(|value| value == raw) {
+                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
+                }
+                ValidatedParamValue::String(raw.clone())
+            }
+            ParamKind::Integer => {
+                let parsed = raw
+                    .parse::<i64>()
+                    .map_err(|_| GatewayError::InvalidRequest("invalid parameter value"))?;
+                if let Some(min) = param.min.as_ref().and_then(serde_json::Number::as_i64)
+                    && parsed < min
+                {
+                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
+                }
+                if let Some(max) = param.max.as_ref().and_then(serde_json::Number::as_i64)
+                    && parsed > max
+                {
+                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
+                }
+                ValidatedParamValue::Integer(parsed)
+            }
+            ParamKind::Number => {
+                let parsed = raw
+                    .parse::<f64>()
+                    .map_err(|_| GatewayError::InvalidRequest("invalid parameter value"))?;
+                if !parsed.is_finite() {
+                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
+                }
+                if let Some(min) = param.min.as_ref().and_then(serde_json::Number::as_f64)
+                    && parsed < min
+                {
+                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
+                }
+                if let Some(max) = param.max.as_ref().and_then(serde_json::Number::as_f64)
+                    && parsed > max
+                {
+                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
+                }
+                let value = serde_json::Number::from_f64(parsed)
+                    .ok_or(GatewayError::InvalidRequest("invalid parameter value"))?;
+                ValidatedParamValue::Number {
+                    raw: raw.clone(),
+                    value,
+                }
+            }
+            ParamKind::Boolean => match raw.as_str() {
+                "true" => ValidatedParamValue::Boolean(true),
+                "false" => ValidatedParamValue::Boolean(false),
+                _ => return Err(GatewayError::InvalidRequest("invalid parameter value")),
+            },
+        };
+        validated.insert(param.name.clone(), value);
+    }
+
+    for key in supplied.keys() {
+        if allow_pagination && matches!(key.as_str(), "limit" | "cursor") {
+            continue;
+        }
+        if !spec.params.iter().any(|param| param.name == *key) {
+            return Err(GatewayError::InvalidRequest("unknown query parameter"));
+        }
+    }
+    Ok(validated)
+}
+
 impl GatewayService {
     #[must_use]
     pub fn new(
@@ -458,6 +553,7 @@ impl GatewayService {
                 "limit must be between 1 and 100",
             ));
         }
+        let params = validate_params(spec, request.params, list_view)?;
 
         // `bindings.upstream_id` stores the connector's name, not its derived
         // id: the name is what the operator configured and what the portal
@@ -490,7 +586,12 @@ impl GatewayService {
         // Raw requests are never cached (INV-CACHE-03): the raw view exists to
         // show what the upstream actually returned, so a replayed older body
         // would misrepresent the current state.
-        let cache_key = re0auth_api::cache::key(&binding.id, &endpoint.name, request.resource);
+        let cache_key = re0auth_api::cache::key_with_params(
+            &binding.id,
+            &endpoint.name,
+            request.resource,
+            &params,
+        );
         // Short-circuit order matters: `request.raw` is checked first, so a raw
         // request never even touches the cache.
         if !request.raw
@@ -521,7 +622,7 @@ impl GatewayService {
             .probe(CircuitKey::Binding(endpoint.id, binding.id), now)
             .map_err(|retry_after_secs| GatewayError::CircuitOpen { retry_after_secs })?;
 
-        let resource = ResourceRequest::new(request.resource, subject);
+        let resource = ResourceRequest::new(request.resource, subject).with_params(params);
         let started = std::time::Instant::now();
         match self
             .fetch_with_retry(&endpoint, &sub_token, &resource, spec.idempotent)
@@ -890,6 +991,165 @@ impl GatewayService {
 #[cfg(test)]
 mod p03_tests {
     use super::*;
+    use re0auth_api::connector::{ParamLocation, ParamSpec};
+
+    fn param(name: &str, kind: ParamKind) -> ParamSpec {
+        ParamSpec {
+            name: name.to_string(),
+            upstream: name.to_string(),
+            location: ParamLocation::Query,
+            kind,
+            required: true,
+            min_len: None,
+            max_len: None,
+            min: None,
+            max: None,
+            values: Vec::new(),
+        }
+    }
+
+    fn resource(params: Vec<ParamSpec>) -> ResourceSpec {
+        let mut resource = ResourceSpec::new("scores", "/v1/scores").expect("resource");
+        resource.params = params;
+        resource
+    }
+
+    #[test]
+    fn p03_params_are_allowlisted_and_typed() {
+        let mut rank = param("rank", ParamKind::Enum);
+        rank.values = vec!["EZ".into(), "HD".into(), "IN".into(), "AT".into()];
+        let mut limit = param("limit", ParamKind::Integer);
+        limit.min = Some(1.into());
+        limit.max = Some(100.into());
+        let mut ratio = param("ratio", ParamKind::Number);
+        ratio.min = Some(serde_json::Number::from_f64(0.0).expect("finite"));
+        ratio.max = Some(serde_json::Number::from_f64(1.0).expect("finite"));
+        let spec = resource(vec![
+            param("song_id", ParamKind::String),
+            rank,
+            limit,
+            ratio,
+            param("flag", ParamKind::Boolean),
+        ]);
+        let supplied = BTreeMap::from([
+            ("song_id".to_string(), "s".to_string()),
+            ("rank".to_string(), "IN".to_string()),
+            ("limit".to_string(), "30".to_string()),
+            ("ratio".to_string(), "0.5".to_string()),
+            ("flag".to_string(), "true".to_string()),
+        ]);
+        let values = validate_params(&spec, &supplied, false).expect("valid params");
+        assert_eq!(values["song_id"], ValidatedParamValue::String("s".into()));
+        assert_eq!(values["rank"], ValidatedParamValue::String("IN".into()));
+        assert_eq!(values["limit"], ValidatedParamValue::Integer(30));
+        assert_eq!(
+            values["ratio"],
+            ValidatedParamValue::Number {
+                raw: "0.5".into(),
+                value: serde_json::Number::from_f64(0.5).expect("finite"),
+            }
+        );
+        assert_eq!(values["flag"], ValidatedParamValue::Boolean(true));
+    }
+
+    #[test]
+    fn p03_params_reject_unknown_missing_and_bad_values() {
+        let mut long = param("song_id", ParamKind::String);
+        long.max_len = Some(2);
+        let mut rank = param("rank", ParamKind::Enum);
+        rank.values = vec!["HD".into()];
+        let mut count = param("count", ParamKind::Integer);
+        count.min = Some(1.into());
+        let mut ratio = param("ratio", ParamKind::Number);
+        ratio.max = Some(serde_json::Number::from_f64(1.0).expect("finite"));
+        let spec = resource(vec![
+            long,
+            rank,
+            count,
+            ratio,
+            param("flag", ParamKind::Boolean),
+        ]);
+
+        assert!(
+            validate_params(
+                &spec,
+                &BTreeMap::from([("other".into(), "x".into())]),
+                false
+            )
+            .is_err()
+        );
+        assert!(validate_params(&spec, &BTreeMap::new(), false).is_err());
+        assert!(
+            validate_params(
+                &spec,
+                &BTreeMap::from([("song_id".into(), "abc".into())]),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_params(
+                &spec,
+                &BTreeMap::from([("rank".into(), "IN".into())]),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_params(
+                &spec,
+                &BTreeMap::from([("count".into(), "0".into())]),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_params(
+                &spec,
+                &BTreeMap::from([("count".into(), "1.5".into())]),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_params(
+                &spec,
+                &BTreeMap::from([("ratio".into(), "1.5".into())]),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_params(
+                &spec,
+                &BTreeMap::from([("ratio".into(), "NaN".into())]),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_params(&spec, &BTreeMap::from([("flag".into(), "1".into())]), false).is_err()
+        );
+        assert!(
+            validate_params(
+                &spec,
+                &BTreeMap::from([("limit".into(), "10".into())]),
+                false,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn p03_pagination_keys_are_allowed_only_for_list_resources() {
+        let spec = resource(Vec::new());
+        let supplied = BTreeMap::from([
+            ("limit".to_string(), "10".to_string()),
+            ("cursor".to_string(), "abc".to_string()),
+        ]);
+        let values = validate_params(&spec, &supplied, true).expect("pagination keys");
+        assert!(values.is_empty());
+    }
 
     #[test]
     fn p03_pagination_slices_without_cloning_the_whole_list() {

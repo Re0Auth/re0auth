@@ -8,7 +8,7 @@
 //! Neither type starts background work; expiry and probing belong to the
 //! composition root's single scheduler.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,8 +18,8 @@ use url::Url;
 
 use re0auth_api::connector::{
     BodyValue, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, EgressPolicy, InflightBudget,
-    ResourceMethod, ResourceRequest, ResourceSpec, UnlimitedInflight, UpstreamError,
-    UpstreamPayload,
+    ParamLocation, ResourceMethod, ResourceRequest, ResourceSpec, UnlimitedInflight, UpstreamError,
+    UpstreamPayload, ValidatedParamValue,
 };
 use re0auth_api::{ConnectorId, Re0Error, Re0Result, SecretString};
 
@@ -149,8 +149,25 @@ impl ConnectorBroker for HttpBroker {
             .resource(&resource.resource)
             .ok_or(UpstreamError::NotFound)?;
 
-        let url = build_url(&endpoint.base_url, &spec.path_template, &resource.subject)
-            .map_err(|_| UpstreamError::Rejected)?;
+        let query_params = spec
+            .params
+            .iter()
+            .filter(|param| param.location == ParamLocation::Query)
+            .filter_map(|param| {
+                resource
+                    .params
+                    .get(&param.name)
+                    .cloned()
+                    .map(|value| (param.upstream.clone(), value))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let url = build_url(
+            &endpoint.base_url,
+            &spec.path_template,
+            &resource.subject,
+            &query_params,
+        )
+        .map_err(|_| UpstreamError::Rejected)?;
 
         // INV-RES-01: reserve before the request, release on drop. Reserving the
         // whole response cap is deliberate — it is the worst case, so the budget
@@ -167,8 +184,12 @@ impl ConnectorBroker for HttpBroker {
                     .await
             }
             ResourceMethod::Post => {
-                let (body, credential_in_body) =
-                    build_body(spec, &resource.subject, sub_token.expose_secret());
+                let (body, credential_in_body) = build_body(
+                    spec,
+                    &resource.subject,
+                    sub_token.expose_secret(),
+                    &resource.params,
+                );
                 // The credential goes in the body when the template says so, and
                 // then it must not also travel in the header: sending the same
                 // secret twice doubles where it can leak and buys nothing.
@@ -197,7 +218,12 @@ impl ConnectorBroker for HttpBroker {
 /// `serde_json` encodes it rather than interpolating it (ADR-0046).
 ///
 /// Returns the body and whether the credential was placed in it.
-fn build_body(spec: &ResourceSpec, subject: &str, credential: &str) -> (serde_json::Value, bool) {
+fn build_body(
+    spec: &ResourceSpec,
+    subject: &str,
+    credential: &str,
+    params: &BTreeMap<String, ValidatedParamValue>,
+) -> (serde_json::Value, bool) {
     let mut map = serde_json::Map::new();
     let mut credential_in_body = false;
     for field in &spec.body {
@@ -211,7 +237,27 @@ fn build_body(spec: &ResourceSpec, subject: &str, credential: &str) -> (serde_js
         };
         map.insert(field.name.clone(), value);
     }
+    for param in spec
+        .params
+        .iter()
+        .filter(|param| param.location == ParamLocation::Body)
+    {
+        if let Some(value) = params.get(&param.name) {
+            map.insert(param.upstream.clone(), param_value_json(value));
+        }
+    }
     (serde_json::Value::Object(map), credential_in_body)
+}
+
+fn param_value_json(value: &ValidatedParamValue) -> serde_json::Value {
+    match value {
+        ValidatedParamValue::String(value) => serde_json::Value::String(value.clone()),
+        ValidatedParamValue::Integer(value) => {
+            serde_json::Value::Number(serde_json::Number::from(*value))
+        }
+        ValidatedParamValue::Number { value, .. } => serde_json::Value::Number(value.clone()),
+        ValidatedParamValue::Boolean(value) => serde_json::Value::Bool(*value),
+    }
 }
 
 /// Joins the registry's base URL with the template, percent-encoding the
@@ -220,6 +266,7 @@ pub fn build_url(
     base_url: &str,
     path_template: &str,
     subject: &str,
+    query_params: &BTreeMap<String, ValidatedParamValue>,
 ) -> Result<String, &'static str> {
     re0auth_api::connector::validate_path_template(path_template)
         .map_err(|_| "invalid template")?;
@@ -241,7 +288,7 @@ pub fn build_url(
     // before joining; otherwise `Url::join` would replace the whole path.
     let relative = filled.trim_start_matches('/');
 
-    let url = base
+    let mut url = base
         .join(relative)
         .map_err(|_| "template does not join with the base url")?;
 
@@ -252,8 +299,17 @@ pub fn build_url(
     if !resolved.starts_with(&expected_prefix) && format!("{resolved}/") != expected_prefix {
         return Err("template escapes the base path");
     }
-    if url.query().is_some() || url.fragment().is_some() {
-        return Err("template must not introduce a query or fragment");
+    // A fixed query is part of the registry's template, not caller input; the
+    // subject is percent-encoded above, so it cannot add parameters. The
+    // fragment stays forbidden because it never reaches an HTTP server.
+    if url.fragment().is_some() {
+        return Err("template must not introduce a fragment");
+    }
+    if !query_params.is_empty() {
+        let mut pairs = url.query_pairs_mut();
+        for (name, value) in query_params {
+            pairs.append_pair(name, &value.as_query_string());
+        }
     }
     Ok(url.to_string())
 }
@@ -315,6 +371,7 @@ mod tests {
     use re0auth_api::connector::BodyField;
     use re0auth_api::connector::FaultClass;
     use re0auth_api::connector::ResourceSpec;
+    use re0auth_api::connector::{ParamKind, ParamLocation, ParamSpec};
 
     fn endpoint() -> ConnectorEndpoint {
         ConnectorEndpoint {
@@ -329,12 +386,28 @@ mod tests {
         }
     }
 
+    fn param(name: &str, upstream: &str, location: ParamLocation, kind: ParamKind) -> ParamSpec {
+        ParamSpec {
+            name: name.to_string(),
+            upstream: upstream.to_string(),
+            location,
+            kind,
+            required: true,
+            min_len: None,
+            max_len: None,
+            min: None,
+            max: None,
+            values: Vec::new(),
+        }
+    }
+
     #[test]
     fn substitutes_and_encodes_the_subject() {
         let url = build_url(
             "https://api.example.com",
             "/v1/scores/{subject}",
             "ab12cd34",
+            &BTreeMap::new(),
         )
         .expect("url");
         assert_eq!(url, "https://api.example.com/v1/scores/ab12cd34");
@@ -342,34 +415,106 @@ mod tests {
 
     #[test]
     fn encodes_path_separators_in_the_subject() {
-        let url = build_url("https://api.example.com", "/v1/scores/{subject}", "a/b").expect("url");
+        let url = build_url(
+            "https://api.example.com",
+            "/v1/scores/{subject}",
+            "a/b",
+            &BTreeMap::new(),
+        )
+        .expect("url");
         assert_eq!(url, "https://api.example.com/v1/scores/a%2Fb");
     }
 
     #[test]
     fn encodes_traversal_in_the_subject() {
-        let url =
-            build_url("https://api.example.com", "/v1/scores/{subject}", "../etc").expect("url");
+        let url = build_url(
+            "https://api.example.com",
+            "/v1/scores/{subject}",
+            "../etc",
+            &BTreeMap::new(),
+        )
+        .expect("url");
         assert_eq!(url, "https://api.example.com/v1/scores/..%2Fetc");
     }
 
     #[test]
     fn rejects_templates_that_escape_the_base_path() {
-        assert!(build_url("https://api.example.com", "//evil.example/x", "s").is_err());
-        assert!(build_url("https://api.example.com", "/v1/../../x", "s").is_err());
-        assert!(build_url("https://api.example.com", "v1/scores", "s").is_err());
+        assert!(
+            build_url(
+                "https://api.example.com",
+                "//evil.example/x",
+                "s",
+                &BTreeMap::new()
+            )
+            .is_err()
+        );
+        assert!(
+            build_url(
+                "https://api.example.com",
+                "/v1/../../x",
+                "s",
+                &BTreeMap::new()
+            )
+            .is_err()
+        );
+        assert!(
+            build_url(
+                "https://api.example.com",
+                "v1/scores",
+                "s",
+                &BTreeMap::new()
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn keeps_a_base_path_prefix() {
-        let url = build_url("https://api.example.com/api", "/v1/me", "s").expect("url");
+        let url = build_url(
+            "https://api.example.com/api",
+            "/v1/me",
+            "s",
+            &BTreeMap::new(),
+        )
+        .expect("url");
         assert_eq!(url, "https://api.example.com/api/v1/me");
     }
 
     #[test]
+    fn keeps_a_fixed_query_string_in_the_template() {
+        let url = build_url(
+            "https://seekend.xtower.site",
+            "/api/v1/save?calculate_rks=true",
+            "s",
+            &BTreeMap::new(),
+        )
+        .expect("url");
+        assert_eq!(
+            url,
+            "https://seekend.xtower.site/api/v1/save?calculate_rks=true"
+        );
+    }
+
+    #[test]
     fn rejects_base_urls_with_query_or_fragment() {
-        assert!(build_url("https://api.example.com?x=1", "/v1/me", "s").is_err());
-        assert!(build_url("https://api.example.com#frag", "/v1/me", "s").is_err());
+        assert!(
+            build_url(
+                "https://api.example.com?x=1",
+                "/v1/me",
+                "s",
+                &BTreeMap::new()
+            )
+            .is_err()
+        );
+        assert!(
+            build_url(
+                "https://api.example.com#frag",
+                "/v1/me",
+                "s",
+                &BTreeMap::new()
+            )
+            .is_err()
+        );
     }
 
     /// Pins the exact character set, because the encoder is now a library call
@@ -662,7 +807,7 @@ mod tests {
                 value: BodyValue::Credential,
             },
         ]);
-        let (body, credential_in_body) = build_body(&spec, "a\"b,}", "secret");
+        let (body, credential_in_body) = build_body(&spec, "a\"b,}", "secret", &BTreeMap::new());
         assert!(credential_in_body, "the credential is a body field");
         assert_eq!(body["api_user_id"], serde_json::Value::from("a\"b,}"));
         assert_eq!(
@@ -678,7 +823,7 @@ mod tests {
             name: "api_user_id".to_string(),
             value: BodyValue::Subject,
         }]);
-        let (body, credential_in_body) = build_body(&spec, "player", "secret");
+        let (body, credential_in_body) = build_body(&spec, "player", "secret", &BTreeMap::new());
         assert!(!credential_in_body);
         assert_eq!(body["api_user_id"], serde_json::Value::from("player"));
         assert!(body.get("secret").is_none());
@@ -690,13 +835,127 @@ mod tests {
             name: "scope".to_string(),
             value: BodyValue::Constant("read".to_string()),
         }]);
-        let (body, credential_in_body) = build_body(&spec, "player", "secret");
+        let (body, credential_in_body) = build_body(&spec, "player", "secret", &BTreeMap::new());
         assert!(!credential_in_body);
         assert_eq!(body["scope"], serde_json::Value::from("read"));
 
         let get = ResourceSpec::new("me", "/v1/me").expect("spec");
-        let (body, credential_in_body) = build_body(&get, "player", "secret");
+        let (body, credential_in_body) = build_body(&get, "player", "secret", &BTreeMap::new());
         assert!(!credential_in_body);
         assert!(body.as_object().expect("object").is_empty());
+    }
+
+    #[test]
+    fn declared_query_parameters_are_appended_after_the_fixed_query() {
+        let mut spec = ResourceSpec::new("scores", "/v1/scores/{subject}?fixed=1").expect("spec");
+        spec.params.push(param(
+            "rank",
+            "rank",
+            ParamLocation::Query,
+            ParamKind::String,
+        ));
+        let params = BTreeMap::from([(
+            "rank".to_string(),
+            ValidatedParamValue::String("a b".to_string()),
+        )]);
+        let url = build_url(
+            "https://api.example.com",
+            &spec.path_template,
+            "player",
+            &params,
+        )
+        .expect("url");
+        assert_eq!(
+            url,
+            "https://api.example.com/v1/scores/player?fixed=1&rank=a+b"
+        );
+    }
+
+    #[test]
+    fn number_query_parameters_keep_the_raw_literal() {
+        let mut spec = ResourceSpec::new("scores", "/v1/scores/{subject}").expect("spec");
+        spec.params.push(param(
+            "ratio",
+            "ratio",
+            ParamLocation::Query,
+            ParamKind::Number,
+        ));
+        let params = BTreeMap::from([(
+            "ratio".to_string(),
+            ValidatedParamValue::Number {
+                raw: "1.5000000000000001".to_string(),
+                value: serde_json::Number::from_f64(1.5).expect("finite"),
+            },
+        )]);
+        let url = build_url(
+            "https://api.example.com",
+            &spec.path_template,
+            "player",
+            &params,
+        )
+        .expect("url");
+        assert!(url.ends_with("?ratio=1.5000000000000001"), "{url}");
+    }
+
+    #[test]
+    fn declared_body_parameters_keep_their_wire_type() {
+        let mut spec = post_spec(vec![
+            BodyField {
+                name: "delegation_token".to_string(),
+                value: BodyValue::Credential,
+            },
+            BodyField {
+                name: "api_user_id".to_string(),
+                value: BodyValue::Subject,
+            },
+        ]);
+        spec.params = vec![
+            param("song_id", "songId", ParamLocation::Body, ParamKind::String),
+            param("rank", "rank", ParamLocation::Body, ParamKind::Enum),
+            param(
+                "b30_limit",
+                "limit",
+                ParamLocation::Body,
+                ParamKind::Integer,
+            ),
+            param(
+                "is_full_combo",
+                "is_full_combo",
+                ParamLocation::Body,
+                ParamKind::Boolean,
+            ),
+            param("ratio", "ratio", ParamLocation::Body, ParamKind::Number),
+        ];
+        let params = BTreeMap::from([
+            (
+                "song_id".to_string(),
+                ValidatedParamValue::String("song-1".to_string()),
+            ),
+            (
+                "rank".to_string(),
+                ValidatedParamValue::String("IN".to_string()),
+            ),
+            ("b30_limit".to_string(), ValidatedParamValue::Integer(30)),
+            (
+                "is_full_combo".to_string(),
+                ValidatedParamValue::Boolean(true),
+            ),
+            (
+                "ratio".to_string(),
+                ValidatedParamValue::Number {
+                    raw: "1.5000000000000001".to_string(),
+                    value: serde_json::Number::from_f64(1.5).expect("finite"),
+                },
+            ),
+        ]);
+        let (body, credential_in_body) = build_body(&spec, "player-1", "secret", &params);
+        assert!(credential_in_body, "the credential stays in the body");
+        assert_eq!(body["delegation_token"], serde_json::Value::from("secret"));
+        assert_eq!(body["api_user_id"], serde_json::Value::from("player-1"));
+        assert_eq!(body["songId"], serde_json::Value::from("song-1"));
+        assert_eq!(body["rank"], serde_json::Value::from("IN"));
+        assert_eq!(body["limit"], serde_json::Value::from(30));
+        assert_eq!(body["is_full_combo"], serde_json::Value::from(true));
+        assert_eq!(body["ratio"], serde_json::Value::from(1.5));
     }
 }

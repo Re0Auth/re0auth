@@ -133,6 +133,71 @@ fn init_tracing() {
     }
 }
 
+/// Builds the public resource catalog from the same configuration the gateway uses.
+fn build_catalog(cfg: &config::Config) -> anyhow::Result<re0auth_http::catalog::Catalog> {
+    let mut connectors = Vec::with_capacity(cfg.connectors.len());
+    for connector in &cfg.connectors {
+        let mut resources = Vec::with_capacity(connector.resources.len());
+        for resource in &connector.resources {
+            let spec = resource.to_spec()?;
+            let schema = re0auth_http::catalog::schema_name(&connector.id, &spec.name);
+            let params = spec
+                .params
+                .iter()
+                .map(|param| re0auth_http::catalog::CatalogParam {
+                    name: param.name.clone(),
+                    location: match param.location {
+                        re0auth_api::connector::ParamLocation::Query => "query",
+                        re0auth_api::connector::ParamLocation::Body => "body",
+                    }
+                    .to_string(),
+                    upstream: param.upstream.clone(),
+                    kind: match param.kind {
+                        re0auth_api::connector::ParamKind::String => "string",
+                        re0auth_api::connector::ParamKind::Enum => "enum",
+                        re0auth_api::connector::ParamKind::Integer => "integer",
+                        re0auth_api::connector::ParamKind::Number => "number",
+                        re0auth_api::connector::ParamKind::Boolean => "boolean",
+                    }
+                    .to_string(),
+                    required: param.required,
+                    min_len: param.min_len,
+                    max_len: param.max_len,
+                    min: param.min.as_ref().and_then(serde_json::Number::as_f64),
+                    max: param.max.as_ref().and_then(serde_json::Number::as_f64),
+                    values: param.values.clone(),
+                })
+                .collect();
+            resources.push(re0auth_http::catalog::CatalogResource {
+                name: spec.name.clone(),
+                method: "get".to_string(),
+                upstream_method: spec.method.as_str().to_string(),
+                scope: spec.required_scope.clone(),
+                path: format!("/api/v1/upstreams/{}/{}", connector.id, spec.name),
+                raw_path: format!("/api/v1/raw/{}/{}", connector.id, spec.name),
+                data_schema: schema.map(str::to_string),
+                schema_url: schema
+                    .map(|_| format!("/api/v1/upstreams/{}/{}/schema", connector.id, spec.name)),
+                params,
+                paginated: spec
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.items_path.is_some()),
+            });
+        }
+        connectors.push(re0auth_http::catalog::CatalogConnector {
+            id: connector.id.clone(),
+            bindable: connector.oauth.is_some(),
+            openapi_public: connector.expose_in_openapi
+                && !connector.allow_private_net
+                && !connector.allow_link_local_metadata
+                && !connector.allow_loopback,
+            resources,
+        });
+    }
+    Ok(re0auth_http::catalog::Catalog::new(connectors))
+}
+
 /// Mirrors the configured connectors into the database.
 ///
 /// The config file stays authoritative: this only makes the table match it, so
@@ -744,6 +809,7 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     .with_cache(Arc::clone(&cache))
     .with_binding_probe(cfg.binding_probe.after_days);
     let mut state = re0auth_http::AppState::new(oauth, auth)
+        .with_catalog(Arc::new(build_catalog(&cfg)?))
         .with_rate_limiter(build_rate_limiter(&cfg, clock.clone()))
         // INV-RES-02: the router caps bodies at the configured value. Wiring this
         // is what makes `limits.inbound_body_bytes` real rather than decorative.

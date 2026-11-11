@@ -1,14 +1,17 @@
 //! Data-plane gateway routes.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
-use axum::extract::{ConnectInfo, Path, Query, State};
+use crate::catalog::{self, Catalog};
+use axum::Json;
+use axum::extract::{ConnectInfo, Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use re0auth_api::rate::Lane;
 use re0auth_app::gateway::{GatewayRequest, Pagination};
 use re0auth_app::oauth::OAuthError;
+use url::form_urlencoded;
 
 use crate::parsers::bearer_token;
 use crate::rate::{charge, charge_unauthenticated};
@@ -17,6 +20,76 @@ use crate::{
     ApiError, AppState, Shape, error_response, gateway_error, invalid_request, no_store,
     oauth_error,
 };
+
+async fn require_catalog_token(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let token = bearer_token(headers)
+        .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Problem))?;
+    let (_, _, client_id) = state
+        .oauth
+        .verify_gateway_token(&token)
+        .await
+        .map_err(|error| oauth_error(error, Shape::Problem))?;
+    charge(state, Lane::Authenticated, &client_id, Shape::Problem)?;
+    Ok(())
+}
+
+/// `GET /api/v1/upstreams`: the deployment's resource catalog.
+#[utoipa::path(
+    get,
+    path = "/api/v1/upstreams",
+    tag = "gateway",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, body = Catalog, description = "Connectors and their configured resources."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
+pub(crate) async fn list_upstreams(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Catalog>, ApiError> {
+    require_catalog_token(&state, &headers).await?;
+    Ok(Json(state.catalog.as_ref().clone()))
+}
+
+/// `GET /api/v1/upstreams/{connector}/{resource}/schema`: the declared data schema.
+#[utoipa::path(
+    get,
+    path = "/api/v1/upstreams/{connector}/{resource}/schema",
+    tag = "gateway",
+    security(("bearer" = [])),
+    params(
+        ("connector" = String, Path, description = "The configured connector id."),
+        ("resource" = String, Path, description = "A resource name declared in that connector's config.")
+    ),
+    responses(
+        (status = 200, description = "A JSON Schema document for the resource's data field."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
+pub(crate) async fn resource_schema(
+    State(state): State<AppState>,
+    Path((connector, resource)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_catalog_token(&state, &headers).await?;
+    if !state.catalog.contains(&connector, &resource) {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "unknown_resource",
+            "the resource is not configured",
+        ));
+    }
+    let schema = catalog::schema_json(&connector, &resource).ok_or_else(|| {
+        error_response(
+            StatusCode::NOT_FOUND,
+            "unknown_schema",
+            "no schema is declared for this resource",
+        )
+    })?;
+    Ok(Json(schema))
+}
 
 /// Data-plane fetch: `GET /api/v1/upstreams/{connector}/{resource}`.
 ///
@@ -47,15 +120,20 @@ pub(crate) async fn fetch_upstream(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path((connector, resource)): Path<(String, String)>,
-    Query(params): Query<HashMap<String, String>>,
+    RawQuery(raw): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let params = parse_query(raw.as_deref())?;
+    let pagination = pagination(&params)?;
     charge_unauthenticated(
         &state,
         &state.client_address(addr, &headers),
         Shape::Problem,
     )?;
-    fetch(state, connector, resource, headers, false, &params).await
+    fetch(
+        state, connector, resource, headers, false, &params, pagination,
+    )
+    .await
 }
 
 /// Raw view: `GET /api/v1/raw/{connector}/{resource}`.
@@ -81,20 +159,52 @@ pub(crate) async fn fetch_raw(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path((connector, resource)): Path<(String, String)>,
-    Query(params): Query<HashMap<String, String>>,
+    RawQuery(raw): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let params = parse_query(raw.as_deref())?;
+    let pagination = pagination(&params)?;
     charge_unauthenticated(
         &state,
         &state.client_address(addr, &headers),
         Shape::Problem,
     )?;
-    fetch(state, connector, resource, headers, true, &params).await
+    fetch(
+        state, connector, resource, headers, true, &params, pagination,
+    )
+    .await
 }
 
-/// `limit` 与 `cursor` 是网关自己的分页参数（ADR-0049），其余查询参数仍然原样
-/// 透传给上游——透传模式下上游参数是调用方和上游之间的事。
-fn pagination(params: &HashMap<String, String>) -> Result<Pagination, ApiError> {
+/// Parses and bounds-checks the complete query string without dropping keys.
+fn parse_query(raw: Option<&str>) -> Result<BTreeMap<String, String>, ApiError> {
+    let raw = raw.unwrap_or_default();
+    if raw.len() > 4096 {
+        return Err(invalid_request("query string is too long", Shape::Problem));
+    }
+    let mut params = BTreeMap::new();
+    for (pair_index, (key, value)) in form_urlencoded::parse(raw.as_bytes()).enumerate() {
+        if pair_index >= 32 {
+            return Err(invalid_request("too many query parameters", Shape::Problem));
+        }
+        if key.is_empty() {
+            return Err(invalid_request(
+                "empty query parameter name",
+                Shape::Problem,
+            ));
+        }
+        if params
+            .insert(key.into_owned(), value.into_owned())
+            .is_some()
+        {
+            return Err(invalid_request("duplicate query parameter", Shape::Problem));
+        }
+    }
+    Ok(params)
+}
+
+/// `limit` 与 `cursor` are parsed here but remain in the map so the gateway can
+/// reject them on resources that do not support pagination.
+fn pagination(params: &BTreeMap<String, String>) -> Result<Pagination, ApiError> {
     let limit = match params.get("limit") {
         None => None,
         Some(raw) => Some(
@@ -114,7 +224,8 @@ async fn fetch(
     resource: String,
     headers: HeaderMap,
     raw: bool,
-    params: &HashMap<String, String>,
+    params: &BTreeMap<String, String>,
+    pagination: Pagination,
 ) -> Result<Response, ApiError> {
     let Some(gateway) = state.gateway.clone() else {
         return Err(error_response(
@@ -158,7 +269,8 @@ async fn fetch(
             resource: &resource,
             raw,
             correlation_id: request_id::of(&headers),
-            pagination: pagination(params)?,
+            params,
+            pagination,
         })
         .await
         .map_err(gateway_error)?;
@@ -188,4 +300,28 @@ pub(crate) fn gateway_content_type(raw: &str) -> header::HeaderValue {
         .ok()
         .and_then(|value| header::HeaderValue::from_str(value.as_ref()).ok())
         .unwrap_or_else(|| header::HeaderValue::from_static("application/octet-stream"))
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+
+    #[test]
+    fn every_declared_parameter_survives_query_parsing() {
+        let params = parse_query(Some("song_id=s&rank=IN&limit=10&cursor=abc")).expect("query");
+        assert_eq!(params["song_id"], "s");
+        assert_eq!(params["rank"], "IN");
+        assert_eq!(params.len(), 4);
+        let page = pagination(&params).expect("pagination");
+        assert_eq!(page.limit, Some(10));
+        assert_eq!(page.cursor.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn duplicate_empty_and_oversized_query_parameters_are_rejected() {
+        assert!(parse_query(Some("a=1&a=2")).is_err());
+        assert!(parse_query(Some("=1")).is_err());
+        assert!(parse_query(Some(&"a=1&".repeat(20))).is_err());
+        assert!(pagination(&parse_query(Some("limit=abc")).expect("query")).is_err());
+    }
 }
