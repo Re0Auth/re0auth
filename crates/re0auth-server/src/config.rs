@@ -1434,13 +1434,19 @@ fn validate_connector_oauth(
              upstream account the credential belongs to without it"
         );
     }
-    if !matches!(
-        oauth.subject_field.as_str(),
-        "id" | "openid" | "login" | "name"
-    ) {
+    // A flat field name, not a path: INV-CONN-01 forbids digging through an
+    // undeclared document, and a dot or bracket is what would make it one.
+    // A closed list would reject standard OIDC (`sub`) and every new upstream,
+    // so the charset is the rule rather than a set of vendor names.
+    if !oauth
+        .subject_field
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        || oauth.subject_field.len() > 64
+    {
         anyhow::bail!(
-            "{label}.subject_field must be one of id, openid, login, name \
-             (got {:?})",
+            "{label}.subject_field must be a flat field name \
+             ([A-Za-z0-9_-], at most 64 chars): got {:?}",
             oauth.subject_field
         );
     }

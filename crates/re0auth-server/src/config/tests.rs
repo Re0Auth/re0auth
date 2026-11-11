@@ -557,15 +557,31 @@ fn a_connector_bind_requires_a_userinfo_endpoint() {
     assert!(error.to_string().contains("userinfo_endpoint"), "{error}");
 }
 
-/// An unknown subject field is a configuration error, not a runtime
-/// surprise: the field name decides which upstream account a binding is
-/// addressed by.
+/// A path is a configuration error, not a runtime surprise: the field name
+/// decides which upstream account a binding is addressed by, and a path would
+/// mean digging through an undeclared document (INV-CONN-01).
 #[test]
-fn a_connector_bind_rejects_an_undeclared_subject_field() {
+fn a_connector_bind_rejects_a_subject_path() {
     let mut oauth = connector_oauth();
-    oauth.subject_field = "sub".into();
-    let error = validate(&config_with_connector_oauth(oauth)).expect_err("undeclared field");
+    oauth.subject_field = "user.id".into();
+    let error = validate(&config_with_connector_oauth(oauth)).expect_err("path field");
     assert!(error.to_string().contains("subject_field"), "{error}");
+
+    let mut oauth = connector_oauth();
+    oauth.subject_field = "sub[0]".into();
+    assert!(validate(&config_with_connector_oauth(oauth)).is_err());
+}
+
+/// Standard OIDC and most upstreams use a flat name that is not in any
+/// vendor list; the rule is the shape, not a set of known names.
+#[test]
+fn a_connector_bind_accepts_any_flat_subject_field() {
+    for field in ["sub", "uid", "user_id", "player-id"] {
+        let mut oauth = connector_oauth();
+        oauth.subject_field = field.into();
+        validate(&config_with_connector_oauth(oauth))
+            .unwrap_or_else(|error| panic!("{field}: {error}"));
+    }
 }
 
 /// The token and userinfo endpoints are fetched by the server, so they have
