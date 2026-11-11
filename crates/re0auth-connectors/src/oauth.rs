@@ -470,10 +470,10 @@ mod tests {
     #[test]
     fn an_undeclared_field_is_never_read() {
         // INV-CONN-01: the document may carry anything, but only the declared
-        // fields are addressable. `sub` is a plausible identifier that this
+        // fields are addressable. `email` is plausible identity data that this
         // connector does not declare, so it must not be readable by name.
-        let document = parse(r#"{"sub": "other", "id": 7}"#);
-        assert_eq!(document.read("sub"), None);
+        let document = parse(r#"{"email": "other", "id": 7}"#);
+        assert_eq!(document.read("email"), None);
         assert_eq!(document.read("id").as_deref(), Some("7"));
     }
 
