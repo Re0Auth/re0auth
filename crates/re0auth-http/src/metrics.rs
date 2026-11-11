@@ -12,6 +12,8 @@ use prometheus::{
     TextEncoder,
 };
 
+use re0auth_app::circuit::CircuitState;
+
 use crate::AppState;
 
 const BUCKETS: [f64; 6] = [0.005, 0.025, 0.1, 0.5, 1.0, 5.0];
@@ -22,6 +24,8 @@ pub struct Metrics {
     http_requests: IntCounterVec,
     http_duration: HistogramVec,
     gateway_requests: IntCounterVec,
+    gateway_cache_hits: IntCounterVec,
+    gateway_cache_misses: IntCounterVec,
     circuit_open: GaugeVec,
     rate_limit_denied: IntCounterVec,
     oauth_token_issued: IntCounterVec,
@@ -64,6 +68,22 @@ impl Metrics {
             &["connector", "resource", "status"],
         )
         .expect("valid gateway counter");
+        let gateway_cache_hits = IntCounterVec::new(
+            Opts::new(
+                "gateway_cache_hits_total",
+                "Gateway reads served from the response cache.",
+            ),
+            &["connector", "resource"],
+        )
+        .expect("valid cache-hit counter");
+        let gateway_cache_misses = IntCounterVec::new(
+            Opts::new(
+                "gateway_cache_misses_total",
+                "Gateway reads that missed the cache and may reach upstream.",
+            ),
+            &["connector", "resource"],
+        )
+        .expect("valid cache-miss counter");
         let circuit_open = GaugeVec::new(
             Opts::new(
                 "circuit_breaker_open",
@@ -92,6 +112,8 @@ impl Metrics {
             Box::new(http_requests.clone()) as Box<dyn prometheus::core::Collector>,
             Box::new(http_duration.clone()),
             Box::new(gateway_requests.clone()),
+            Box::new(gateway_cache_hits.clone()),
+            Box::new(gateway_cache_misses.clone()),
             Box::new(circuit_open.clone()),
             Box::new(rate_limit_denied.clone()),
             Box::new(oauth_token_issued.clone()),
@@ -105,6 +127,8 @@ impl Metrics {
             http_requests,
             http_duration,
             gateway_requests,
+            gateway_cache_hits,
+            gateway_cache_misses,
             circuit_open,
             rate_limit_denied,
             oauth_token_issued,
@@ -184,6 +208,22 @@ impl Metrics {
     }
 }
 
+impl re0auth_api::ports::GatewayObserver for Metrics {
+    fn cache_hit(&self, connector: &str, resource: &str) {
+        let (connector, resource) = self.gateway_pair(connector, resource);
+        self.gateway_cache_hits
+            .with_label_values(&[&connector, &resource])
+            .inc();
+    }
+
+    fn cache_miss(&self, connector: &str, resource: &str) {
+        let (connector, resource) = self.gateway_pair(connector, resource);
+        self.gateway_cache_misses
+            .with_label_values(&[&connector, &resource])
+            .inc();
+    }
+}
+
 fn label<'a>(labels: &'a [(&str, &str)], key: &str) -> &'a str {
     labels
         .iter()
@@ -220,19 +260,24 @@ pub(crate) async fn layer(
     if route != "unknown"
         && let Some((connector, resource)) = gateway_path_labels(&path)
     {
-        let (connector, resource) = state.metrics.gateway_pair(connector, resource);
+        let (connector_label, resource_label) = state.metrics.gateway_pair(connector, resource);
         state.metrics.inc(
             "gateway_requests_total",
             &[
-                ("connector", &connector),
-                ("resource", &resource),
+                ("connector", &connector_label),
+                ("resource", &resource_label),
                 ("status", &status),
             ],
         );
-        if response.status() == StatusCode::SERVICE_UNAVAILABLE {
-            state
-                .metrics
-                .gauge("circuit_breaker_open", 1.0, &[("connector", &connector)]);
+        // A 503 can mean circuit open OR the in-flight byte budget being full.
+        // Report the breaker's actual state instead of inferring it from status.
+        if let Some(gateway) = &state.gateway {
+            let open = gateway.circuit_state(connector) == CircuitState::Open;
+            state.metrics.gauge(
+                "circuit_breaker_open",
+                if open { 1.0 } else { 0.0 },
+                &[("connector", &connector_label)],
+            );
         }
     }
     response
@@ -346,6 +391,37 @@ mod tests {
         assert_eq!(
             metrics.gateway_pair("overflow", "resource"),
             ("other".to_string(), "other".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod observer_tests {
+    use super::*;
+
+    #[test]
+    fn cache_observer_counts_and_circuit_gauge_can_reset() {
+        let metrics = Metrics::new();
+        re0auth_api::ports::GatewayObserver::cache_miss(&metrics, "phigros", "scores");
+        re0auth_api::ports::GatewayObserver::cache_hit(&metrics, "phigros", "scores");
+        metrics.gauge("circuit_breaker_open", 1.0, &[("connector", "phigros")]);
+        metrics.gauge("circuit_breaker_open", 0.0, &[("connector", "phigros")]);
+
+        let rendered = metrics.render();
+        assert!(
+            rendered.contains(
+                "gateway_cache_misses_total{connector=\"phigros\",resource=\"scores\"} 1"
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered
+                .contains("gateway_cache_hits_total{connector=\"phigros\",resource=\"scores\"} 1"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("circuit_breaker_open{connector=\"phigros\"} 0"),
+            "{rendered}"
         );
     }
 }

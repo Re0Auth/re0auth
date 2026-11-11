@@ -11,6 +11,7 @@ mod copy;
 mod error;
 mod limit_headers;
 mod metrics;
+pub use metrics::Metrics;
 pub mod openapi;
 mod pages;
 mod parsers;

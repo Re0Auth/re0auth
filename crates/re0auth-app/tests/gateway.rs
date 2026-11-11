@@ -10,14 +10,16 @@ use re0auth_api::connector::{
     ResourceMethod, ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
 };
 use re0auth_api::ports::{
-    Binding, BindingStatus, Storage, TelemetrySink, User, UserRole, UserStatus,
+    Binding, BindingStatus, GatewayObserver, Storage, TelemetrySink, User, UserRole, UserStatus,
 };
 use re0auth_api::secret::SecretSealer;
 use re0auth_api::{BindingId, Clock, ConnectorId, Re0Error, SecretString, UserId};
 use re0auth_app::circuit::{CircuitPolicy, CircuitTracker};
 use re0auth_app::credentials::{CredentialError, CredentialSource};
 use re0auth_app::gateway::{GatewayError, GatewayRequest, GatewayService, Pagination};
-use re0auth_contract::{ConnectorFixture, MemoryStore, MockConnector, MockSealer};
+use re0auth_contract::{
+    ClockedCache, ConnectorFixture, MemoryCache, MemoryStore, MockConnector, MockSealer,
+};
 use secrecy::ExposeSecret;
 
 struct FixedClock(std::sync::Mutex<i64>);
@@ -1410,4 +1412,51 @@ async fn pagination_on_a_non_list_resource_is_rejected_before_the_upstream() {
         .expect_err("pagination on a non-list resource");
     assert!(matches!(error, GatewayError::InvalidRequest(_)));
     assert!(app.connector.calls().is_empty());
+}
+
+#[derive(Default)]
+struct CountingObserver {
+    hits: AtomicUsize,
+    misses: AtomicUsize,
+}
+
+impl GatewayObserver for CountingObserver {
+    fn cache_hit(&self, _connector: &str, _resource: &str) {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn cache_miss(&self, _connector: &str, _resource: &str) {
+        self.misses.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn cache_hits_and_misses_are_reported_to_the_observer() {
+    let cache = Arc::new(ClockedCache::new(
+        MemoryCache::new(),
+        Arc::new(FixedClock::new(1_000)),
+    ));
+    let mut app = harness_with_cache(cache).await;
+    let observer = Arc::new(CountingObserver::default());
+    app.service = app.service.with_observer(observer.clone());
+    app.connector
+        .set_response("scores", Ok(payload(br#"{"score":1}"#)));
+
+    let granted = scopes();
+    app.service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect("first read misses and fills the cache");
+    app.service
+        .fetch(request(app.user.id, app.connector_id, &granted, "scores"))
+        .await
+        .expect("second read hits the cache");
+
+    assert_eq!(observer.misses.load(Ordering::SeqCst), 1);
+    assert_eq!(observer.hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        app.connector.calls().len(),
+        1,
+        "the hit never reached upstream"
+    );
 }

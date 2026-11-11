@@ -12,6 +12,7 @@ pub mod cache;
 pub mod connector;
 pub mod idp;
 pub mod oauth;
+pub mod observer;
 pub mod ports;
 pub mod rate;
 pub mod redirect_uri;

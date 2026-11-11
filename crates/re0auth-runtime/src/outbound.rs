@@ -19,22 +19,38 @@ const ALWAYS_DENIED: &[(&str, &str)] = &[
     ("169.254.0.0/16", "link-local"),
     ("172.16.0.0/12", "private"),
     ("192.0.0.0/24", "IETF protocol assignments"),
+    ("192.0.2.0/24", "documentation"),
+    ("192.31.196.0/24", "AS112"),
+    ("192.52.193.0/24", "AMT"),
+    ("192.88.99.0/24", "6to4 relay"),
     ("192.168.0.0/16", "private"),
+    ("192.175.48.0/24", "AS112"),
     ("198.18.0.0/15", "benchmarking"),
+    ("198.51.100.0/24", "documentation"),
+    ("203.0.113.0/24", "documentation"),
     ("224.0.0.0/4", "multicast"),
     ("240.0.0.0/4", "reserved"),
     ("::/128", "unspecified"),
     ("::1/128", "loopback"),
     ("64:ff9b::/96", "NAT64 well-known prefix"),
     ("64:ff9b:1::/48", "NAT64 local-use prefix"),
+    ("100::/64", "discard-only"),
+    ("100:0:0:1::/64", "dummy"),
+    ("2001::/23", "IETF protocol assignments"),
+    ("2001:db8::/32", "documentation"),
     ("2002::/16", "6to4"),
+    ("2620:4f:8000::/48", "AS112"),
+    ("3fff::/20", "documentation"),
+    ("5f00::/16", "SRv6 SID"),
     ("fc00::/7", "unique local"),
     ("fe80::/10", "link-local"),
+    ("fec0::/10", "site-local"),
     ("ff00::/8", "multicast"),
 ];
 
 /// Metadata endpoints stay blocked even with `allow_private_net` (ADR-0033).
 const METADATA: &[&str] = &[
+    "168.63.129.16/32",
     "169.254.169.254/32",
     "169.254.170.2/32",
     "100.100.100.200/32",
@@ -226,7 +242,7 @@ pub fn is_metadata_v6(address: Ipv6Addr) -> bool {
 mod tests {
     use super::*;
 
-    const PUBLIC: &str = "203.0.113.10";
+    const PUBLIC: &str = "8.8.8.8";
 
     fn policy() -> OutboundPolicy {
         OutboundPolicy::PublicOnly
@@ -276,8 +292,14 @@ mod tests {
         let address = check_literal(PUBLIC, policy()).expect("public");
         assert_eq!(address, ip(PUBLIC));
         assert_eq!(classify(address), AddressClass::Public);
-        assert!(check_literal("198.51.100.7", policy()).is_ok());
-        assert!(check_literal("2001:db8::1", policy()).is_ok());
+        assert!(check_literal("93.184.216.34", policy()).is_ok());
+        assert!(check_literal("2606:4700:4700::1111", policy()).is_ok());
+        for text in ["198.51.100.7", "203.0.113.10", "2001:db8::1"] {
+            assert!(
+                check_literal(text, policy()).is_err(),
+                "{text} is documentation space, not public"
+            );
+        }
     }
 
     #[test]
@@ -290,11 +312,25 @@ mod tests {
             "192.168.1.1",
             "169.254.1.1",
             "0.0.0.0",
+            "192.0.2.1",
+            "192.31.196.1",
+            "192.52.193.1",
+            "192.88.99.1",
+            "192.175.48.1",
+            "198.51.100.7",
+            "203.0.113.10",
             "224.0.0.1",
             "255.255.255.255",
             "::1",
+            "100::1",
+            "100:0:0:1::1",
+            "2001:db8::1",
+            "2620:4f:8000::1",
+            "3fff::1",
+            "5f00::1",
             "fe80::1",
             "fc00::1",
+            "fec0::1",
             "ff02::1",
         ] {
             assert!(
@@ -307,6 +343,7 @@ mod tests {
     #[test]
     fn metadata_is_blocked_even_with_private_net() {
         for text in [
+            "168.63.129.16",
             "169.254.169.254",
             "169.254.170.2",
             "100.100.100.200",
@@ -403,7 +440,7 @@ mod tests {
 
     #[test]
     fn multiple_public_addresses_pick_the_first() {
-        let addresses = vec![ip(PUBLIC), ip("198.51.100.7")];
+        let addresses = vec![ip(PUBLIC), ip("93.184.216.34")];
         assert_eq!(
             check_addresses(&addresses, policy()).expect("public"),
             ip(PUBLIC)
@@ -426,6 +463,7 @@ mod tests {
     #[test]
     fn metadata_helpers_agree_with_classification() {
         assert!(is_metadata_v4(Ipv4Addr::new(169, 254, 169, 254)));
+        assert!(is_metadata_v4(Ipv4Addr::new(168, 63, 129, 16)));
         assert!(!is_metadata_v4(Ipv4Addr::new(169, 254, 169, 253)));
         assert!(is_metadata_v6("fd00:ec2::254".parse().expect("ip")));
         assert!(!is_metadata_v6(Ipv6Addr::LOCALHOST));
@@ -456,7 +494,7 @@ mod s13_tests {
             );
         }
         assert!(
-            check_literal("2001:db8::1", OutboundPolicy::PublicOnly).is_ok(),
+            check_literal("2001:4860:4860::8888", OutboundPolicy::PublicOnly).is_ok(),
             "a plain global address stays reachable"
         );
     }

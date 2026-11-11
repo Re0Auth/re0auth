@@ -1399,6 +1399,12 @@ pub trait TelemetrySink: Send + Sync {
     fn record(&self, event: AccessTelemetry) -> bool;
 }
 
+/// Optional, non-blocking gateway counters for hit/miss attribution.
+///
+/// The trait lives in [`crate::observer`] so this file stays within its line
+/// budget; it is re-exported here because every caller already imports ports.
+pub use crate::observer::{GatewayObserver, NoGatewayObserver};
+
 /// The sink used when telemetry is not wired.
 ///
 /// Accepts and discards, returning `true`: reporting `false` would claim a drop

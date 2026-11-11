@@ -321,15 +321,29 @@ fn scope_index(
     index
 }
 
-async fn build_data_plane(
-    cfg: &config::Config,
+struct DataPlaneWiring {
     store: Arc<SqliteStore>,
     clock: Arc<SystemClock>,
     random: Arc<OsRandom>,
     cache: Arc<dyn re0auth_api::cache::Cache>,
     endpoints: Vec<re0auth_api::connector::ConnectorEndpoint>,
     telemetry: Arc<dyn re0auth_api::ports::TelemetrySink>,
+    observer: Arc<dyn re0auth_api::ports::GatewayObserver>,
+}
+
+async fn build_data_plane(
+    cfg: &config::Config,
+    wiring: DataPlaneWiring,
 ) -> anyhow::Result<(GatewayService, Option<BindingService>)> {
+    let DataPlaneWiring {
+        store,
+        clock,
+        random,
+        cache,
+        endpoints,
+        telemetry,
+        observer,
+    } = wiring;
     let upstream_timeout = std::time::Duration::from_secs(cfg.timeouts.upstream_secs);
     // One client per connector; the global [tls] flags were already checked as
     // a ceiling in `config::validate`, so they cannot widen a connector here.
@@ -393,6 +407,7 @@ async fn build_data_plane(
     // INV-CACHE-01..03. The same instance is handed to `AuthService`, which
     // sweeps it on revoke; sharing is what makes INV-CACHE-02 hold.
     .with_cache(cache, std::time::Duration::from_secs(cfg.cache.ttl_secs))
+    .with_observer(observer)
     .with_telemetry(telemetry);
     let gateway = match refresh_auth {
         Some(auth) => {
@@ -847,12 +862,15 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     if !cfg.connectors.is_empty() {
         let (gateway, binding) = build_data_plane(
             &cfg,
-            store.clone(),
-            clock.clone(),
-            random.clone(),
-            cache,
-            endpoints,
-            telemetry_sink,
+            DataPlaneWiring {
+                store: store.clone(),
+                clock: clock.clone(),
+                random: random.clone(),
+                cache,
+                endpoints,
+                telemetry: telemetry_sink,
+                observer: state.metrics.clone(),
+            },
         )
         .await?;
         // INV-NOLOG-01: connector names and counts only, never credentialed URLs.

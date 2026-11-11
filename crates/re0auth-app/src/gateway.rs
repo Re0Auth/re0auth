@@ -17,14 +17,16 @@ use re0auth_api::connector::{
     BindingAction, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, FaultClass, ParamKind,
     ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload, ValidatedParamValue,
 };
-use re0auth_api::ports::{Binding, BindingStatus, NoTelemetry, Storage, TelemetrySink, UserStatus};
+use re0auth_api::ports::{
+    Binding, BindingStatus, GatewayObserver, NoTelemetry, Storage, TelemetrySink, UserStatus,
+};
 use re0auth_api::secret::SecretSealer;
 use re0auth_api::view::{ViewOutput, ViewSpec};
 use re0auth_api::{AuditId, ClientId, Clock, ConnectorId, Re0Error, UserId};
 use re0auth_domain::gateway::{self, InvalidResource, ResourceField};
 use uuid::Uuid;
 
-use crate::circuit::{CircuitKey, CircuitTracker, Outcome, Probe};
+use crate::circuit::{CircuitKey, CircuitState, CircuitTracker, Outcome, Probe};
 use crate::credentials::{CredentialError, CredentialSource};
 use crate::upstream_models::UpstreamData;
 
@@ -323,6 +325,8 @@ pub struct GatewayService {
     /// Optional credential provider. When absent (tests, legacy wiring), the
     /// gateway reads the sealed access token directly and cannot refresh.
     credentials: Option<Arc<dyn CredentialSource>>,
+    /// Exact hit/miss counters. Optional so embedded uses stay dependency-free.
+    observer: Arc<dyn GatewayObserver>,
 }
 
 /// Applies the resource's declarative allow-list to the complete raw query map.
@@ -467,7 +471,15 @@ impl GatewayService {
             cache_ttl: std::time::Duration::from_secs(300),
             telemetry: Arc::new(NoTelemetry),
             credentials: None,
+            observer: Arc::new(re0auth_api::ports::NoGatewayObserver),
         }
+    }
+
+    /// Enables exact cache hit/miss counters.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Arc<dyn GatewayObserver>) -> Self {
+        self.observer = observer;
+        self
     }
 
     /// Enables on-demand upstream refresh.
@@ -624,15 +636,19 @@ impl GatewayService {
         );
         // Short-circuit order matters: `request.raw` is checked first, so a raw
         // request never even touches the cache.
-        if !request.raw
-            && let Some(cached) = self.cache.get(&cache_key).await
-        {
-            let snapshot = CachedView::decode(cached.body())?;
-            // A cache hit is still a read of this user's data, so it belongs in
-            // the access ledger; `latency_ms = 0` marks that no upstream call
-            // was made.
-            self.record_access(&request, &endpoint, AccessSource::Cache, 0);
-            return self.normalized(&request, &endpoint, list_view, snapshot);
+        if !request.raw {
+            if let Some(cached) = self.cache.get(&cache_key).await {
+                let snapshot = CachedView::decode(cached.body())?;
+                self.observer.cache_hit(&endpoint.name, request.resource);
+                // A cache hit is still a read of this user's data, so it belongs
+                // in the access ledger; `latency_ms = 0` marks that no upstream
+                // call was made.
+                self.record_access(&request, &endpoint, AccessSource::Cache, 0);
+                return self.normalized(&request, &endpoint, list_view, snapshot);
+            }
+            // Raw requests bypass the cache entirely, so they are neither hits
+            // nor misses; counting them would inflate the miss denominator.
+            self.observer.cache_miss(&endpoint.name, request.resource);
         }
 
         let now = self.clock.now();
@@ -997,6 +1013,14 @@ impl GatewayService {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Exposed so metrics can report the real breaker state rather than
+    /// inferring it from a 503 response.
+    #[must_use]
+    pub fn circuit_state(&self, connector: &str) -> CircuitState {
+        self.circuit
+            .state(&CircuitKey::Connector(connector_id_for_name(connector)))
     }
 
     /// Exposed so the caller can verify breaker state without reading internals.

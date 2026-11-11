@@ -37,6 +37,14 @@ impl Default for CircuitPolicy {
     }
 }
 
+/// Observable breaker state for a key. `Open` is what the metrics gauge reports.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
 /// What the gateway should do with this key right now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Admission {
@@ -238,6 +246,16 @@ impl CircuitTracker {
         let mut states = self.lock();
         if let Some(State::HalfOpen { .. }) = states.get(key) {
             states.insert(*key, State::Open { until: now });
+        }
+    }
+
+    /// Read-only state, without the admission side effect of [`Self::admit`].
+    #[must_use]
+    pub fn state(&self, key: &CircuitKey) -> CircuitState {
+        match self.lock().get(key) {
+            None | Some(State::Closed { .. }) => CircuitState::Closed,
+            Some(State::Open { .. }) => CircuitState::Open,
+            Some(State::HalfOpen { .. }) => CircuitState::HalfOpen,
         }
     }
 
@@ -527,5 +545,34 @@ mod tests {
             tracker.admit(&key, 1_000),
             Admission::Reject { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    fn tracker() -> CircuitTracker {
+        CircuitTracker::new(CircuitPolicy {
+            failure_threshold: 1,
+            open_for_secs: 30,
+            probe_retry_secs: 1,
+        })
+    }
+
+    #[test]
+    fn state_reports_closed_open_and_half_open() {
+        let tracker = tracker();
+        let key = CircuitKey::Connector(ConnectorId::new());
+        assert_eq!(tracker.state(&key), CircuitState::Closed);
+
+        tracker.settle(&key, Outcome::Internal, 1_000);
+        assert_eq!(tracker.state(&key), CircuitState::Open);
+
+        assert_eq!(tracker.admit(&key, 1_030), Admission::Pass);
+        assert_eq!(tracker.state(&key), CircuitState::HalfOpen);
+
+        tracker.settle(&key, Outcome::Success, 1_031);
+        assert_eq!(tracker.state(&key), CircuitState::Closed);
     }
 }
