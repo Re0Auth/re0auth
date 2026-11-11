@@ -904,12 +904,9 @@ mod tests {
     #[tokio::test]
     async fn accepts_a_public_literal_without_dns() {
         let client = GuardedClient::new().expect("client");
-        let (url, pinned) = client.vet("https://203.0.113.10/x").await.expect("public");
-        assert_eq!(url.host_str(), Some("203.0.113.10"));
-        assert_eq!(
-            pinned[0].ip(),
-            "203.0.113.10".parse::<IpAddr>().expect("ip")
-        );
+        let (url, pinned) = client.vet("https://8.8.8.8/x").await.expect("public");
+        assert_eq!(url.host_str(), Some("8.8.8.8"));
+        assert_eq!(pinned[0].ip(), "8.8.8.8".parse::<IpAddr>().expect("ip"));
         assert_eq!(pinned[0].port(), 443);
     }
 
