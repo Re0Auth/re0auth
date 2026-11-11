@@ -68,6 +68,9 @@ pub struct ConnectorConfig {
     /// Explicit local connector exception. Never inherited from `tls.allow_loopback`.
     #[serde(default)]
     pub allow_loopback: bool,
+    /// Whether this connector may appear in the public `/openapi.json`.
+    #[serde(default = "default_true")]
+    pub expose_in_openapi: bool,
     #[serde(default)]
     pub resources: Vec<ResourceConfig>,
     /// Endpoints used to bind a user to this upstream (INV-BIND-03).
@@ -160,6 +163,28 @@ pub struct ResourceConfig {
     /// envelope carries the upstream JSON unchanged.
     #[serde(default)]
     pub view: Option<ViewConfig>,
+    /// Declared downstream query parameters, validated and mapped upstream.
+    #[serde(default)]
+    pub params: Vec<ParamConfig>,
+}
+
+/// One `[[connectors.resources.params]]` entry.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParamConfig {
+    pub name: String,
+    #[serde(rename = "in", default)]
+    pub location: Option<String>,
+    pub upstream: Option<String>,
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+    pub min_len: Option<usize>,
+    pub max_len: Option<usize>,
+    pub min: Option<serde_json::Number>,
+    pub max: Option<serde_json::Number>,
+    #[serde(default)]
+    pub values: Vec<String>,
 }
 
 /// `[connectors.resources.view]`: how the normalized endpoint shapes one resource.
@@ -254,6 +279,8 @@ impl ResourceConfig {
             .unwrap_or_default();
         // A read is safe to retry; a write is not until its author says so.
         let idempotent = self.idempotent.unwrap_or(method == ResourceMethod::Get);
+        let body_names: Vec<String> = body.iter().map(|field| field.name.clone()).collect();
+        let params = self.params_to_spec(method, &body_names)?;
 
         let spec = ResourceSpec::new(self.name.clone(), self.path.clone())
             .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?;
@@ -264,17 +291,271 @@ impl ResourceConfig {
             Some(view) => spec.with_view(view.to_spec(&self.name)?),
             None => spec,
         };
-        match &self.scope {
+        let spec = match &self.scope {
             Some(scope) => spec
                 .with_scope(scope.clone())
-                .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name)),
-            None => Ok(spec),
-        }
+                .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?,
+            None => spec,
+        };
+        Ok(spec.with_params(params))
     }
+
+    fn params_to_spec(
+        &self,
+        method: re0auth_api::connector::ResourceMethod,
+        body_names: &[String],
+    ) -> anyhow::Result<Vec<re0auth_api::connector::ParamSpec>> {
+        use re0auth_api::connector::{ParamKind, ParamLocation, ParamSpec};
+        use std::collections::BTreeSet;
+
+        if self.params.len() > 16 {
+            anyhow::bail!("resource {}: more than 16 parameters", self.name);
+        }
+        let mut names = BTreeSet::new();
+        let mut upstreams: BTreeSet<String> = body_names.iter().cloned().collect();
+        let mut specs = Vec::with_capacity(self.params.len());
+        for param in &self.params {
+            if !valid_param_name(&param.name) {
+                anyhow::bail!(
+                    "resource {}: invalid parameter name {:?}",
+                    self.name,
+                    param.name
+                );
+            }
+            if matches!(
+                param.name.as_str(),
+                "limit" | "cursor" | "subject" | "credential"
+            ) {
+                anyhow::bail!(
+                    "resource {}: reserved parameter name {:?}",
+                    self.name,
+                    param.name
+                );
+            }
+            if !names.insert(param.name.clone()) {
+                anyhow::bail!(
+                    "resource {}: duplicate parameter name {:?}",
+                    self.name,
+                    param.name
+                );
+            }
+            let location = match param.location.as_deref().unwrap_or("query") {
+                "query" => ParamLocation::Query,
+                "body" => ParamLocation::Body,
+                other => anyhow::bail!(
+                    "resource {} parameter {}: unknown location {:?}",
+                    self.name,
+                    param.name,
+                    other
+                ),
+            };
+            if location == ParamLocation::Body
+                && method != re0auth_api::connector::ResourceMethod::Post
+            {
+                anyhow::bail!(
+                    "resource {} parameter {}: body parameters require method post",
+                    self.name,
+                    param.name
+                );
+            }
+            let upstream = param.upstream.clone().unwrap_or_else(|| param.name.clone());
+            if !valid_upstream_name(&upstream, location) {
+                anyhow::bail!(
+                    "resource {} parameter {}: invalid upstream name {:?}",
+                    self.name,
+                    param.name,
+                    upstream
+                );
+            }
+            if !upstreams.insert(upstream.clone()) {
+                anyhow::bail!(
+                    "resource {} parameter {}: upstream field {:?} collides with another field",
+                    self.name,
+                    param.name,
+                    upstream
+                );
+            }
+            let kind = match param.kind.as_deref().unwrap_or("string") {
+                "string" => ParamKind::String,
+                "enum" => ParamKind::Enum,
+                "integer" => ParamKind::Integer,
+                "number" => ParamKind::Number,
+                "boolean" => ParamKind::Boolean,
+                other => anyhow::bail!(
+                    "resource {} parameter {}: unknown kind {:?}",
+                    self.name,
+                    param.name,
+                    other
+                ),
+            };
+            if !param.values.is_empty() && kind != ParamKind::Enum {
+                anyhow::bail!(
+                    "resource {} parameter {}: values are only allowed for enum",
+                    self.name,
+                    param.name
+                );
+            }
+            if (param.min.is_some() || param.max.is_some())
+                && !matches!(kind, ParamKind::Integer | ParamKind::Number)
+            {
+                anyhow::bail!(
+                    "resource {} parameter {}: min/max are only allowed for integer/number",
+                    self.name,
+                    param.name
+                );
+            }
+            if (param.min_len.is_some() || param.max_len.is_some()) && kind != ParamKind::String {
+                anyhow::bail!(
+                    "resource {} parameter {}: min_len/max_len are only allowed for string",
+                    self.name,
+                    param.name
+                );
+            }
+            let mut spec = ParamSpec {
+                name: param.name.clone(),
+                upstream,
+                location,
+                kind,
+                required: param.required,
+                min_len: None,
+                max_len: None,
+                min: None,
+                max: None,
+                values: Vec::new(),
+            };
+            match kind {
+                ParamKind::String => {
+                    let min_len = param.min_len.unwrap_or(1);
+                    let max_len = param.max_len.unwrap_or(64);
+                    if !(1..=256).contains(&min_len)
+                        || !(1..=256).contains(&max_len)
+                        || min_len > max_len
+                    {
+                        anyhow::bail!(
+                            "resource {} parameter {}: invalid string length bounds {}..{}",
+                            self.name,
+                            param.name,
+                            min_len,
+                            max_len
+                        );
+                    }
+                    spec.min_len = Some(min_len);
+                    spec.max_len = Some(max_len);
+                }
+                ParamKind::Enum => {
+                    if param.values.is_empty() || param.values.len() > 32 {
+                        anyhow::bail!(
+                            "resource {} parameter {}: enum values must be 1..=32",
+                            self.name,
+                            param.name
+                        );
+                    }
+                    let mut seen = BTreeSet::new();
+                    for value in &param.values {
+                        let len = value.chars().count();
+                        if !(1..=64).contains(&len) || !seen.insert(value.clone()) {
+                            anyhow::bail!(
+                                "resource {} parameter {}: invalid or duplicate enum value {:?}",
+                                self.name,
+                                param.name,
+                                value
+                            );
+                        }
+                    }
+                    spec.values = param.values.clone();
+                }
+                ParamKind::Integer => {
+                    if let Some(min) = &param.min
+                        && min.as_i64().is_none()
+                    {
+                        anyhow::bail!(
+                            "resource {} parameter {}: integer min must be an i64",
+                            self.name,
+                            param.name
+                        );
+                    }
+                    if let Some(max) = &param.max
+                        && max.as_i64().is_none()
+                    {
+                        anyhow::bail!(
+                            "resource {} parameter {}: integer max must be an i64",
+                            self.name,
+                            param.name
+                        );
+                    }
+                    if let (Some(min), Some(max)) = (
+                        param.min.as_ref().and_then(|n| n.as_i64()),
+                        param.max.as_ref().and_then(|n| n.as_i64()),
+                    ) && min > max
+                    {
+                        anyhow::bail!(
+                            "resource {} parameter {}: integer min > max",
+                            self.name,
+                            param.name
+                        );
+                    }
+                    spec.min = param.min.clone();
+                    spec.max = param.max.clone();
+                }
+                ParamKind::Number => {
+                    for bound in [&param.min, &param.max].into_iter().flatten() {
+                        if bound.as_f64().is_none_or(|value| !value.is_finite()) {
+                            anyhow::bail!(
+                                "resource {} parameter {}: number bounds must be finite",
+                                self.name,
+                                param.name
+                            );
+                        }
+                    }
+                    if let (Some(min), Some(max)) = (
+                        param.min.as_ref().and_then(|n| n.as_f64()),
+                        param.max.as_ref().and_then(|n| n.as_f64()),
+                    ) && min > max
+                    {
+                        anyhow::bail!(
+                            "resource {} parameter {}: number min > max",
+                            self.name,
+                            param.name
+                        );
+                    }
+                    spec.min = param.min.clone();
+                    spec.max = param.max.clone();
+                }
+                ParamKind::Boolean => {}
+            }
+            specs.push(spec);
+        }
+        Ok(specs)
+    }
+}
+
+fn valid_param_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
+        })
+}
+
+fn valid_upstream_name(value: &str, location: re0auth_api::connector::ParamLocation) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| match location {
+            re0auth_api::connector::ParamLocation::Body => {
+                byte.is_ascii_alphanumeric() || byte == b'_'
+            }
+            re0auth_api::connector::ParamLocation::Query => {
+                byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.'
+            }
+        })
 }
 
 fn body_value(raw: &str) -> re0auth_api::connector::BodyValue {
     re0auth_api::connector::BodyValue::parse(raw)
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]

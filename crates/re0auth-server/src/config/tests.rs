@@ -540,6 +540,7 @@ fn config_with_connector_oauth(oauth: ConnectorOAuthConfig) -> Config {
         allow_private_net: false,
         allow_link_local_metadata: false,
         allow_loopback: false,
+        expose_in_openapi: true,
         resources: Vec::new(),
         oauth: Some(oauth),
     });
@@ -791,6 +792,7 @@ fn resource_with_view(view: Option<ViewConfig>) -> ResourceConfig {
         idempotent: None,
         body: None,
         view,
+        params: Vec::new(),
     }
 }
 
@@ -843,6 +845,7 @@ fn phihub_resource(name: &str, path: &str, fields: &[(&str, &str)]) -> ResourceC
             "delegation_token".to_string(),
             "{credential}".to_string(),
         )])),
+        params: Vec::new(),
         view: Some(ViewConfig {
             data_path: Some("$.data".to_string()),
             items_path: None,
@@ -1060,4 +1063,221 @@ fn s26_inflight_budget_must_cover_one_response() {
     std::fs::write(&path, patched).expect("write");
     let error = load_config(&path).expect_err("budget below one response");
     assert!(error.to_string().contains("inflight"), "{error}");
+}
+
+fn resource_with_params(params: Vec<ParamConfig>, method: &str) -> ResourceConfig {
+    let body = std::collections::BTreeMap::from([(
+        "delegation_token".to_string(),
+        "{credential}".to_string(),
+    )]);
+    ResourceConfig {
+        name: "scores".to_string(),
+        path: "/scores".to_string(),
+        scope: None,
+        method: Some(method.to_string()),
+        idempotent: None,
+        body: Some(body),
+        view: None,
+        params,
+    }
+}
+
+fn string_param(name: &str, location: &str) -> ParamConfig {
+    ParamConfig {
+        name: name.to_string(),
+        location: Some(location.to_string()),
+        upstream: Some(name.to_string()),
+        kind: Some("string".to_string()),
+        required: true,
+        min_len: None,
+        max_len: Some(64),
+        min: None,
+        max: None,
+        values: Vec::new(),
+    }
+}
+
+#[test]
+fn connector_parameters_are_validated_and_typed() {
+    let params = vec![
+        string_param("song_id", "body"),
+        ParamConfig {
+            name: "rank".to_string(),
+            location: Some("body".to_string()),
+            upstream: Some("rank".to_string()),
+            kind: Some("enum".to_string()),
+            required: true,
+            min_len: None,
+            max_len: None,
+            min: None,
+            max: None,
+            values: vec!["EZ".into(), "HD".into(), "IN".into(), "AT".into()],
+        },
+        ParamConfig {
+            name: "b30_limit".to_string(),
+            location: Some("body".to_string()),
+            upstream: Some("limit".to_string()),
+            kind: Some("integer".to_string()),
+            required: false,
+            min_len: None,
+            max_len: None,
+            min: Some(serde_json::Number::from(1)),
+            max: Some(serde_json::Number::from(100)),
+            values: Vec::new(),
+        },
+        ParamConfig {
+            name: "is_full_combo".to_string(),
+            location: Some("body".to_string()),
+            upstream: Some("is_full_combo".to_string()),
+            kind: Some("boolean".to_string()),
+            required: false,
+            min_len: None,
+            max_len: None,
+            min: None,
+            max: None,
+            values: Vec::new(),
+        },
+    ];
+    let spec = resource_with_params(params, "post")
+        .to_spec()
+        .expect("valid params");
+    assert_eq!(spec.params.len(), 4);
+    assert_eq!(spec.params[0].name, "song_id");
+    assert_eq!(spec.params[1].values.len(), 4);
+    assert_eq!(
+        spec.params[2]
+            .min
+            .as_ref()
+            .and_then(serde_json::Number::as_i64),
+        Some(1)
+    );
+    assert_eq!(
+        spec.params[3].kind,
+        re0auth_api::connector::ParamKind::Boolean
+    );
+}
+
+#[test]
+fn connector_parameters_reject_bad_declarations() {
+    let mut reserved = string_param("limit", "body");
+    reserved.name = "limit".to_string();
+    assert!(
+        resource_with_params(vec![reserved], "post")
+            .to_spec()
+            .is_err()
+    );
+
+    assert!(
+        resource_with_params(vec![string_param("song_id", "body")], "get")
+            .to_spec()
+            .is_err()
+    );
+
+    let mut collision = string_param("token", "query");
+    collision.upstream = Some("delegation_token".to_string());
+    assert!(
+        resource_with_params(vec![collision], "post")
+            .to_spec()
+            .is_err()
+    );
+
+    let mut too_long = string_param("song_id", "body");
+    too_long.max_len = Some(300);
+    assert!(
+        resource_with_params(vec![too_long], "post")
+            .to_spec()
+            .is_err()
+    );
+
+    let mut empty_enum = string_param("rank", "body");
+    empty_enum.kind = Some("enum".to_string());
+    assert!(
+        resource_with_params(vec![empty_enum], "post")
+            .to_spec()
+            .is_err()
+    );
+
+    let mut float_bound = string_param("count", "body");
+    float_bound.kind = Some("integer".to_string());
+    float_bound.min = Some(serde_json::Number::from_f64(1.5).expect("finite"));
+    assert!(
+        resource_with_params(vec![float_bound], "post")
+            .to_spec()
+            .is_err()
+    );
+
+    let mut boolean_len = string_param("flag", "body");
+    boolean_len.kind = Some("boolean".to_string());
+    boolean_len.max_len = Some(1);
+    assert!(
+        resource_with_params(vec![boolean_len], "post")
+            .to_spec()
+            .is_err()
+    );
+
+    assert!(
+        resource_with_params(
+            vec![
+                string_param("song_id", "body"),
+                string_param("song_id", "body"),
+            ],
+            "post",
+        )
+        .to_spec()
+        .is_err()
+    );
+
+    let mut inverted = string_param("count", "body");
+    inverted.kind = Some("integer".to_string());
+    inverted.min = Some(serde_json::Number::from(10));
+    inverted.max = Some(serde_json::Number::from(1));
+    assert!(
+        resource_with_params(vec![inverted], "post")
+            .to_spec()
+            .is_err()
+    );
+
+    let mut duplicate_enum = string_param("rank", "body");
+    duplicate_enum.kind = Some("enum".to_string());
+    duplicate_enum.values = vec!["HD".into(), "HD".into()];
+    assert!(
+        resource_with_params(vec![duplicate_enum], "post")
+            .to_spec()
+            .is_err()
+    );
+}
+
+#[test]
+fn resource_params_parse_from_toml() {
+    let toml = r#"
+[[params]]
+name = "song_id"
+in = "query"
+upstream = "songId"
+kind = "string"
+required = true
+min_len = 1
+max_len = 64
+
+[[params]]
+name = "rank"
+in = "body"
+kind = "enum"
+values = ["EZ", "HD"]
+"#;
+    #[derive(serde::Deserialize)]
+    struct Root {
+        params: Vec<ParamConfig>,
+    }
+    let root: Root = Figment::new()
+        .merge(figment::providers::Toml::string(toml))
+        .extract()
+        .expect("param table parses");
+    assert_eq!(root.params.len(), 2);
+    assert_eq!(root.params[0].location.as_deref(), Some("query"));
+    assert_eq!(root.params[0].upstream.as_deref(), Some("songId"));
+    assert_eq!(
+        root.params[1].values,
+        vec!["EZ".to_string(), "HD".to_string()]
+    );
 }

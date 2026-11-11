@@ -193,6 +193,9 @@ inbound_body_bytes = 1048576
 # allow_private_net = false
 # allow_link_local_metadata = false
 # allow_loopback = false
+# 是否把具体资源路径写进 /openapi.json（默认 true）。
+# 私有网、链路本地与回环 connector 始终不公开。
+# expose_in_openapi = true
 #
 # [[connectors.resources]]
 # name = "scores"
@@ -230,6 +233,19 @@ inbound_body_bytes = 1048576
 # items_path = "$.data.items"
 # [connectors.resources.view.fields]
 # id = "$.id"
+#
+# 下游查询参数白名单：未声明的参数、重复参数、空参数名一律 400；
+# 声明后按 kind 校验并原样传给上游（query）或写进 POST body。
+# [[connectors.resources.params]]
+# name = "song_id"
+# in = "query"          # query（默认）或 body；body 仅限 method = "post"
+# upstream = "songId"   # 可选，上游字段名；默认与 name 相同
+# kind = "string"       # string / enum / integer / number / boolean
+# required = true
+# min_len = 1
+# max_len = 64
+# values = ["EZ", "HD", "IN", "AT"]  # 仅 enum
+# integer/number 用 min/max；最多 16 个参数，单值长度上限 256
 #
 # 可选：让用户在本实例上绑定这个上游（INV-BIND-03）。
 # 不写这一段，绑定路由对这个 connector 返回 404——它仍可服务
