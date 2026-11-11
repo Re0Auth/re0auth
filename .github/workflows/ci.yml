@@ -133,9 +133,13 @@ jobs:
         run: cargo build --release --locked -p re0auth-server
 
       - name: browser
+        # ubuntu-24.04 already carries Chromium's shared libraries; the missing
+        # packages are only optional fonts. `--with-deps` runs apt and turns an
+        # unreachable Ubuntu mirror into a failed e2e job, so install the
+        # browser archive only and let e2e itself report any real runtime gap.
         run: |
           cd web
-          pnpm exec playwright install --with-deps chromium
+          pnpm exec playwright install chromium
 
       - name: browser e2e
         run: |
