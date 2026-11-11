@@ -727,23 +727,26 @@ impl OAuthService {
                     revoked_at: None,
                     replaced_by: None,
                 };
+                // Sign first: a signer failure must not leave a refresh token
+                // nobody can ever learn.
+                let signed = self
+                    .sign_tokens(
+                        user_id,
+                        client_id,
+                        &scopes,
+                        now,
+                        None,
+                        Some(now),
+                        consent.version,
+                        &family,
+                    )
+                    .await?;
                 self.storage
                     .refresh_tokens()
                     .insert(&refresh)
                     .await
                     .map_err(map_repo)?;
-                self.issue(
-                    user_id,
-                    client_id,
-                    &scopes,
-                    now,
-                    Some(refresh_raw),
-                    None,
-                    Some(now),
-                    consent.version,
-                    &refresh.family_id,
-                )
-                .await
+                Ok(signed.into_response(Some(refresh_raw)))
             }
             DevicePoll::Denied => Err(OAuthError::AccessDenied),
             DevicePoll::Expired => Err(OAuthError::ExpiredToken),
@@ -820,24 +823,27 @@ impl OAuthService {
             revoked_at: None,
             replaced_by: None,
         };
+        // Sign first: a signer failure must not leave an unreachable refresh
+        // row behind. The auth code is already consumed either way.
+        let signed = self
+            .sign_tokens(
+                grant.user_id,
+                client_id,
+                &grant.scopes,
+                now,
+                grant.nonce,
+                Some(grant.auth_time),
+                consent.version,
+                &family_id,
+            )
+            .await?;
         self.storage
             .refresh_tokens()
             .insert(&refresh)
             .await
             .map_err(map_repo)?;
 
-        self.issue(
-            grant.user_id,
-            client_id,
-            &grant.scopes,
-            now,
-            Some(refresh_raw),
-            grant.nonce,
-            Some(grant.auth_time),
-            consent.version,
-            &refresh.family_id,
-        )
-        .await
+        Ok(signed.into_response(Some(refresh_raw)))
     }
 
     /// 重放已消费的设备码时，撤销它签发过的家族。
@@ -954,6 +960,20 @@ impl OAuthService {
             .await?;
 
         let (new_raw, new_hash) = new_secret(self.random.as_ref());
+        // Sign before the rotation claim: a signer failure must leave the old
+        // token usable and no unreachable replacement behind.
+        let signed = self
+            .sign_tokens(
+                old.user_id,
+                old.client_id,
+                &scopes,
+                now,
+                None,
+                Some(old.auth_time),
+                consent.version,
+                &old.family_id,
+            )
+            .await?;
         let new = RefreshToken {
             id: RefreshTokenId::new(),
             token_hash: new_hash,
@@ -993,20 +1013,7 @@ impl OAuthService {
             .map_err(map_repo)?;
 
         match outcome {
-            RotateOutcome::Rotated(token) => {
-                self.issue(
-                    token.user_id,
-                    token.client_id,
-                    &token.scopes,
-                    now,
-                    Some(new_raw),
-                    None,
-                    Some(old.auth_time),
-                    consent.version,
-                    &token.family_id,
-                )
-                .await
-            }
+            RotateOutcome::Rotated(_) => Ok(signed.into_response(Some(new_raw))),
             RotateOutcome::ReuseDetected { .. } => {
                 Err(OAuthError::InvalidGrant("refresh token reuse"))
             }
@@ -1052,6 +1059,7 @@ impl OAuthService {
         let client_id = Uuid::parse_str(&claims.client_id)
             .map(ClientId)
             .map_err(|_| OAuthError::InvalidToken)?;
+        self.require_approved_client(client_id).await?;
         let scopes = scope::parse_scope(&claims.scope);
         self.require_token_consent(user_id, client_id, &scopes, claims.consent_version)
             .await?;
@@ -1088,12 +1096,17 @@ impl OAuthService {
         let client_id = Uuid::parse_str(&claims.client_id)
             .map(ClientId)
             .map_err(|_| OAuthError::InvalidToken)?;
+        // A suspended client loses its tokens immediately, not at their TTL.
+        self.require_approved_client(client_id).await?;
         let scopes = scope::parse_scope(&claims.scope);
         self.require_token_consent(user_id, client_id, &scopes, claims.consent_version)
             .await?;
+        // OIDC Core §5.4: `name` belongs to the `profile` scope; an `openid`
+        // only grant must not disclose it.
+        let include_profile = scopes.iter().any(|scope| scope == "profile");
         Ok(UserInfo {
             sub: claims.sub,
-            name: user.display_name,
+            name: include_profile.then_some(user.display_name),
         })
     }
 
@@ -1219,6 +1232,25 @@ impl OAuthService {
         Ok(())
     }
 
+    /// A suspended or revoked client must lose its tokens at once.
+    ///
+    /// `authenticate_client` covers issuance; a token that already exists
+    /// bypasses it, so the bearer boundary re-checks the live status instead of
+    /// trusting the JWT until it expires.
+    async fn require_approved_client(&self, client_id: ClientId) -> Result<(), OAuthError> {
+        let client = self
+            .storage
+            .clients()
+            .get(&client_id)
+            .await
+            .map_err(map_repo)?
+            .ok_or(OAuthError::InvalidToken)?;
+        if client.status != ClientStatus::Approved {
+            return Err(OAuthError::InvalidToken);
+        }
+        Ok(())
+    }
+
     /// Consent check for token issuance (code exchange, refresh, device flow).
     ///
     /// A missing or revoked consent is `invalid_grant`: the grant itself is no
@@ -1270,18 +1302,17 @@ impl OAuthService {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn issue(
+    async fn sign_tokens(
         &self,
         user_id: UserId,
         client_id: ClientId,
         scopes: &[String],
         now: i64,
-        refresh_token: Option<String>,
         nonce: Option<String>,
         auth_time: Option<Unix>,
         consent_version: ConsentVersion,
         family: &FamilyId,
-    ) -> Result<TokenResponse, OAuthError> {
+    ) -> Result<SignedTokens, OAuthError> {
         let scope_value = scopes.join(" ");
         let access_claims = AccessTokenClaims {
             iss: self.issuer.clone(),
@@ -1329,14 +1360,37 @@ impl OAuthService {
             None => None,
         };
 
-        Ok(TokenResponse {
+        Ok(SignedTokens {
             access_token,
-            token_type: "Bearer",
-            expires_in: re0auth_domain::access_token_ttl(now),
-            refresh_token,
             id_token,
+            expires_in: re0auth_domain::access_token_ttl(now),
             scope: scope_value,
         })
+    }
+}
+
+/// A signed token pair that is not yet attached to a refresh token.
+///
+/// Signing is fallible, so it must finish before any single-use credential is
+/// consumed; only then does the caller commit the refresh row and wrap this in
+/// a `TokenResponse`.
+struct SignedTokens {
+    access_token: String,
+    id_token: Option<String>,
+    expires_in: i64,
+    scope: String,
+}
+
+impl SignedTokens {
+    fn into_response(self, refresh_token: Option<String>) -> TokenResponse {
+        TokenResponse {
+            access_token: self.access_token,
+            token_type: "Bearer",
+            expires_in: self.expires_in,
+            refresh_token,
+            id_token: self.id_token,
+            scope: self.scope,
+        }
     }
 }
 

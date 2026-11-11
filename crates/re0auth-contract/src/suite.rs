@@ -997,6 +997,22 @@ pub async fn consent_contract<S: Storage>(store: &S) {
             .is_none()
     );
 
+    // `now` has one-second resolution, so a revoke in the very second the flow
+    // began must still win; `>` would let it through.
+    let same_second = store
+        .consents()
+        .grant_if_live(
+            &first,
+            &fact(AuditAction::ConsentGranted, 1_300, "device"),
+            1_200,
+        )
+        .await
+        .expect("grant_if_live in the revoke's second");
+    assert!(
+        same_second.is_none(),
+        "a revoke in the same second as the flow began must still win"
+    );
+
     // A revocation older than the flow asking for consent may be replaced: this
     // is "user revoked, then started a new device flow".
     let reopened = store

@@ -446,6 +446,44 @@ async fn revoked_consent_blocks_the_gateway_before_the_upstream() {
 }
 
 #[tokio::test]
+async fn a_suspended_client_is_refused_by_the_gateway() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "scores",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"rks":15.2}"#.to_vec(),
+        }),
+    );
+    let token = access_token(&fixture, SCOPE);
+    let uri = "/api/v1/upstreams/probe/scores";
+
+    let (status, _) = get(&fixture, uri, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.connector.calls().len(), 1);
+
+    fixture
+        .store
+        .clients()
+        .set_status(&fixture.client_id, ClientStatus::Suspended, SystemClock.now())
+        .await
+        .expect("suspend client");
+
+    let (status, body) = get(&fixture, uri, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a suspended client's token must fail before the gateway is reached: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(
+        fixture.connector.calls().len(),
+        1,
+        "the suspended client's token must not reach the upstream"
+    );
+}
+
+#[tokio::test]
 async fn an_old_access_token_version_is_rejected_before_the_upstream() {
     let fixture = fixture().await;
     fixture.connector.set_response(

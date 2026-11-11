@@ -5710,12 +5710,15 @@
       "UserInfo": {
         "type": "object",
         "required": [
-          "sub",
-          "name"
+          "sub"
         ],
         "properties": {
           "name": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OIDC Core §5.4: only the `profile` scope may disclose it."
           },
           "sub": {
             "type": "string"

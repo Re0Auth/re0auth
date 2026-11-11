@@ -8,14 +8,16 @@ use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::crypto::RsaTokenSigner;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
-use re0auth_api::oauth::ConsentVersion;
+use re0auth_api::oauth::{
+    AccessTokenClaims, ApprovalTicketClaims, ConsentVersion, IdTokenClaims, TokenSigner,
+};
 use re0auth_api::ports::{
     Client, ClientStatus, Consent, RefreshToken, Session, Storage, User, UserRole, UserStatus,
 };
 use re0auth_api::{ClientId, Clock, FamilyId, RefreshTokenId, SessionId, UserId};
 use re0auth_app::admin;
 use re0auth_app::auth::AuthService;
-use re0auth_app::oauth::{OAuthService, hash_secret};
+use re0auth_app::oauth::{OAuthError, OAuthService, hash_secret};
 use re0auth_domain::pkce;
 use re0auth_http::{AppState, router};
 use serde_json::Value;
@@ -1733,6 +1735,166 @@ async fn refreshing_with_an_empty_scope_is_invalid_scope() {
     let response = refresh_tokens_with_scope(&app, refresh, "").await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(response).await["error"], "invalid_scope");
+}
+
+/// OIDC Core §5.4: `name` is a `profile` claim, so an `openid`-only grant must
+/// not disclose it.
+#[tokio::test]
+async fn userinfo_omits_name_without_the_profile_scope() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-userinfo-scope").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let refresh = tokens["refresh_token"].as_str().expect("refresh token");
+
+    let narrowed = refresh_tokens_with_scope(&app, refresh, "openid").await;
+    assert_eq!(narrowed.status(), StatusCode::OK);
+    let narrowed = body_json(narrowed).await;
+    let access_token = narrowed["access_token"].as_str().expect("access token");
+
+    let response = userinfo(&app, access_token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert!(body.get("sub").is_some(), "{body}");
+    assert!(
+        body.get("name").is_none(),
+        "openid alone must not disclose the profile name: {body}"
+    );
+
+    drop(app.key);
+}
+
+/// A suspended client must lose its tokens immediately, not at their 15 minute
+/// TTL: the status is authoritative on every use.
+#[tokio::test]
+async fn suspending_a_client_stops_userinfo_and_refresh() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-suspend").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let access_token = tokens["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_string();
+    let refresh_token = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    let response = userinfo(&app, &access_token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    app.store
+        .clients()
+        .set_status(&app.client_id, ClientStatus::Suspended, SystemClock.now())
+        .await
+        .expect("suspend client");
+
+    let response = userinfo(&app, &access_token).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "a suspended client's access token must stop working"
+    );
+    assert_eq!(body_json(response).await["error"], "invalid_token");
+
+    // `refresh` authenticates the client first, so the rejection is
+    // `unauthorized_client` rather than `invalid_grant`.
+    let response = refresh_tokens(&app, &refresh_token).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "unauthorized_client");
+
+    drop(app.key);
+}
+
+struct FailingSigner;
+
+impl TokenSigner for FailingSigner {
+    fn sign_access(&self, _: &AccessTokenClaims) -> re0auth_api::Re0Result<String> {
+        Err(re0auth_api::Re0Error::Internal("signing failed".to_string()))
+    }
+    fn sign_id(&self, _: &IdTokenClaims) -> re0auth_api::Re0Result<String> {
+        Err(re0auth_api::Re0Error::Internal("signing failed".to_string()))
+    }
+    fn sign_approval_ticket(&self, _: &ApprovalTicketClaims) -> re0auth_api::Re0Result<String> {
+        panic!("not used")
+    }
+    fn verify_access(&self, _: &str) -> re0auth_api::Re0Result<AccessTokenClaims> {
+        panic!("not used")
+    }
+    fn verify_approval_ticket(&self, _: &str) -> re0auth_api::Re0Result<ApprovalTicketClaims> {
+        panic!("not used")
+    }
+    fn jwks(&self) -> String {
+        panic!("not used")
+    }
+}
+
+/// The real store and the failing signer, so a test can prove what the signer
+/// failure left behind in durable state.
+fn failing_service(app: &TestApp) -> OAuthService {
+    OAuthService::new(
+        Arc::new(app.store.clone()),
+        Arc::new(FailingSigner),
+        Arc::new(SystemClock),
+        Arc::new(OsRandom),
+        Arc::new(
+            re0auth_adapters::client_secret::HmacClientSecretHasher::new(TEST_MASTER)
+                .expect("hasher"),
+        ),
+        ISSUER,
+    )
+}
+
+/// Signing is fallible, so it must run before the rotation claims the old token.
+#[tokio::test]
+async fn a_signing_failure_does_not_consume_the_refresh_token() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-signer-refresh").await;
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let refresh = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+
+    let service = failing_service(&app);
+    let result = service
+        .refresh(app.client_id, None, &refresh, None, None)
+        .await;
+    assert!(matches!(result, Err(OAuthError::Internal)), "{result:?}");
+
+    let stored = app
+        .store
+        .refresh_tokens()
+        .find(&hash_secret(&refresh))
+        .await
+        .expect("find refresh token")
+        .expect("refresh token exists");
+    assert!(
+        stored.consumed_at.is_none(),
+        "a signing failure must leave the old refresh token usable"
+    );
+
+    // And the real path still rotates it, which it could not if the failed
+    // attempt had consumed it or lost its replacement.
+    let response = refresh_tokens(&app, &refresh).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    drop(app.key);
+}
+
+/// The code is already consumed at this point, but no unreachable refresh row
+/// may be left behind.
+#[tokio::test]
+async fn a_signing_failure_on_code_exchange_inserts_no_refresh_token() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-signer-code").await;
+
+    let service = failing_service(&app);
+    let result = service
+        .exchange_code(app.client_id, None, &code, REDIRECT_URI, VERIFIER)
+        .await;
+    assert!(matches!(result, Err(OAuthError::Internal)), "{result:?}");
+
+    drop(app.key);
 }
 
 fn jwt_payload(token: &str) -> Value {

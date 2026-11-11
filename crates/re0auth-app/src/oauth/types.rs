@@ -32,7 +32,9 @@ pub enum RevocationOutcome {
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct UserInfo {
     pub sub: String,
-    pub name: String,
+    /// OIDC Core §5.4: only the `profile` scope may disclose it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
