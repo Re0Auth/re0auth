@@ -173,7 +173,7 @@ impl ConnectorAuth for ConfiguredConnectorAuth {
         let response: TokenResponse = client
             .post_form(&config.token_endpoint, &form)
             .await
-            .map_err(|_| UpstreamError::Unavailable)?;
+            .map_err(|error| map_auth_error(&error))?;
         let credential = SecretString::from(response.access_token);
         let refresh_token = response.refresh_token.map(SecretString::from);
 
@@ -225,6 +225,24 @@ impl ConnectorAuth for ConfiguredConnectorAuth {
             .map_err(|_| UpstreamError::Unavailable)?;
         Ok(())
     }
+}
+
+/// Maps a token or userinfo failure, logging what the upstream actually said.
+///
+/// Collapsing every transport error to `Unavailable` hid the status and the
+/// OAuth error code, so a rejected client secret and a dead network looked
+/// identical in both the log and the response.
+fn map_auth_error(error: &anyhow::Error) -> UpstreamError {
+    use re0auth_runtime::http_client::UpstreamStatus;
+    match error.downcast_ref::<UpstreamStatus>() {
+        Some(status) => tracing::warn!(
+            status = status.status,
+            error = status.error_code.as_deref(),
+            "connector auth request rejected"
+        ),
+        None => tracing::warn!(error = ?error, "connector auth request failed"),
+    }
+    crate::connector::map_transport_error(error)
 }
 
 fn refresh_transport_error(error: anyhow::Error) -> UpstreamError {
@@ -346,7 +364,7 @@ impl ConfiguredConnectorAuth {
         let document: UserInfo = client
             .get_json_with_bearer(userinfo_endpoint, credential.expose_secret())
             .await
-            .map_err(|_| UpstreamError::Unavailable)?;
+            .map_err(|error| map_auth_error(&error))?;
         let subject = document.read(field).ok_or(UpstreamError::NotFound)?;
         let subject = subject.trim();
         if subject.is_empty() {

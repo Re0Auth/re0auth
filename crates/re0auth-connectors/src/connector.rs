@@ -330,7 +330,7 @@ fn percent_encode(value: &str) -> String {
     utf8_percent_encode(value, PATH_SEGMENT).to_string()
 }
 
-fn map_transport_error(error: &anyhow::Error) -> UpstreamError {
+pub(crate) fn map_transport_error(error: &anyhow::Error) -> UpstreamError {
     use re0auth_runtime::http_client::{UpstreamStatus, UpstreamTooLarge};
 
     // Typed downcasts, not message text. String matching classified by accident:
