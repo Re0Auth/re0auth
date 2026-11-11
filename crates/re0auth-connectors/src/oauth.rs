@@ -293,6 +293,9 @@ impl ConnectorRefresh for ConfiguredConnectorAuth {
 /// or a string (`"openid"`, `"uid"`).
 #[derive(Debug, Deserialize)]
 struct UserInfo {
+    /// Standard OIDC subject; the field most providers actually use.
+    #[serde(default)]
+    sub: Option<String>,
     #[serde(default)]
     id: Option<serde_json::Value>,
     #[serde(default)]
@@ -312,6 +315,7 @@ impl UserInfo {
     /// worse than failing the bind.
     fn read(&self, wanted: &str) -> Option<String> {
         match wanted {
+            "sub" => self.sub.clone(),
             "id" => self.id.as_ref().and_then(|value| match value {
                 serde_json::Value::String(text) => Some(text.clone()),
                 serde_json::Value::Number(number) => Some(number.to_string()),
