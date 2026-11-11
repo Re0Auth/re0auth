@@ -30,6 +30,7 @@ let idp: Server | undefined;
 let upstream: Server | undefined;
 let callbackServer: Server | undefined;
 let clientId = '';
+let deviceClientId = '';
 let nonce = '';
 let callbacks: URLSearchParams[] = [];
 let callbackWaiters: Array<(params: URLSearchParams) => void> = [];
@@ -202,6 +203,34 @@ async function waitForServer(): Promise<void> {
 	throw new Error('re0auth-server did not become healthy');
 }
 
+function createClient(config: string, name: string): string {
+	const created = spawnSync(
+		binary,
+		[
+			'--config',
+			config,
+			'admin',
+			'create-client',
+			'--name',
+			name,
+			'--redirect-uri',
+			CLIENT_REDIRECT,
+			'--scope',
+			'openid',
+			'--scope',
+			'profile'
+		],
+		{ cwd: work, encoding: 'utf8' }
+	);
+	if (created.status !== 0) {
+		throw new Error(`create-client failed: ${created.stderr}\n${created.stdout}`);
+	}
+	return created.stdout
+		.split('\n')
+		.find((line) => line.startsWith('client_id='))!
+		.slice('client_id='.length);
+}
+
 async function startRe0auth(): Promise<void> {
 	work = await mkdtemp(path.join(tmpdir(), 're0auth-e2e-'));
 	const config = path.join(work, 'config.toml');
@@ -245,31 +274,8 @@ master_key_version = 1\nsigning_key_file = "data/signing-key.pem"\n\n` +
 	server.stderr?.on('data', () => {});
 	await waitForServer();
 
-	const created = spawnSync(
-		binary,
-		[
-			'--config',
-			config,
-			'admin',
-			'create-client',
-			'--name',
-			'E2E Client',
-			'--redirect-uri',
-			CLIENT_REDIRECT,
-			'--scope',
-			'openid',
-			'--scope',
-			'profile'
-		],
-		{ cwd: work, encoding: 'utf8' }
-	);
-	if (created.status !== 0) {
-		throw new Error(`create-client failed: ${created.stderr}\n${created.stdout}`);
-	}
-	clientId = created.stdout
-		.split('\n')
-		.find((line) => line.startsWith('client_id='))!
-		.slice('client_id='.length);
+	clientId = createClient(config, 'E2E Client');
+	deviceClientId = createClient(config, 'E2E Device Client');
 }
 
 test.beforeAll(async () => {
@@ -345,7 +351,7 @@ test('consent page approves and account can revoke', async ({ browser }) => {
 
 test('device entry reaches ticket approval and token exchange', async ({ browser, request }) => {
 	const authorization = await request.post('/oauth/device_authorization', {
-		form: { client_id: clientId, scope: 'openid profile' }
+		form: { client_id: deviceClientId, scope: 'openid profile' }
 	});
 	expect(authorization.ok()).toBeTruthy();
 	const device = (await authorization.json()) as {
@@ -368,7 +374,7 @@ test('device entry reaches ticket approval and token exchange', async ({ browser
 	const token = await request.post('/oauth/token', {
 		form: {
 			grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-			client_id: clientId,
+			client_id: deviceClientId,
 			device_code: device.device_code
 		}
 	});
