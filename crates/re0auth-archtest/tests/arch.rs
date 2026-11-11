@@ -115,6 +115,8 @@ const COMPOSITION_ROOT_MODULES: &[&str] = &[
     "crates/re0auth-server/src/config.rs",
     // Unit tests for private config parsing; no routing or policy lives here.
     "crates/re0auth-server/src/config/tests.rs",
+    // 连接器配置域与校验；无路由与策略。
+    "crates/re0auth-server/src/config/connector.rs",
     "crates/re0auth-server/src/config_env.rs",
     "crates/re0auth-server/src/main.rs",
 ];

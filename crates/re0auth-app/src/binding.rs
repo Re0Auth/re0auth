@@ -115,7 +115,17 @@ pub struct BindingService {
     ///
     /// A `ConnectorRegistry` cannot enumerate, so the list is fixed at wiring
     /// time, from the same configuration the authorization URLs come from.
-    bindable: Vec<String>,
+    bindable: Vec<BindableUpstream>,
+}
+
+/// One upstream the portal may offer to connect.
+///
+/// The id is the binding key and the URL segment; the display name is only a
+/// label, so renaming the provider never touches stored bindings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BindableUpstream {
+    pub id: String,
+    pub display_name: String,
 }
 
 impl BindingService {
@@ -154,14 +164,14 @@ impl BindingService {
     /// Only the composition root can produce this list, because a
     /// `ConnectorRegistry` resolves by id and cannot enumerate.
     #[must_use]
-    pub fn with_bindable_upstreams(mut self, bindable: Vec<String>) -> Self {
+    pub fn with_bindable_upstreams(mut self, bindable: Vec<BindableUpstream>) -> Self {
         self.bindable = bindable;
         self
     }
 
     /// The upstreams a user can bind, as configured and sorted.
     #[must_use]
-    pub fn bindable_upstreams(&self) -> &[String] {
+    pub fn bindable_upstreams(&self) -> &[BindableUpstream] {
         &self.bindable
     }
 

@@ -176,12 +176,15 @@ pub(crate) async fn fetch_raw(
 }
 
 /// Parses and bounds-checks the complete query string without dropping keys.
-fn parse_query(raw: Option<&str>) -> Result<BTreeMap<String, String>, ApiError> {
+///
+/// Repeated keys are kept as a list: a declared array consumes them, and a
+/// scalar that appears twice is rejected once the resource's spec is known.
+fn parse_query(raw: Option<&str>) -> Result<BTreeMap<String, Vec<String>>, ApiError> {
     let raw = raw.unwrap_or_default();
     if raw.len() > 4096 {
         return Err(invalid_request("query string is too long", Shape::Problem));
     }
-    let mut params = BTreeMap::new();
+    let mut params: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (pair_index, (key, value)) in form_urlencoded::parse(raw.as_bytes()).enumerate() {
         if pair_index >= 32 {
             return Err(invalid_request("too many query parameters", Shape::Problem));
@@ -192,20 +195,30 @@ fn parse_query(raw: Option<&str>) -> Result<BTreeMap<String, String>, ApiError> 
                 Shape::Problem,
             ));
         }
-        if params
-            .insert(key.into_owned(), value.into_owned())
-            .is_some()
-        {
-            return Err(invalid_request("duplicate query parameter", Shape::Problem));
-        }
+        params
+            .entry(key.into_owned())
+            .or_default()
+            .push(value.into_owned());
     }
     Ok(params)
 }
 
+/// Reads a key that may appear once, rejecting repeats.
+fn single_value<'a>(
+    params: &'a BTreeMap<String, Vec<String>>,
+    name: &str,
+) -> Result<Option<&'a str>, ApiError> {
+    match params.get(name).map(Vec::as_slice) {
+        None => Ok(None),
+        Some([value]) => Ok(Some(value.as_str())),
+        Some(_) => Err(invalid_request("duplicate query parameter", Shape::Problem)),
+    }
+}
+
 /// `limit` 与 `cursor` are parsed here but remain in the map so the gateway can
 /// reject them on resources that do not support pagination.
-fn pagination(params: &BTreeMap<String, String>) -> Result<Pagination, ApiError> {
-    let limit = match params.get("limit") {
+fn pagination(params: &BTreeMap<String, Vec<String>>) -> Result<Pagination, ApiError> {
+    let limit = match single_value(params, "limit")? {
         None => None,
         Some(raw) => Some(
             raw.parse::<u32>()
@@ -214,7 +227,7 @@ fn pagination(params: &BTreeMap<String, String>) -> Result<Pagination, ApiError>
     };
     Ok(Pagination {
         limit,
-        cursor: params.get("cursor").cloned(),
+        cursor: single_value(params, "cursor")?.map(ToString::to_string),
     })
 }
 
@@ -224,7 +237,7 @@ async fn fetch(
     resource: String,
     headers: HeaderMap,
     raw: bool,
-    params: &BTreeMap<String, String>,
+    params: &BTreeMap<String, Vec<String>>,
     pagination: Pagination,
 ) -> Result<Response, ApiError> {
     let Some(gateway) = state.gateway.clone() else {
@@ -309,8 +322,8 @@ mod query_tests {
     #[test]
     fn every_declared_parameter_survives_query_parsing() {
         let params = parse_query(Some("song_id=s&rank=IN&limit=10&cursor=abc")).expect("query");
-        assert_eq!(params["song_id"], "s");
-        assert_eq!(params["rank"], "IN");
+        assert_eq!(params["song_id"], ["s"]);
+        assert_eq!(params["rank"], ["IN"]);
         assert_eq!(params.len(), 4);
         let page = pagination(&params).expect("pagination");
         assert_eq!(page.limit, Some(10));
@@ -318,10 +331,12 @@ mod query_tests {
     }
 
     #[test]
-    fn duplicate_empty_and_oversized_query_parameters_are_rejected() {
-        assert!(parse_query(Some("a=1&a=2")).is_err());
+    fn repeated_keys_are_kept_for_arrays_but_pagination_still_rejects_them() {
+        let params = parse_query(Some("request=rks&request=scoreHistory")).expect("query");
+        assert_eq!(params["request"], ["rks", "scoreHistory"]);
         assert!(parse_query(Some("=1")).is_err());
-        assert!(parse_query(Some(&"a=1&".repeat(20))).is_err());
+        assert!(parse_query(Some(&"a=1&".repeat(40))).is_err());
         assert!(pagination(&parse_query(Some("limit=abc")).expect("query")).is_err());
+        assert!(pagination(&parse_query(Some("limit=1&limit=2")).expect("query")).is_err());
     }
 }

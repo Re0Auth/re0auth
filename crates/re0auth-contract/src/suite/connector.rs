@@ -11,6 +11,7 @@ pub async fn connector_contract<S: Storage>(store: &S) {
     let record = ConnectorRecord {
         id,
         name: "contract-connector".to_string(),
+        display_name: "Contract Connector".to_string(),
         base_url: "https://upstream.example".to_string(),
         allow_private_net: false,
         allow_link_local_metadata: false,
@@ -92,6 +93,7 @@ pub async fn connector_contract<S: Storage>(store: &S) {
     let clash = ConnectorRecord {
         id: re0auth_api::ConnectorId::new(),
         name: "contract-connector".to_string(),
+        display_name: "Clash".to_string(),
         base_url: "https://other.example".to_string(),
         allow_private_net: false,
         allow_link_local_metadata: false,

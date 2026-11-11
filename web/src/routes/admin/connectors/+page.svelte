@@ -48,8 +48,8 @@
 		{#each items as connector (connector.id)}
 			<section class="rounded-md border border-border p-4">
 				<div class="flex flex-wrap items-baseline justify-between gap-2">
-					<h3 class="text-base font-semibold">{connector.name}</h3>
-					<span class="break-all font-mono text-xs text-fg-3">{connector.base_url}</span>
+					<h3 class="text-base font-semibold">{connector.display_name}</h3>
+					<span class="break-all font-mono text-xs text-fg-3">{connector.id} · {connector.base_url}</span>
 				</div>
 				<p class="mt-1 text-xs text-fg-3">
 					{connector.allow_private_net ? copy.admin.connectors.privateNet : ''}

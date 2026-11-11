@@ -3151,6 +3151,7 @@
         "required": [
           "id",
           "name",
+          "display_name",
           "base_url",
           "allow_private_net",
           "allow_link_local_metadata",
@@ -3165,6 +3166,10 @@
           },
           "base_url": {
             "type": "string"
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Operator-facing label; falls back to `name` when unset."
           },
           "id": {
             "type": "string"
@@ -3428,6 +3433,22 @@
           }
         }
       },
+      "BindableUpstreamView": {
+        "type": "object",
+        "description": "One connectable upstream: `id` is the key, `display_name` is the label.",
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
       "BindableUpstreamsView": {
         "type": "object",
         "description": "The upstreams a user may start a flow for, as configured.",
@@ -3438,7 +3459,7 @@
           "upstreams": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/BindableUpstreamView"
             }
           }
         }
@@ -3527,6 +3548,7 @@
         "type": "object",
         "required": [
           "id",
+          "display_name",
           "bindable",
           "openapi_public",
           "resources"
@@ -3535,6 +3557,10 @@
           "bindable": {
             "type": "boolean",
             "description": "Whether this deployment exposes a binding flow for the connector."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Label for people; `id` remains the key in URLs and bindings."
           },
           "id": {
             "type": "string"
@@ -3559,9 +3585,14 @@
           "upstream",
           "kind",
           "required",
-          "values"
+          "values",
+          "array"
         ],
         "properties": {
+          "array": {
+            "type": "boolean",
+            "description": "Whether the caller repeats the key to supply a set."
+          },
           "in": {
             "type": "string"
           },
@@ -3574,6 +3605,14 @@
               "null"
             ],
             "format": "double"
+          },
+          "max_items": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Member cap for arrays.",
+            "minimum": 0
           },
           "max_len": {
             "type": [
@@ -4428,6 +4467,7 @@
               "required": [
                 "id",
                 "name",
+                "display_name",
                 "base_url",
                 "allow_private_net",
                 "allow_link_local_metadata",
@@ -4442,6 +4482,10 @@
                 },
                 "base_url": {
                   "type": "string"
+                },
+                "display_name": {
+                  "type": "string",
+                  "description": "Operator-facing label; falls back to `name` when unset."
                 },
                 "id": {
                   "type": "string"
@@ -5215,6 +5259,45 @@
           }
         }
       },
+      "PhihubChallengeRankPoint": {
+        "type": "object",
+        "description": "One v3 history point whose value is the challenge-mode rank.",
+        "required": [
+          "date",
+          "value"
+        ],
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "value": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhihubClearCountPoint": {
+        "type": "object",
+        "description": "One v3 history point whose value is the five cleared/full-combo/phi counters.",
+        "required": [
+          "date",
+          "value"
+        ],
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        }
+      },
       "PhihubGameUser": {
         "type": "object",
         "required": [
@@ -5298,6 +5381,58 @@
           }
         }
       },
+      "PhihubHistoryV3Data": {
+        "type": "object",
+        "description": "`POST /get/history/history`: the legacy v3 history document.\n\n`score_history` rows are upstream-owned positional arrays\n`[acc, score, date, full_combo]`; the bucket shape is not a JSON object, so\nit stays `Value` rather than pretending to be a struct.",
+        "required": [
+          "challengeModeRank",
+          "data",
+          "rks",
+          "scoreHistory",
+          "version"
+        ],
+        "properties": {
+          "challengeModeRank": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhihubChallengeRankPoint"
+            }
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhihubClearCountPoint"
+            }
+          },
+          "rks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhihubRksPoint"
+            }
+          },
+          "scoreHistory": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {}
+              },
+              "propertyNames": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "PhihubRecord": {
         "type": "object",
         "required": [
@@ -5317,6 +5452,127 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "PhihubRecordV3Data": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Song id → difficulty → rows.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {}
+              },
+              "propertyNames": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "object",
+            "description": "Difficulty → rows.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {}
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "array",
+            "items": {},
+            "description": "Rows only."
+          }
+        ],
+        "description": "`POST /get/history/record`: whole history, one song, or one difficulty's rows."
+      },
+      "PhihubRecordV4Data": {
+        "type": "object",
+        "description": "`POST /get/history/recordV4`: the v4 envelope carries `version` and `timezone`\nbeside `data`, so the declared view keeps all three.",
+        "required": [
+          "version",
+          "timezone"
+        ],
+        "properties": {
+          "data": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhihubRecordV4Payload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PhihubRecordV4Payload": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Song id → difficulty → series.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {}
+              },
+              "propertyNames": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "object",
+            "description": "Difficulty → series.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {}
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "array",
+            "items": {},
+            "description": "One series."
+          }
+        ],
+        "description": "The v4 sibling of [`PhihubRecordV3Data`]; series are `dateValue` buckets."
+      },
+      "PhihubRksPoint": {
+        "type": "object",
+        "description": "One v3 history point whose value is the player's RKS.",
+        "required": [
+          "date",
+          "value"
+        ],
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -5415,6 +5671,27 @@
             "type": "string"
           }
         }
+      },
+      "PhihubSongData": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/PhihubRecord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/schemas/PhihubRecord"
+          }
+        ],
+        "description": "`POST /get/cloud/song`: every difficulty of one song, or one difficulty.\n\nUpstream returns a four-slot array (missing difficulties are `null`) when\n`difficulty` is absent, and a single record when it is present."
       },
       "ProblemBody": {
         "type": "object",
@@ -5693,6 +5970,18 @@
           },
           {
             "$ref": "#/components/schemas/PhihubHistoryData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubSongData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubHistoryV3Data"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubRecordV3Data"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubRecordV4Data"
           },
           {
             "$ref": "#/components/schemas/PhigrosQuerySaveData"

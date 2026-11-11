@@ -71,7 +71,18 @@ pub struct ParamSpec {
     pub min: Option<serde_json::Number>,
     pub max: Option<serde_json::Number>,
     pub values: Vec<String>,
+    /// Whether the caller supplies a set by repeating the key.
+    ///
+    /// A set has no order: members are sorted and de-duplicated before they
+    /// reach the upstream or the cache key, so two callers that pass the same
+    /// members in a different order share one entry.
+    pub array: bool,
+    /// Member cap; `None` means [`MAX_ARRAY_ITEMS`]. Ignored for scalars.
+    pub max_items: Option<usize>,
 }
+
+/// Hard ceiling on declared array members, enforced when the request arrives.
+pub const MAX_ARRAY_ITEMS: usize = 32;
 
 /// A downstream parameter after validation. The type is preserved so the
 /// broker never reparses a value that already passed the boundary.
@@ -84,10 +95,15 @@ pub enum ValidatedParamValue {
         value: serde_json::Number,
     },
     Boolean(bool),
+    /// A canonicalised set: sorted and de-duplicated.
+    List(Vec<ValidatedParamValue>),
 }
 
 impl ValidatedParamValue {
     /// Canonical query/cache spelling. Numbers keep the caller's raw literal.
+    ///
+    /// Lists join with a comma, which is only a display form: the broker expands
+    /// them into repeated pairs rather than sending the joined string.
     #[must_use]
     pub fn as_query_string(&self) -> String {
         match self {
@@ -95,6 +111,11 @@ impl ValidatedParamValue {
             Self::Integer(value) => value.to_string(),
             Self::Number { raw, .. } => raw.clone(),
             Self::Boolean(value) => value.to_string(),
+            Self::List(items) => items
+                .iter()
+                .map(Self::as_query_string)
+                .collect::<Vec<_>>()
+                .join(","),
         }
     }
 }

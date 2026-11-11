@@ -189,6 +189,8 @@ inbound_body_bytes = 1048576
 # 未写 scope 时默认为 `upstream.<name>.read`。
 # [[connectors]]
 # id = "phigros"
+# 展示名；只影响界面，URL 与绑定仍用 id。留空则显示 id。
+# display_name = "Phigros Query"
 # base_url = "https://api.example.com"
 # allow_private_net = false
 # allow_link_local_metadata = false
@@ -236,8 +238,10 @@ inbound_body_bytes = 1048576
 # [connectors.resources.view.fields]
 # id = "$.id"
 #
-# 下游查询参数白名单：未声明的参数、重复参数、空参数名一律 400；
+# 下游查询参数白名单：未声明的参数、标量参数重复出现、空参数名一律 400；
 # 声明后按 kind 校验并原样传给上游（query）或写进 POST body。
+# 声明 array = true 后，该参数改为「集合」：下游用重复 key 传多个值，
+# 网关排序去重后写进上游（body 里是 JSON 数组，query 里是重复键）。
 # [[connectors.resources.params]]
 # name = "song_id"
 # in = "query"          # query（默认）或 body；body 仅限 method = "post"
@@ -247,6 +251,8 @@ inbound_body_bytes = 1048576
 # min_len = 1
 # max_len = 64
 # values = ["EZ", "HD", "IN", "AT"]  # 仅 enum
+# array = false         # true 时下游可重复该 key，按集合处理
+# max_items = 8         # 仅 array；上限 32，默认 32
 # integer/number 用 min/max；最多 16 个参数，单值长度上限 256
 #
 # 可选：让用户在本实例上绑定这个上游（INV-BIND-03）。

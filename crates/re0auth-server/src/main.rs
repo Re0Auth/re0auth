@@ -166,6 +166,8 @@ fn build_catalog(cfg: &config::Config) -> anyhow::Result<re0auth_http::catalog::
                     min: param.min.as_ref().and_then(serde_json::Number::as_f64),
                     max: param.max.as_ref().and_then(serde_json::Number::as_f64),
                     values: param.values.clone(),
+                    array: param.array,
+                    max_items: param.max_items,
                 })
                 .collect();
             resources.push(re0auth_http::catalog::CatalogResource {
@@ -187,6 +189,7 @@ fn build_catalog(cfg: &config::Config) -> anyhow::Result<re0auth_http::catalog::
         }
         connectors.push(re0auth_http::catalog::CatalogConnector {
             id: connector.id.clone(),
+            display_name: connector.effective_display_name().to_string(),
             bindable: connector.oauth.is_some(),
             openapi_public: connector.expose_in_openapi
                 && !connector.allow_private_net
@@ -233,6 +236,7 @@ async fn sync_connectors(cfg: &config::Config, store: &SqliteStore) -> anyhow::R
                 &re0auth_api::ports::ConnectorRecord {
                     id,
                     name: connector.id.clone(),
+                    display_name: connector.effective_display_name().to_string(),
                     base_url: connector.base_url.clone(),
                     allow_private_net: connector.allow_private_net,
                     allow_link_local_metadata: connector.allow_link_local_metadata,
@@ -437,8 +441,16 @@ fn build_binding(
 
     // The only place that can enumerate bindable upstreams: the registry resolves
     // by id and cannot list. Sorted so the portal renders a stable order.
-    let mut bindable: Vec<String> = configs.keys().cloned().collect();
-    bindable.sort();
+    let mut bindable: Vec<re0auth_app::binding::BindableUpstream> = cfg
+        .connectors
+        .iter()
+        .filter(|connector| connector.oauth.is_some())
+        .map(|connector| re0auth_app::binding::BindableUpstream {
+            id: connector.id.clone(),
+            display_name: connector.effective_display_name().to_string(),
+        })
+        .collect();
+    bindable.sort_by(|left, right| left.id.cmp(&right.id));
 
     let auth = Arc::new(re0auth_connectors::oauth::ConfiguredConnectorAuth::new(
         clients, configs,

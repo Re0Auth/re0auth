@@ -37,6 +37,42 @@ fn phihub_models_match_their_payloads() {
 }
 
 #[test]
+fn phihub_song_and_history_models_match_their_payloads() {
+    round_trip::<re0auth_app::upstream_models::PhihubSongData>(include_str!(
+        "fixtures/upstream_models/phihub_song_all.json"
+    ));
+    round_trip::<re0auth_app::upstream_models::PhihubSongData>(include_str!(
+        "fixtures/upstream_models/phihub_song_one.json"
+    ));
+    round_trip::<re0auth_app::upstream_models::PhihubHistoryV3Data>(include_str!(
+        "fixtures/upstream_models/phihub_history_v3.json"
+    ));
+}
+
+#[test]
+fn phihub_record_v3_model_matches_its_three_shapes() {
+    round_trip::<re0auth_app::upstream_models::PhihubRecordV3Data>(include_str!(
+        "fixtures/upstream_models/phihub_record_v3_all.json"
+    ));
+    round_trip::<re0auth_app::upstream_models::PhihubRecordV3Data>(include_str!(
+        "fixtures/upstream_models/phihub_record_v3_song.json"
+    ));
+    round_trip::<re0auth_app::upstream_models::PhihubRecordV3Data>(include_str!(
+        "fixtures/upstream_models/phihub_record_v3_rows.json"
+    ));
+}
+
+#[test]
+fn phihub_record_v4_model_matches_its_payloads() {
+    round_trip::<re0auth_app::upstream_models::PhihubRecordV4Data>(include_str!(
+        "fixtures/upstream_models/phihub_record_v4.json"
+    ));
+    round_trip::<re0auth_app::upstream_models::PhihubRecordV4Data>(include_str!(
+        "fixtures/upstream_models/phihub_record_v4_series.json"
+    ));
+}
+
+#[test]
 fn phigros_query_models_match_their_payloads() {
     round_trip::<re0auth_app::upstream_models::PhigrosQuerySaveData>(include_str!(
         "fixtures/upstream_models/phigros_query_save.json"

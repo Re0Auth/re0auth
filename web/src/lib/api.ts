@@ -88,9 +88,16 @@ export const bindingStartSchema = z.object({
 	authorization_url: z.string().url()
 });
 
-export const bindableUpstreamsSchema = z.object({
-	upstreams: z.array(z.string())
+export const bindableUpstreamSchema = z.object({
+	id: z.string(),
+	display_name: z.string()
 });
+
+export const bindableUpstreamsSchema = z.object({
+	upstreams: z.array(bindableUpstreamSchema)
+});
+
+export type BindableUpstream = z.infer<typeof bindableUpstreamSchema>;
 
 export const identitySchema = z.object({
 	id: z.string(),
@@ -179,6 +186,7 @@ export const adminResourceSchema = z.object({
 export const adminConnectorSchema = z.object({
 	id: z.string(),
 	name: z.string(),
+	display_name: z.string(),
 	base_url: z.string(),
 	allow_private_net: z.boolean(),
 	allow_link_local_metadata: z.boolean(),

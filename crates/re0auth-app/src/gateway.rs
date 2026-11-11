@@ -45,7 +45,8 @@ pub struct GatewayRequest<'a> {
     /// `limit`/`cursor` from the query string. Only list views accept them.
     pub pagination: Pagination,
     /// Complete raw query map, including `limit`/`cursor`; validated below.
-    pub params: &'a BTreeMap<String, String>,
+    /// Values are lists so a declared array can be supplied by repeating keys.
+    pub params: &'a BTreeMap<String, Vec<String>>,
 }
 
 /// Query-string pagination, before it is checked against the resource's view.
@@ -327,7 +328,7 @@ pub struct GatewayService {
 /// Applies the resource's declarative allow-list to the complete raw query map.
 fn validate_params(
     spec: &ResourceSpec,
-    supplied: &BTreeMap<String, String>,
+    supplied: &BTreeMap<String, Vec<String>>,
     allow_pagination: bool,
 ) -> Result<BTreeMap<String, ValidatedParamValue>, GatewayError> {
     let mut validated = BTreeMap::new();
@@ -338,67 +339,27 @@ fn validate_params(
             }
             continue;
         };
-        let value = match param.kind {
-            ParamKind::String => {
-                let length = raw.chars().count();
-                let min = param.min_len.unwrap_or(0);
-                let max = param.max_len.unwrap_or(usize::MAX);
-                if !(min..=max).contains(&length) {
-                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
-                }
-                ValidatedParamValue::String(raw.clone())
+        let value = if param.array {
+            let cap = param
+                .max_items
+                .unwrap_or(re0auth_api::connector::MAX_ARRAY_ITEMS);
+            if raw.len() > cap {
+                return Err(GatewayError::InvalidRequest("too many parameter values"));
             }
-            ParamKind::Enum => {
-                if !param.values.iter().any(|value| value == raw) {
-                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
-                }
-                ValidatedParamValue::String(raw.clone())
-            }
-            ParamKind::Integer => {
-                let parsed = raw
-                    .parse::<i64>()
-                    .map_err(|_| GatewayError::InvalidRequest("invalid parameter value"))?;
-                if let Some(min) = param.min.as_ref().and_then(serde_json::Number::as_i64)
-                    && parsed < min
-                {
-                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
-                }
-                if let Some(max) = param.max.as_ref().and_then(serde_json::Number::as_i64)
-                    && parsed > max
-                {
-                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
-                }
-                ValidatedParamValue::Integer(parsed)
-            }
-            ParamKind::Number => {
-                let parsed = raw
-                    .parse::<f64>()
-                    .map_err(|_| GatewayError::InvalidRequest("invalid parameter value"))?;
-                if !parsed.is_finite() {
-                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
-                }
-                if let Some(min) = param.min.as_ref().and_then(serde_json::Number::as_f64)
-                    && parsed < min
-                {
-                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
-                }
-                if let Some(max) = param.max.as_ref().and_then(serde_json::Number::as_f64)
-                    && parsed > max
-                {
-                    return Err(GatewayError::InvalidRequest("invalid parameter value"));
-                }
-                let value = serde_json::Number::from_f64(parsed)
-                    .ok_or(GatewayError::InvalidRequest("invalid parameter value"))?;
-                ValidatedParamValue::Number {
-                    raw: raw.clone(),
-                    value,
-                }
-            }
-            ParamKind::Boolean => match raw.as_str() {
-                "true" => ValidatedParamValue::Boolean(true),
-                "false" => ValidatedParamValue::Boolean(false),
-                _ => return Err(GatewayError::InvalidRequest("invalid parameter value")),
-            },
+            let mut items = raw
+                .iter()
+                .map(|value| validate_param_value(param, value))
+                .collect::<Result<Vec<_>, _>>()?;
+            // A set has no order; canonicalising here keeps the upstream body
+            // and the cache key stable across permutations.
+            items.sort_by_key(ValidatedParamValue::as_query_string);
+            items.dedup_by(|left, right| left.as_query_string() == right.as_query_string());
+            ValidatedParamValue::List(items)
+        } else {
+            let [single] = raw.as_slice() else {
+                return Err(GatewayError::InvalidRequest("duplicate query parameter"));
+            };
+            validate_param_value(param, single)?
         };
         validated.insert(param.name.clone(), value);
     }
@@ -412,6 +373,75 @@ fn validate_params(
         }
     }
     Ok(validated)
+}
+
+/// Validates one value against a declaration, independent of array-ness.
+fn validate_param_value(
+    param: &re0auth_api::connector::ParamSpec,
+    raw: &str,
+) -> Result<ValidatedParamValue, GatewayError> {
+    match param.kind {
+        ParamKind::String => {
+            let length = raw.chars().count();
+            let min = param.min_len.unwrap_or(0);
+            let max = param.max_len.unwrap_or(usize::MAX);
+            if !(min..=max).contains(&length) {
+                return Err(GatewayError::InvalidRequest("invalid parameter value"));
+            }
+            Ok(ValidatedParamValue::String(raw.to_string()))
+        }
+        ParamKind::Enum => {
+            if !param.values.iter().any(|value| value == raw) {
+                return Err(GatewayError::InvalidRequest("invalid parameter value"));
+            }
+            Ok(ValidatedParamValue::String(raw.to_string()))
+        }
+        ParamKind::Integer => {
+            let parsed = raw
+                .parse::<i64>()
+                .map_err(|_| GatewayError::InvalidRequest("invalid parameter value"))?;
+            if let Some(min) = param.min.as_ref().and_then(serde_json::Number::as_i64)
+                && parsed < min
+            {
+                return Err(GatewayError::InvalidRequest("invalid parameter value"));
+            }
+            if let Some(max) = param.max.as_ref().and_then(serde_json::Number::as_i64)
+                && parsed > max
+            {
+                return Err(GatewayError::InvalidRequest("invalid parameter value"));
+            }
+            Ok(ValidatedParamValue::Integer(parsed))
+        }
+        ParamKind::Number => {
+            let parsed = raw
+                .parse::<f64>()
+                .map_err(|_| GatewayError::InvalidRequest("invalid parameter value"))?;
+            if !parsed.is_finite() {
+                return Err(GatewayError::InvalidRequest("invalid parameter value"));
+            }
+            if let Some(min) = param.min.as_ref().and_then(serde_json::Number::as_f64)
+                && parsed < min
+            {
+                return Err(GatewayError::InvalidRequest("invalid parameter value"));
+            }
+            if let Some(max) = param.max.as_ref().and_then(serde_json::Number::as_f64)
+                && parsed > max
+            {
+                return Err(GatewayError::InvalidRequest("invalid parameter value"));
+            }
+            let value = serde_json::Number::from_f64(parsed)
+                .ok_or(GatewayError::InvalidRequest("invalid parameter value"))?;
+            Ok(ValidatedParamValue::Number {
+                raw: raw.to_string(),
+                value,
+            })
+        }
+        ParamKind::Boolean => match raw {
+            "true" => Ok(ValidatedParamValue::Boolean(true)),
+            "false" => Ok(ValidatedParamValue::Boolean(false)),
+            _ => Err(GatewayError::InvalidRequest("invalid parameter value")),
+        },
+    }
 }
 
 impl GatewayService {
@@ -1005,7 +1035,16 @@ mod p03_tests {
             min: None,
             max: None,
             values: Vec::new(),
+            array: false,
+            max_items: None,
         }
+    }
+
+    fn supplied(pairs: &[(&str, &str)]) -> BTreeMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), vec![(*value).to_string()]))
+            .collect()
     }
 
     fn resource(params: Vec<ParamSpec>) -> ResourceSpec {
@@ -1031,12 +1070,12 @@ mod p03_tests {
             ratio,
             param("flag", ParamKind::Boolean),
         ]);
-        let supplied = BTreeMap::from([
-            ("song_id".to_string(), "s".to_string()),
-            ("rank".to_string(), "IN".to_string()),
-            ("limit".to_string(), "30".to_string()),
-            ("ratio".to_string(), "0.5".to_string()),
-            ("flag".to_string(), "true".to_string()),
+        let supplied = supplied(&[
+            ("song_id", "s"),
+            ("rank", "IN"),
+            ("limit", "30"),
+            ("ratio", "0.5"),
+            ("flag", "true"),
         ]);
         let values = validate_params(&spec, &supplied, false).expect("valid params");
         assert_eq!(values["song_id"], ValidatedParamValue::String("s".into()));
@@ -1073,7 +1112,7 @@ mod p03_tests {
         assert!(
             validate_params(
                 &spec,
-                &BTreeMap::from([("other".into(), "x".into())]),
+                &supplied(&[("other", "x")]),
                 false
             )
             .is_err()
@@ -1082,7 +1121,7 @@ mod p03_tests {
         assert!(
             validate_params(
                 &spec,
-                &BTreeMap::from([("song_id".into(), "abc".into())]),
+                &supplied(&[("song_id", "abc")]),
                 false
             )
             .is_err()
@@ -1090,7 +1129,7 @@ mod p03_tests {
         assert!(
             validate_params(
                 &spec,
-                &BTreeMap::from([("rank".into(), "IN".into())]),
+                &supplied(&[("rank", "IN")]),
                 false
             )
             .is_err()
@@ -1098,7 +1137,7 @@ mod p03_tests {
         assert!(
             validate_params(
                 &spec,
-                &BTreeMap::from([("count".into(), "0".into())]),
+                &supplied(&[("count", "0")]),
                 false
             )
             .is_err()
@@ -1106,7 +1145,7 @@ mod p03_tests {
         assert!(
             validate_params(
                 &spec,
-                &BTreeMap::from([("count".into(), "1.5".into())]),
+                &supplied(&[("count", "1.5")]),
                 false
             )
             .is_err()
@@ -1114,7 +1153,7 @@ mod p03_tests {
         assert!(
             validate_params(
                 &spec,
-                &BTreeMap::from([("ratio".into(), "1.5".into())]),
+                &supplied(&[("ratio", "1.5")]),
                 false
             )
             .is_err()
@@ -1122,18 +1161,18 @@ mod p03_tests {
         assert!(
             validate_params(
                 &spec,
-                &BTreeMap::from([("ratio".into(), "NaN".into())]),
+                &supplied(&[("ratio", "NaN")]),
                 false
             )
             .is_err()
         );
         assert!(
-            validate_params(&spec, &BTreeMap::from([("flag".into(), "1".into())]), false).is_err()
+            validate_params(&spec, &supplied(&[("flag", "1")]), false).is_err()
         );
         assert!(
             validate_params(
                 &spec,
-                &BTreeMap::from([("limit".into(), "10".into())]),
+                &supplied(&[("limit", "10")]),
                 false,
             )
             .is_err()
@@ -1143,12 +1182,57 @@ mod p03_tests {
     #[test]
     fn p03_pagination_keys_are_allowed_only_for_list_resources() {
         let spec = resource(Vec::new());
-        let supplied = BTreeMap::from([
-            ("limit".to_string(), "10".to_string()),
-            ("cursor".to_string(), "abc".to_string()),
-        ]);
-        let values = validate_params(&spec, &supplied, true).expect("pagination keys");
+        let query = supplied(&[("limit", "10"), ("cursor", "abc")]);
+        let values = validate_params(&spec, &query, true).expect("pagination keys");
         assert!(values.is_empty());
+    }
+
+    #[test]
+    fn p03_array_params_are_sets_with_a_member_cap() {
+        let mut sections = param("request", ParamKind::Enum);
+        sections.values = vec!["data".into(), "rks".into(), "scoreHistory".into()];
+        sections.array = true;
+        sections.max_items = Some(3);
+        sections.required = false;
+        let spec = resource(vec![sections]);
+
+        let query = BTreeMap::from([(
+            "request".to_string(),
+            vec!["rks".to_string(), "data".to_string(), "rks".to_string()],
+        )]);
+        let values = validate_params(&spec, &query, false).expect("array");
+        assert_eq!(
+            values["request"],
+            ValidatedParamValue::List(vec![
+                ValidatedParamValue::String("data".into()),
+                ValidatedParamValue::String("rks".into()),
+            ]),
+            "members are sorted and de-duplicated"
+        );
+
+        let over_cap = BTreeMap::from([(
+            "request".to_string(),
+            vec![
+                "data".to_string(),
+                "rks".to_string(),
+                "scoreHistory".to_string(),
+                "rks".to_string(),
+            ],
+        )]);
+        assert!(validate_params(&spec, &over_cap, false).is_err());
+
+        let unknown = BTreeMap::from([("request".to_string(), vec!["nope".to_string()])]);
+        assert!(validate_params(&spec, &unknown, false).is_err());
+    }
+
+    #[test]
+    fn p03_scalar_params_reject_repeats() {
+        let spec = resource(vec![param("song_id", ParamKind::String)]);
+        let query = BTreeMap::from([(
+            "song_id".to_string(),
+            vec!["a".to_string(), "b".to_string()],
+        )]);
+        assert!(validate_params(&spec, &query, false).is_err());
     }
 
     #[test]

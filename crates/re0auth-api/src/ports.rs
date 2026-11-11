@@ -1134,6 +1134,8 @@ pub struct ConnectorRecord {
     pub id: ConnectorId,
     /// Stable identifier used in URLs and in `bindings.upstream_id`.
     pub name: String,
+    /// Operator-facing label; empty means "show the name".
+    pub display_name: String,
     pub base_url: String,
     pub allow_private_net: bool,
     pub allow_link_local_metadata: bool,

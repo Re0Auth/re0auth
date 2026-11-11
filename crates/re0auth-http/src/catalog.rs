@@ -35,6 +35,8 @@ impl Catalog {
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct CatalogConnector {
     pub id: String,
+    /// Label for people; `id` remains the key in URLs and bindings.
+    pub display_name: String,
     /// Whether this deployment exposes a binding flow for the connector.
     pub bindable: bool,
     /// Whether the connector may appear in the public OpenAPI document.
@@ -73,6 +75,10 @@ pub struct CatalogParam {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub values: Vec<String>,
+    /// Whether the caller repeats the key to supply a set.
+    pub array: bool,
+    /// Member cap for arrays.
+    pub max_items: Option<usize>,
 }
 
 /// Maps a configured connector/resource pair to the OpenAPI data model.
@@ -86,6 +92,10 @@ pub fn schema_name(connector: &str, resource: &str) -> Option<&'static str> {
         ("phihub", "save_info") => Some("PhihubSaveInfoData"),
         ("phihub", "save") => Some("PhihubSaveData"),
         ("phihub", "history") => Some("PhihubHistoryData"),
+        ("phihub", "song") => Some("PhihubSongData"),
+        ("phihub", "history_v3") => Some("PhihubHistoryV3Data"),
+        ("phihub", "record_v3") => Some("PhihubRecordV3Data"),
+        ("phihub", "record_v4") => Some("PhihubRecordV4Data"),
         ("phigros-query", "save") => Some("PhigrosQuerySaveData"),
         ("phigros-query", "save_rks") => Some("PhigrosQuerySaveRksData"),
         _ => None,
@@ -100,6 +110,16 @@ pub fn schema_json(connector: &str, resource: &str) -> Option<Value> {
         "PhihubSaveInfoData" => schema_value::<re0auth_app::upstream_models::PhihubSaveInfoData>(),
         "PhihubSaveData" => schema_value::<re0auth_app::upstream_models::PhihubSaveData>(),
         "PhihubHistoryData" => schema_value::<re0auth_app::upstream_models::PhihubHistoryData>(),
+        "PhihubSongData" => schema_value::<re0auth_app::upstream_models::PhihubSongData>(),
+        "PhihubHistoryV3Data" => {
+            schema_value::<re0auth_app::upstream_models::PhihubHistoryV3Data>()
+        }
+        "PhihubRecordV3Data" => {
+            schema_value::<re0auth_app::upstream_models::PhihubRecordV3Data>()
+        }
+        "PhihubRecordV4Data" => {
+            schema_value::<re0auth_app::upstream_models::PhihubRecordV4Data>()
+        }
         "PhigrosQuerySaveData" => {
             schema_value::<re0auth_app::upstream_models::PhigrosQuerySaveData>()
         }
@@ -123,6 +143,7 @@ mod tests {
     fn catalog_resources_are_named_in_the_public_contract() {
         let catalog = Catalog::new(vec![CatalogConnector {
             id: "phigros-query".to_string(),
+            display_name: "Phigros Query".to_string(),
             bindable: true,
             openapi_public: true,
             resources: vec![CatalogResource {

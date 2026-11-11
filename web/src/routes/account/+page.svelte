@@ -24,6 +24,7 @@
 		openLogin,
 		readQuery,
 		type Authorization,
+		type BindableUpstream,
 		type Binding,
 		type Identity,
 		type Me
@@ -34,7 +35,7 @@
 	let me = $state<Me | null>(null);
 	let authorizations = $state<Authorization[]>([]);
 	let bindings = $state<Binding[]>([]);
-	let bindableUpstreams = $state<string[]>([]);
+	let bindableUpstreams = $state<BindableUpstream[]>([]);
 	let identities = $state<Identity[]>([]);
 	let attaching = $state(false);
 	let detaching = $state('');
@@ -54,9 +55,16 @@
 	const connectableUpstreams = $derived(
 		bindableUpstreams.filter(
 			(upstream) =>
-				!bindings.some((binding) => binding.connector === upstream && binding.status === 'active')
+				!bindings.some(
+					(binding) => binding.connector === upstream.id && binding.status === 'active'
+				)
 		)
 	);
+
+	// Bindings store the id; show the operator's label when it is configured.
+	function upstreamLabel(id: string): string {
+		return bindableUpstreams.find((upstream) => upstream.id === id)?.display_name ?? id;
+	}
 
 	onMount(async () => {
 		if (readQuery('identity') === 'attached') {
@@ -415,7 +423,7 @@
 						<div class="auth-row-main">
 							<div class="auth-row-title">
 								<Link2 size={17} strokeWidth={1.8} aria-hidden="true" />
-								<span>{binding.connector}</span>
+								<span>{upstreamLabel(binding.connector)}</span>
 							</div>
 							<p class="auth-row-scopes">
 								{state.label}{#if binding.last_refreshed_at}
@@ -430,7 +438,7 @@
 							class="h-9 shrink-0 rounded-sm px-3 text-sm text-fg-2 hover:border-danger/40 hover:text-danger"
 							type="button"
 							disabled={unbinding === binding.id}
-							aria-label={copy.account.unbindLabel(binding.connector)}
+							aria-label={copy.account.unbindLabel(upstreamLabel(binding.connector))}
 							onclick={() => unlink(binding.id)}
 						>
 							{copy.account.unbind}
@@ -455,12 +463,12 @@
 		{/if}
 		{#if connectableUpstreams.length > 0}
 			<div class="account-list">
-				{#each connectableUpstreams as upstream (upstream)}
+				{#each connectableUpstreams as upstream (upstream.id)}
 					<article class="auth-row">
 						<div class="auth-row-main">
 							<div class="auth-row-title">
 								<Link2 size={17} strokeWidth={1.8} aria-hidden="true" />
-								<span>{upstream}</span>
+								<span>{upstream.display_name}</span>
 							</div>
 							<p class="meta">{copy.account.notConnected}</p>
 						</div>
@@ -468,9 +476,9 @@
 							variant="outline"
 							class="h-9 shrink-0 rounded-sm px-3 text-sm"
 							type="button"
-							disabled={connecting === upstream}
-							aria-label={copy.account.connectLabel(upstream)}
-							onclick={() => connect(upstream)}
+							disabled={connecting === upstream.id}
+							aria-label={copy.account.connectLabel(upstream.display_name)}
+							onclick={() => connect(upstream.id)}
 						>
 							<Plus size={15} aria-hidden="true" />
 							{copy.account.connect}

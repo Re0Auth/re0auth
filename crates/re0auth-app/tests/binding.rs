@@ -257,8 +257,11 @@ fn the_service_reports_what_can_be_bound() {
         Arc::new(CountingRandom(std::sync::atomic::AtomicU8::new(1))),
         "https://auth.example.test/bind/callback",
     )
-    .with_bindable_upstreams(vec!["phigros".to_string()]);
-    assert_eq!(service.bindable_upstreams(), ["phigros".to_string()]);
+    .with_bindable_upstreams(vec![re0auth_app::binding::BindableUpstream {
+        id: "phigros".to_string(),
+        display_name: "Phigros Query".to_string(),
+    }]);
+    assert_eq!(service.bindable_upstreams()[0].id, "phigros");
 }
 
 #[tokio::test]

@@ -1,4 +1,5 @@
 use super::*;
+use super::connector::{ParamConfig, ResourceConfig, ViewConfig};
 use re0auth_adapters::storage::SqliteSynchronous;
 use re0auth_api::view::ViewOutput;
 
@@ -536,6 +537,7 @@ fn config_with_connector_oauth(oauth: ConnectorOAuthConfig) -> Config {
     let mut cfg = example();
     cfg.connectors.push(ConnectorConfig {
         id: "phigros".into(),
+        display_name: "Phigros Query".into(),
         base_url: "https://api.example.com".into(),
         allow_private_net: false,
         allow_link_local_metadata: false,
@@ -1110,6 +1112,8 @@ fn string_param(name: &str, location: &str) -> ParamConfig {
         min: None,
         max: None,
         values: Vec::new(),
+        array: false,
+        max_items: None,
     }
 }
 
@@ -1128,6 +1132,8 @@ fn connector_parameters_are_validated_and_typed() {
             min: None,
             max: None,
             values: vec!["EZ".into(), "HD".into(), "IN".into(), "AT".into()],
+            array: false,
+            max_items: None,
         },
         ParamConfig {
             name: "b30_limit".to_string(),
@@ -1140,6 +1146,8 @@ fn connector_parameters_are_validated_and_typed() {
             min: Some(serde_json::Number::from(1)),
             max: Some(serde_json::Number::from(100)),
             values: Vec::new(),
+            array: false,
+            max_items: None,
         },
         ParamConfig {
             name: "is_full_combo".to_string(),
@@ -1152,6 +1160,8 @@ fn connector_parameters_are_validated_and_typed() {
             min: None,
             max: None,
             values: Vec::new(),
+            array: false,
+            max_items: None,
         },
     ];
     let spec = resource_with_params(params, "post")
@@ -1170,6 +1180,55 @@ fn connector_parameters_are_validated_and_typed() {
     assert_eq!(
         spec.params[3].kind,
         re0auth_api::connector::ParamKind::Boolean
+    );
+}
+
+#[test]
+fn connector_parameters_support_repeatable_arrays() {
+    let mut sections = string_param("request", "body");
+    sections.kind = Some("enum".to_string());
+    sections.max_len = None;
+    sections.values = vec!["data".into(), "rks".into(), "scoreHistory".into()];
+    sections.array = true;
+    sections.max_items = Some(3);
+    let spec = resource_with_params(vec![sections], "post")
+        .to_spec()
+        .expect("array param");
+    assert!(spec.params[0].array);
+    assert_eq!(spec.params[0].max_items, Some(3));
+
+    let mut misplaced = string_param("tag", "query");
+    misplaced.max_items = Some(3);
+    assert!(
+        resource_with_params(vec![misplaced], "post")
+            .to_spec()
+            .is_err(),
+        "max_items without array is a declaration mistake"
+    );
+
+    let mut too_many = string_param("tag", "query");
+    too_many.array = true;
+    too_many.max_items = Some(re0auth_api::connector::MAX_ARRAY_ITEMS + 1);
+    assert!(
+        resource_with_params(vec![too_many], "post")
+            .to_spec()
+            .is_err(),
+        "the member cap cannot exceed the gateway ceiling"
+    );
+}
+
+#[test]
+fn a_post_resource_may_declare_an_empty_body() {
+    let mut empty = resource_with_params(Vec::new(), "post");
+    empty.body = Some(std::collections::BTreeMap::new());
+    let spec = empty.to_spec().expect("an explicit empty body is allowed");
+    assert!(spec.body.is_empty());
+
+    let mut absent = resource_with_params(Vec::new(), "post");
+    absent.body = None;
+    assert!(
+        absent.to_spec().is_err(),
+        "an absent body is still a misconfiguration"
     );
 }
 
@@ -1297,18 +1356,3 @@ values = ["EZ", "HD"]
         vec!["EZ".to_string(), "HD".to_string()]
     );
 }
-#[test]
-fn a_post_resource_may_declare_an_empty_body() {
-    let mut empty = resource_with_params(Vec::new(), "post");
-    empty.body = Some(std::collections::BTreeMap::new());
-    let spec = empty.to_spec().expect("an explicit empty body is allowed");
-    assert!(spec.body.is_empty());
-
-    let mut absent = resource_with_params(Vec::new(), "post");
-    absent.body = None;
-    assert!(
-        absent.to_spec().is_err(),
-        "an absent body is still a misconfiguration"
-    );
-}
-

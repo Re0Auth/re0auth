@@ -123,6 +123,19 @@ pub fn key_with_params(
             ValidatedParamValue::Integer(value) => ("i", value.to_string()),
             ValidatedParamValue::Number { raw, .. } => ("n", raw.clone()),
             ValidatedParamValue::Boolean(value) => ("b", value.to_string()),
+            // Members are already sorted and de-duplicated by validation, so a
+            // length-prefixed join cannot be confused by a value holding the
+            // separator.
+            ValidatedParamValue::List(items) => (
+                "l",
+                items
+                    .iter()
+                    .map(|item| {
+                        let value = item.as_query_string();
+                        format!("{}:{value}", value.len())
+                    })
+                    .collect::<String>(),
+            ),
         };
         let _ = write!(
             key,

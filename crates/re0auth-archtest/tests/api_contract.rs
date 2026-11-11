@@ -281,6 +281,7 @@ fn admin_connector_matches_the_spa_schema() {
     let view = AdminConnectorView {
         id: "connector".to_string(),
         name: "phihub".to_string(),
+        display_name: "PhiHub".to_string(),
         base_url: "https://upstream.example".to_string(),
         allow_private_net: false,
         allow_link_local_metadata: false,

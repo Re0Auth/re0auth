@@ -43,7 +43,14 @@ pub(crate) struct BeginView {
 /// The upstreams a user may start a flow for, as configured.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct BindableUpstreamsView {
-    pub(crate) upstreams: Vec<String>,
+    pub(crate) upstreams: Vec<BindableUpstreamView>,
+}
+
+/// One connectable upstream: `id` is the key, `display_name` is the label.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct BindableUpstreamView {
+    pub(crate) id: String,
+    pub(crate) display_name: String,
 }
 
 /// Creates a binding flow and returns where to send the browser.
@@ -121,7 +128,14 @@ pub(crate) async fn upstreams(
     };
     Ok(no_store(
         Json(BindableUpstreamsView {
-            upstreams: binding.bindable_upstreams().to_vec(),
+            upstreams: binding
+                .bindable_upstreams()
+                .iter()
+                .map(|upstream| BindableUpstreamView {
+                    id: upstream.id.clone(),
+                    display_name: upstream.display_name.clone(),
+                })
+                .collect(),
         })
         .into_response(),
     ))

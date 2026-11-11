@@ -100,6 +100,8 @@ pub struct AdminResourceView {
 pub struct AdminConnectorView {
     pub id: String,
     pub name: String,
+    /// Operator-facing label; falls back to `name` when unset.
+    pub display_name: String,
     pub base_url: String,
     pub allow_private_net: bool,
     pub allow_link_local_metadata: bool,
@@ -718,9 +720,15 @@ impl AdminService {
         record: ConnectorRecord,
     ) -> Result<AdminConnectorView, AdminError> {
         let resources = self.storage.connectors().resources(&record.id).await?;
+        let display_name = if record.display_name.trim().is_empty() {
+            record.name.clone()
+        } else {
+            record.display_name
+        };
         Ok(AdminConnectorView {
             id: record.id.0.to_string(),
             name: record.name,
+            display_name,
             base_url: record.base_url,
             allow_private_net: record.allow_private_net,
             allow_link_local_metadata: record.allow_link_local_metadata,

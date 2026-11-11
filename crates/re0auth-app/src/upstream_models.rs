@@ -20,6 +20,10 @@ pub enum UpstreamData {
     PhihubSaveInfo(PhihubSaveInfoData),
     PhihubSave(PhihubSaveData),
     PhihubHistory(PhihubHistoryData),
+    PhihubSong(PhihubSongData),
+    PhihubHistoryV3(PhihubHistoryV3Data),
+    PhihubRecordV3(PhihubRecordV3Data),
+    PhihubRecordV4(PhihubRecordV4Data),
     PhigrosQuerySave(PhigrosQuerySaveData),
     PhigrosQuerySaveRks(PhigrosQuerySaveRksData),
     Page(crate::gateway::PageBody),
@@ -82,6 +86,86 @@ pub struct PhihubHistoryData {
     pub challenge_mode_rank: Vec<Value>,
     #[serde(rename = "scoreHistory")]
     pub score_history: HashMap<String, HashMap<String, Vec<Value>>>,
+}
+
+/// `POST /get/cloud/song`: every difficulty of one song, or one difficulty.
+///
+/// Upstream returns a four-slot array (missing difficulties are `null`) when
+/// `difficulty` is absent, and a single record when it is present.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum PhihubSongData {
+    All(Vec<Option<PhihubRecord>>),
+    One(PhihubRecord),
+}
+
+/// One v3 history point whose value is the player's RKS.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRksPoint {
+    pub date: String,
+    pub value: f64,
+}
+
+/// One v3 history point whose value is the challenge-mode rank.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubChallengeRankPoint {
+    pub date: String,
+    pub value: u32,
+}
+
+/// One v3 history point whose value is the five cleared/full-combo/phi counters.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubClearCountPoint {
+    pub date: String,
+    pub value: [u32; 5],
+}
+
+/// `POST /get/history/history`: the legacy v3 history document.
+///
+/// `score_history` rows are upstream-owned positional arrays
+/// `[acc, score, date, full_combo]`; the bucket shape is not a JSON object, so
+/// it stays `Value` rather than pretending to be a struct.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PhihubHistoryV3Data {
+    pub challenge_mode_rank: Vec<PhihubChallengeRankPoint>,
+    pub data: Vec<PhihubClearCountPoint>,
+    pub rks: Vec<PhihubRksPoint>,
+    pub score_history: HashMap<String, HashMap<String, Vec<Value>>>,
+    pub version: u32,
+}
+
+/// `POST /get/history/record`: whole history, one song, or one difficulty's rows.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum PhihubRecordV3Data {
+    /// Song id → difficulty → rows.
+    All(HashMap<String, HashMap<String, Vec<Value>>>),
+    /// Difficulty → rows.
+    Song(HashMap<String, Vec<Value>>),
+    /// Rows only.
+    Rows(Vec<Value>),
+}
+
+/// `POST /get/history/recordV4`: the v4 envelope carries `version` and `timezone`
+/// beside `data`, so the declared view keeps all three.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRecordV4Data {
+    pub data: Option<PhihubRecordV4Payload>,
+    pub version: u32,
+    pub timezone: String,
+}
+
+/// The v4 sibling of [`PhihubRecordV3Data`]; series are `dateValue` buckets.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum PhihubRecordV4Payload {
+    /// Song id → difficulty → series.
+    All(HashMap<String, HashMap<String, Vec<Value>>>),
+    /// Difficulty → series.
+    Song(HashMap<String, Vec<Value>>),
+    /// One series.
+    Series(Vec<Value>),
 }
 
 // ---------------------------------------------------------------------------

@@ -966,7 +966,10 @@ fn the_binding_shapes_match_the_spas_schemas() {
     );
 
     let upstreams = serde_json::to_value(crate::binding_routes::BindableUpstreamsView {
-        upstreams: vec!["phigros".to_string()],
+        upstreams: vec![crate::binding_routes::BindableUpstreamView {
+            id: "phigros".to_string(),
+            display_name: "Phigros Query".to_string(),
+        }],
     })
     .expect("serialise BindableUpstreamsView");
     assert_eq!(

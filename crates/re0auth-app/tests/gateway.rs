@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -136,9 +135,10 @@ async fn harness_with_cache(cache: Arc<dyn re0auth_api::cache::Cache>) -> Harnes
     }
 }
 
-fn empty_params() -> &'static BTreeMap<String, String> {
-    static EMPTY: OnceLock<BTreeMap<String, String>> = OnceLock::new();
-    EMPTY.get_or_init(BTreeMap::new)
+fn empty_params() -> &'static BTreeMap<String, Vec<String>> {
+    static EMPTY: std::sync::LazyLock<BTreeMap<String, Vec<String>>> =
+        std::sync::LazyLock::new(BTreeMap::new);
+    &EMPTY
 }
 
 impl Harness {
@@ -1387,8 +1387,8 @@ async fn pagination_on_a_non_list_resource_is_rejected_before_the_upstream() {
     let app = harness().await;
     let granted = scopes();
     let params = BTreeMap::from([
-        ("limit".to_string(), "1".to_string()),
-        ("cursor".to_string(), "x".to_string()),
+        ("limit".to_string(), vec!["1".to_string()]),
+        ("cursor".to_string(), vec!["x".to_string()]),
     ]);
     let error = app
         .service

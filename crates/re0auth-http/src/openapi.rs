@@ -95,6 +95,7 @@ use crate::{AppState, admin, binding_routes};
         binding_routes::BeginBody,
         binding_routes::BeginView,
         binding_routes::BindableUpstreamsView,
+        binding_routes::BindableUpstreamView,
         oauth::ConsentBody,
         oauth::DiscoveryDocument,
         oauth::JwksDocument,
@@ -133,6 +134,14 @@ use crate::{AppState, admin, binding_routes};
         re0auth_app::upstream_models::PhihubSaveInfoData,
         re0auth_app::upstream_models::PhihubSaveData,
         re0auth_app::upstream_models::PhihubHistoryData,
+        re0auth_app::upstream_models::PhihubSongData,
+        re0auth_app::upstream_models::PhihubHistoryV3Data,
+        re0auth_app::upstream_models::PhihubRksPoint,
+        re0auth_app::upstream_models::PhihubChallengeRankPoint,
+        re0auth_app::upstream_models::PhihubClearCountPoint,
+        re0auth_app::upstream_models::PhihubRecordV3Data,
+        re0auth_app::upstream_models::PhihubRecordV4Data,
+        re0auth_app::upstream_models::PhihubRecordV4Payload,
         re0auth_app::upstream_models::PhigrosQuerySaveData,
         re0auth_app::upstream_models::PhigrosQuerySaveRksData,
         re0auth_app::upstream_models::PhigrosQueryParsedSave,
@@ -181,12 +190,26 @@ pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
         for resource in &connector.resources {
             let mut parameters = Vec::new();
             for param in &resource.params {
-                parameters.push(json!({
+                let mut entry = json!({
                     "name": param.name,
                     "in": "query",
                     "required": param.required,
                     "schema": param_schema(param),
-                }));
+                });
+                if param.array {
+                    // Repeated keys are the HTML form spelling: form + explode.
+                    entry["style"] = json!("form");
+                    entry["explode"] = json!(true);
+                    let mut schema = json!({
+                        "type": "array",
+                        "items": param_schema(param),
+                    });
+                    if let Some(max) = param.max_items {
+                        schema["maxItems"] = json!(max);
+                    }
+                    entry["schema"] = schema;
+                }
+                parameters.push(entry);
             }
             if resource.paginated {
                 parameters.push(json!({
@@ -414,6 +437,10 @@ mod tests {
             "PhihubSaveInfoData",
             "PhihubSaveData",
             "PhihubHistoryData",
+            "PhihubSongData",
+            "PhihubHistoryV3Data",
+            "PhihubRecordV3Data",
+            "PhihubRecordV4Data",
             "PhigrosQuerySaveData",
             "PhigrosQuerySaveRksData",
         ] {
@@ -422,8 +449,8 @@ mod tests {
         let union = &json["components"]["schemas"]["UpstreamData"]["oneOf"];
         assert_eq!(
             union.as_array().map(Vec::len),
-            Some(6),
-            "the union carries five resource models plus PageBody"
+            Some(10),
+            "the union carries nine resource models plus PageBody"
         );
     }
 
@@ -434,6 +461,7 @@ mod tests {
         let catalog = Catalog::new(vec![
             CatalogConnector {
                 id: "phigros".to_string(),
+                display_name: "Phigros Query".to_string(),
                 bindable: true,
                 openapi_public: true,
                 resources: vec![CatalogResource {
@@ -445,23 +473,42 @@ mod tests {
                     raw_path: "/api/v1/raw/phigros/save".to_string(),
                     data_schema: Some("PhigrosQuerySaveData".to_string()),
                     schema_url: Some("/api/v1/upstreams/phigros/save/schema".to_string()),
-                    params: vec![CatalogParam {
-                        name: "song_id".to_string(),
-                        location: "query".to_string(),
-                        upstream: "song_id".to_string(),
-                        kind: "string".to_string(),
-                        required: true,
-                        min_len: Some(1),
-                        max_len: Some(64),
-                        min: None,
-                        max: None,
-                        values: Vec::new(),
-                    }],
+                    params: vec![
+                        CatalogParam {
+                            name: "song_id".to_string(),
+                            location: "query".to_string(),
+                            upstream: "song_id".to_string(),
+                            kind: "string".to_string(),
+                            required: true,
+                            min_len: Some(1),
+                            max_len: Some(64),
+                            min: None,
+                            max: None,
+                            values: Vec::new(),
+                            array: false,
+                            max_items: None,
+                        },
+                        CatalogParam {
+                            name: "request".to_string(),
+                            location: "query".to_string(),
+                            upstream: "request".to_string(),
+                            kind: "enum".to_string(),
+                            required: false,
+                            min_len: None,
+                            max_len: None,
+                            min: None,
+                            max: None,
+                            values: vec!["data".to_string(), "rks".to_string()],
+                            array: true,
+                            max_items: Some(8),
+                        },
+                    ],
                     paginated: true,
                 }],
             },
             CatalogConnector {
                 id: "private".to_string(),
+                display_name: "private".to_string(),
                 bindable: false,
                 openapi_public: false,
                 resources: Vec::new(),
@@ -488,6 +535,16 @@ mod tests {
         assert_eq!(parameters[0]["schema"]["maxLength"], 64);
         assert!(parameters.iter().any(|p| p["name"] == "limit"));
         assert!(parameters.iter().any(|p| p["name"] == "cursor"));
+        let request = parameters
+            .iter()
+            .find(|p| p["name"] == "request")
+            .expect("request parameter");
+        assert_eq!(request["style"], "form");
+        assert_eq!(request["explode"], true);
+        assert_eq!(request["schema"]["type"], "array");
+        assert_eq!(request["schema"]["maxItems"], 8);
+        assert_eq!(request["schema"]["items"]["type"], "string");
+        assert_eq!(request["schema"]["items"]["enum"][0], "data");
         assert!(!paths.keys().any(|path| path.contains("private")));
     }
 
@@ -513,18 +570,21 @@ mod tests {
         let catalog = Catalog::new(vec![
             CatalogConnector {
                 id: "a".to_string(),
+                display_name: "a".to_string(),
                 bindable: false,
                 openapi_public: true,
                 resources: vec![resource("a", "bc")],
             },
             CatalogConnector {
                 id: "ab".to_string(),
+                display_name: "ab".to_string(),
                 bindable: false,
                 openapi_public: true,
                 resources: vec![resource("ab", "c")],
             },
             CatalogConnector {
                 id: "private".to_string(),
+                display_name: "private".to_string(),
                 bindable: false,
                 openapi_public: false,
                 resources: vec![resource("private", "save")],

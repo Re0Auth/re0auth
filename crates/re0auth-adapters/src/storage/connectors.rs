@@ -43,6 +43,7 @@ fn row_to_connector(row: &SqliteRow) -> RepoResult<ConnectorRecord> {
             &row.try_get::<String, _>("id").map_err(db_error)?,
         )?),
         name: row.try_get("name").map_err(db_error)?,
+        display_name: row.try_get("display_name").map_err(db_error)?,
         base_url: row.try_get("base_url").map_err(db_error)?,
         allow_private_net: row
             .try_get::<i64, _>("allow_private_net")
@@ -68,11 +69,12 @@ impl ConnectorRepo for SqliteStore {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
         sqlx::query(
             "INSERT INTO connectors \
-             (id, name, base_url, allow_private_net, allow_link_local_metadata, \
+             (id, name, display_name, base_url, allow_private_net, allow_link_local_metadata, \
               created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET \
              name = excluded.name, \
+             display_name = excluded.display_name, \
              base_url = excluded.base_url, \
              allow_private_net = excluded.allow_private_net, \
              allow_link_local_metadata = excluded.allow_link_local_metadata, \
@@ -80,6 +82,7 @@ impl ConnectorRepo for SqliteStore {
         )
         .bind(connector.id.0.to_string())
         .bind(&connector.name)
+        .bind(&connector.display_name)
         .bind(&connector.base_url)
         .bind(i64::from(connector.allow_private_net))
         .bind(i64::from(connector.allow_link_local_metadata))
@@ -122,7 +125,7 @@ impl ConnectorRepo for SqliteStore {
 
     async fn get(&self, id: &ConnectorId) -> RepoResult<Option<ConnectorRecord>> {
         let row = sqlx::query(
-            "SELECT id, name, base_url, allow_private_net, allow_link_local_metadata, \
+            "SELECT id, name, display_name, base_url, allow_private_net, allow_link_local_metadata, \
              created_at, updated_at FROM connectors WHERE id = ?",
         )
         .bind(id.0.to_string())
@@ -134,7 +137,7 @@ impl ConnectorRepo for SqliteStore {
 
     async fn find_by_name(&self, name: &str) -> RepoResult<Option<ConnectorRecord>> {
         let row = sqlx::query(
-            "SELECT id, name, base_url, allow_private_net, allow_link_local_metadata, \
+            "SELECT id, name, display_name, base_url, allow_private_net, allow_link_local_metadata, \
              created_at, updated_at FROM connectors WHERE name = ?",
         )
         .bind(name)
@@ -146,7 +149,7 @@ impl ConnectorRepo for SqliteStore {
 
     async fn list(&self) -> RepoResult<Vec<ConnectorRecord>> {
         let rows = sqlx::query(
-            "SELECT id, name, base_url, allow_private_net, allow_link_local_metadata, \
+            "SELECT id, name, display_name, base_url, allow_private_net, allow_link_local_metadata, \
              created_at, updated_at FROM connectors ORDER BY name",
         )
         .fetch_all(&self.pool)

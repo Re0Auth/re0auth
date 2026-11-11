@@ -257,6 +257,9 @@ fn param_value_json(value: &ValidatedParamValue) -> serde_json::Value {
         }
         ValidatedParamValue::Number { value, .. } => serde_json::Value::Number(value.clone()),
         ValidatedParamValue::Boolean(value) => serde_json::Value::Bool(*value),
+        ValidatedParamValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(param_value_json).collect())
+        }
     }
 }
 
@@ -308,7 +311,18 @@ pub fn build_url(
     if !query_params.is_empty() {
         let mut pairs = url.query_pairs_mut();
         for (name, value) in query_params {
-            pairs.append_pair(name, &value.as_query_string());
+            match value {
+                // A set travels as repeated pairs; the comma-joined form is
+                // only for display and cache keys.
+                ValidatedParamValue::List(items) => {
+                    for item in items {
+                        pairs.append_pair(name, &item.as_query_string());
+                    }
+                }
+                scalar => {
+                    pairs.append_pair(name, &scalar.as_query_string());
+                }
+            }
         }
     }
     Ok(url.to_string())
@@ -398,6 +412,8 @@ mod tests {
             min: None,
             max: None,
             values: Vec::new(),
+            array: false,
+            max_items: None,
         }
     }
 
@@ -895,6 +911,41 @@ mod tests {
         )
         .expect("url");
         assert!(url.ends_with("?ratio=1.5000000000000001"), "{url}");
+    }
+
+    #[test]
+    fn an_array_param_becomes_a_json_array_in_the_body() {
+        let mut spec = post_spec(vec![BodyField {
+            name: "delegation_token".to_string(),
+            value: BodyValue::Credential,
+        }]);
+        let mut sections = param("request", "request", ParamLocation::Body, ParamKind::Enum);
+        sections.array = true;
+        spec.params = vec![sections];
+        let params = BTreeMap::from([(
+            "request".to_string(),
+            ValidatedParamValue::List(vec![
+                ValidatedParamValue::String("data".to_string()),
+                ValidatedParamValue::String("rks".to_string()),
+            ]),
+        )]);
+        let (body, credential_in_body) = build_body(&spec, "player", "secret", &params);
+        assert!(credential_in_body);
+        assert_eq!(body["request"], serde_json::json!(["data", "rks"]));
+    }
+
+    #[test]
+    fn an_array_param_repeats_its_pairs_in_the_query() {
+        let params = BTreeMap::from([(
+            "tag".to_string(),
+            ValidatedParamValue::List(vec![
+                ValidatedParamValue::String("a".to_string()),
+                ValidatedParamValue::String("b".to_string()),
+            ]),
+        )]);
+        let url = build_url("https://api.example.com", "/v1/scores", "player", &params)
+            .expect("url");
+        assert_eq!(url, "https://api.example.com/v1/scores?tag=a&tag=b");
     }
 
     #[test]
