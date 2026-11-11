@@ -1809,10 +1809,14 @@ struct FailingSigner;
 
 impl TokenSigner for FailingSigner {
     fn sign_access(&self, _: &AccessTokenClaims) -> re0auth_api::Re0Result<String> {
-        Err(re0auth_api::Re0Error::Internal("signing failed".to_string()))
+        Err(re0auth_api::Re0Error::Internal(
+            "signing failed".to_string(),
+        ))
     }
     fn sign_id(&self, _: &IdTokenClaims) -> re0auth_api::Re0Result<String> {
-        Err(re0auth_api::Re0Error::Internal("signing failed".to_string()))
+        Err(re0auth_api::Re0Error::Internal(
+            "signing failed".to_string(),
+        ))
     }
     fn sign_approval_ticket(&self, _: &ApprovalTicketClaims) -> re0auth_api::Re0Result<String> {
         panic!("not used")

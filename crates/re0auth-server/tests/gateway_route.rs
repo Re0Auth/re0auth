@@ -465,7 +465,11 @@ async fn a_suspended_client_is_refused_by_the_gateway() {
     fixture
         .store
         .clients()
-        .set_status(&fixture.client_id, ClientStatus::Suspended, SystemClock.now())
+        .set_status(
+            &fixture.client_id,
+            ClientStatus::Suspended,
+            SystemClock.now(),
+        )
         .await
         .expect("suspend client");
 

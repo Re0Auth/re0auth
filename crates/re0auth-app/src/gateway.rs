@@ -1133,74 +1133,16 @@ mod p03_tests {
             param("flag", ParamKind::Boolean),
         ]);
 
-        assert!(
-            validate_params(
-                &spec,
-                &supplied(&[("other", "x")]),
-                false
-            )
-            .is_err()
-        );
+        assert!(validate_params(&spec, &supplied(&[("other", "x")]), false).is_err());
         assert!(validate_params(&spec, &BTreeMap::new(), false).is_err());
-        assert!(
-            validate_params(
-                &spec,
-                &supplied(&[("song_id", "abc")]),
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_params(
-                &spec,
-                &supplied(&[("rank", "IN")]),
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_params(
-                &spec,
-                &supplied(&[("count", "0")]),
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_params(
-                &spec,
-                &supplied(&[("count", "1.5")]),
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_params(
-                &spec,
-                &supplied(&[("ratio", "1.5")]),
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_params(
-                &spec,
-                &supplied(&[("ratio", "NaN")]),
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_params(&spec, &supplied(&[("flag", "1")]), false).is_err()
-        );
-        assert!(
-            validate_params(
-                &spec,
-                &supplied(&[("limit", "10")]),
-                false,
-            )
-            .is_err()
-        );
+        assert!(validate_params(&spec, &supplied(&[("song_id", "abc")]), false).is_err());
+        assert!(validate_params(&spec, &supplied(&[("rank", "IN")]), false).is_err());
+        assert!(validate_params(&spec, &supplied(&[("count", "0")]), false).is_err());
+        assert!(validate_params(&spec, &supplied(&[("count", "1.5")]), false).is_err());
+        assert!(validate_params(&spec, &supplied(&[("ratio", "1.5")]), false).is_err());
+        assert!(validate_params(&spec, &supplied(&[("ratio", "NaN")]), false).is_err());
+        assert!(validate_params(&spec, &supplied(&[("flag", "1")]), false).is_err());
+        assert!(validate_params(&spec, &supplied(&[("limit", "10")]), false,).is_err());
     }
 
     #[test]

@@ -596,7 +596,11 @@ impl ConnectorConfig {
     #[must_use]
     pub fn effective_display_name(&self) -> &str {
         let trimmed = self.display_name.trim();
-        if trimmed.is_empty() { &self.id } else { trimmed }
+        if trimmed.is_empty() {
+            &self.id
+        } else {
+            trimmed
+        }
     }
 }
 

@@ -114,12 +114,8 @@ pub fn schema_json(connector: &str, resource: &str) -> Option<Value> {
         "PhihubHistoryV3Data" => {
             schema_value::<re0auth_app::upstream_models::PhihubHistoryV3Data>()
         }
-        "PhihubRecordV3Data" => {
-            schema_value::<re0auth_app::upstream_models::PhihubRecordV3Data>()
-        }
-        "PhihubRecordV4Data" => {
-            schema_value::<re0auth_app::upstream_models::PhihubRecordV4Data>()
-        }
+        "PhihubRecordV3Data" => schema_value::<re0auth_app::upstream_models::PhihubRecordV3Data>(),
+        "PhihubRecordV4Data" => schema_value::<re0auth_app::upstream_models::PhihubRecordV4Data>(),
         "PhigrosQuerySaveData" => {
             schema_value::<re0auth_app::upstream_models::PhigrosQuerySaveData>()
         }

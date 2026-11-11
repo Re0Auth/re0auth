@@ -1,5 +1,5 @@
-use super::*;
 use super::connector::{ParamConfig, ResourceConfig, ViewConfig};
+use super::*;
 use re0auth_adapters::storage::SqliteSynchronous;
 use re0auth_api::view::ViewOutput;
 

@@ -943,8 +943,8 @@ mod tests {
                 ValidatedParamValue::String("b".to_string()),
             ]),
         )]);
-        let url = build_url("https://api.example.com", "/v1/scores", "player", &params)
-            .expect("url");
+        let url =
+            build_url("https://api.example.com", "/v1/scores", "player", &params).expect("url");
         assert_eq!(url, "https://api.example.com/v1/scores?tag=a&tag=b");
     }
 
