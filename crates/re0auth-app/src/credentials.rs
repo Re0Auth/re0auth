@@ -4,7 +4,7 @@
 //! so the read path never reaches a connector's token-minting code directly.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use secrecy::ExposeSecret;
@@ -166,7 +166,7 @@ pub struct BindingCredentialService {
     auth: Arc<dyn ConnectorRefresh>,
     sealer: Arc<dyn SecretSealer>,
     clock: Arc<dyn Clock>,
-    locks: Mutex<HashMap<BindingId, Arc<tokio::sync::Mutex<()>>>>,
+    locks: Mutex<HashMap<BindingId, Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl BindingCredentialService {
@@ -190,10 +190,13 @@ impl BindingCredentialService {
 
     fn lock_for(&self, id: BindingId) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self.locks.lock().expect("credential locks");
-        locks
-            .entry(id)
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
+        if let Some(lock) = locks.get(&id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(id, Arc::downgrade(&lock));
+        lock
     }
 
     async fn load(&self, binding: &Binding) -> Result<LoadedCredential, CredentialError> {
