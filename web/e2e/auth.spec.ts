@@ -239,7 +239,7 @@ function createAdminSession(config: string): { name: string; value: string; url:
 	const created = spawnSync(
 		binary,
 		['--config', config, 'admin', 'create-user', '--display-name', 'Race Admin', '--role', 'admin'],
-		{ encoding: 'utf8' }
+		{ cwd: work, encoding: 'utf8' }
 	);
 	if (created.status !== 0) throw new Error(`create admin failed: ${created.stderr}`);
 	const userId = created.stdout
@@ -250,7 +250,7 @@ function createAdminSession(config: string): { name: string; value: string; url:
 	const createdSession = spawnSync(
 		binary,
 		['--config', config, 'admin', 'create-session', '--user-id', userId],
-		{ encoding: 'utf8' }
+		{ cwd: work, encoding: 'utf8' }
 	);
 	if (createdSession.status !== 0) {
 		throw new Error(`create admin session failed: ${createdSession.stderr}`);
