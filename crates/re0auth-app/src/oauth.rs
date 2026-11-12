@@ -817,7 +817,8 @@ impl OAuthService {
             scopes: grant.scopes.clone(),
             created_at: now,
             family_created_at: now,
-            auth_time: now,
+            // 首次兑换沿用用户实际认证时间，刷新时才接力传递。
+            auth_time: grant.auth_time,
             expires_at: now + re0auth_domain::refresh_token_ttl(now),
             consumed_at: None,
             revoked_at: None,

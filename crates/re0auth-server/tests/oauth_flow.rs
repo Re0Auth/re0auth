@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
@@ -14,7 +15,7 @@ use re0auth_api::oauth::{
 use re0auth_api::ports::{
     Client, ClientStatus, Consent, RefreshToken, Session, Storage, User, UserRole, UserStatus,
 };
-use re0auth_api::{ClientId, Clock, FamilyId, RefreshTokenId, SessionId, UserId};
+use re0auth_api::{ClientId, Clock, FamilyId, RefreshTokenId, SessionId, Unix, UserId};
 use re0auth_app::admin;
 use re0auth_app::auth::AuthService;
 use re0auth_app::oauth::{OAuthError, OAuthService, hash_secret};
@@ -38,9 +39,30 @@ impl Drop for KeyGuard {
     }
 }
 
+/// 可控时钟：让首次兑换与后续刷新落在不同秒，证明 `auth_time` 不随兑换漂移。
+#[derive(Clone)]
+struct ManualClock(Arc<AtomicI64>);
+
+impl ManualClock {
+    fn new(now: Unix) -> Self {
+        Self(Arc::new(AtomicI64::new(now)))
+    }
+
+    fn advance(&self, seconds: Unix) {
+        self.0.fetch_add(seconds, Ordering::SeqCst);
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> Unix {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 struct TestApp {
     router: axum::Router,
     store: SqliteStore,
+    clock: ManualClock,
     client_id: ClientId,
     user_id: UserId,
     key: KeyGuard,
@@ -54,12 +76,13 @@ async fn setup() -> TestApp {
     let key = KeyGuard(key_path.clone());
     let signer =
         Arc::new(RsaTokenSigner::load_or_generate(&key_path, ISSUER, 1_000, &[]).expect("signer"));
-    let clock = Arc::new(SystemClock);
+    let clock = ManualClock::new(SystemClock.now());
+    let clock_arc = Arc::new(clock.clone());
     let random = Arc::new(OsRandom);
     let oauth = OAuthService::new(
         Arc::new(store.clone()),
         signer.clone(),
-        clock.clone(),
+        clock_arc.clone(),
         random.clone(),
         Arc::new(
             re0auth_adapters::client_secret::HmacClientSecretHasher::new(TEST_MASTER)
@@ -71,7 +94,7 @@ async fn setup() -> TestApp {
         Arc::new(store.clone()),
         vec![],
         signer,
-        clock,
+        clock_arc,
         random,
         ISSUER,
     );
@@ -138,6 +161,7 @@ async fn setup() -> TestApp {
             ))),
         ),
         store,
+        clock,
         client_id,
         user_id,
         key,
@@ -1897,6 +1921,46 @@ async fn a_signing_failure_on_code_exchange_inserts_no_refresh_token() {
         .exchange_code(app.client_id, None, &code, REDIRECT_URI, VERIFIER)
         .await;
     assert!(matches!(result, Err(OAuthError::Internal)), "{result:?}");
+
+    drop(app.key);
+}
+
+/// 首次兑换沿用用户实际认证时间，刷新接力传递同一时刻。
+#[tokio::test]
+async fn refresh_preserves_the_original_authentication_time() {
+    let app = setup().await;
+    let code = approve_authorization(&app, "state-auth-time").await;
+    // 兑换晚于认证 60 秒（授权码 TTL 是 5 分钟）：旧实现会把 auth_time 记成这一刻。
+    app.clock.advance(60);
+    let tokens = body_json(exchange_code(&app, &code).await).await;
+    let first_auth_time = jwt_payload(tokens["id_token"].as_str().expect("id token"))["auth_time"]
+        .as_i64()
+        .expect("auth_time");
+    let refresh = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_string();
+    let stored = app
+        .store
+        .refresh_tokens()
+        .find(&hash_secret(&refresh))
+        .await
+        .expect("find refresh token")
+        .expect("refresh token exists");
+    assert_eq!(
+        stored.auth_time, first_auth_time,
+        "the stored row must carry the authentication time, not the exchange time"
+    );
+
+    // 再过 60 秒刷新：新 ID Token 的 auth_time 必须仍是同一时刻。
+    app.clock.advance(60);
+    let response = refresh_tokens(&app, &refresh).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let refreshed = body_json(response).await;
+    assert_eq!(
+        jwt_payload(refreshed["id_token"].as_str().expect("id token"))["auth_time"],
+        first_auth_time
+    );
 
     drop(app.key);
 }
