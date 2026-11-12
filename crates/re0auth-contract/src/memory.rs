@@ -1261,6 +1261,17 @@ impl ConnectorRepo for MemoryStore {
             .unwrap_or_default())
     }
 
+    async fn resources_all(&self) -> RepoResult<Vec<(ConnectorId, ResourceSpec)>> {
+        let inner = self.lock();
+        Ok(inner
+            .connectors
+            .iter()
+            .flat_map(|(id, (_, resources))| {
+                resources.iter().map(|resource| (*id, resource.clone()))
+            })
+            .collect())
+    }
+
     async fn delete(&self, id: &ConnectorId) -> RepoResult<bool> {
         let mut inner = self.lock();
         inner

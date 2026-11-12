@@ -987,6 +987,7 @@ pub trait ConnectorRepo: Send + Sync {
     async fn find_by_name(&self, name: &str) -> RepoResult<Option<ConnectorRecord>>;
     async fn list(&self) -> RepoResult<Vec<ConnectorRecord>>;
     async fn resources(&self, id: &ConnectorId) -> RepoResult<Vec<ResourceSpec>>;
+    async fn resources_all(&self) -> RepoResult<Vec<(ConnectorId, ResourceSpec)>>;
     /// Removes a connector, its resources and its secrets (FK cascade).
     async fn delete(&self, id: &ConnectorId) -> RepoResult<bool>;
 

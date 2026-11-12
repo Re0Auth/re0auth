@@ -95,6 +95,37 @@ fn row_to_connector(row: &SqliteRow) -> RepoResult<ConnectorRecord> {
     })
 }
 
+fn row_to_resource(row: &SqliteRow) -> RepoResult<ResourceSpec> {
+    let name: String = row.try_get("name").map_err(db_error)?;
+    let path_template: String = row.try_get("path_template").map_err(db_error)?;
+    let required_scope: String = row.try_get("required_scope").map_err(db_error)?;
+    let method_raw: String = row.try_get("method").map_err(db_error)?;
+    let method = ResourceMethod::parse(&method_raw).ok_or_else(|| {
+        RepoError::Backend(format!("stored resource: unknown method {method_raw:?}"))
+    })?;
+    let idempotent: i64 = row.try_get("idempotent").map_err(db_error)?;
+    let body_raw: String = row.try_get("body_json").map_err(db_error)?;
+    let typed_body_raw: Option<String> = row.try_get("body_typed_json").map_err(db_error)?;
+    let raw_body_raw: Option<String> = row.try_get("raw_body_json").map_err(db_error)?;
+    let spec = ResourceSpec::new(name, path_template)
+        .map_err(|error| RepoError::Backend(format!("stored resource: {error}")))?;
+    let spec = if let Some(raw) = raw_body_raw {
+        let raw_body = parse_raw_body(&raw)?;
+        spec.with_transport_declared(method, Vec::new(), idempotent != 0, true)
+            .and_then(|spec| spec.with_raw_body(raw_body))
+    } else if let Some(raw) = typed_body_raw {
+        let body = parse_typed_body(&raw)?;
+        spec.with_transport_declared(method, body, idempotent != 0, true)
+    } else {
+        let body = parse_body(&body_raw)?;
+        let body_declared = method == ResourceMethod::Post || !body.is_empty();
+        spec.with_transport_declared(method, body, idempotent != 0, body_declared)
+    }
+    .and_then(|spec| spec.with_scope(required_scope))
+    .map_err(|error| RepoError::Backend(format!("stored resource: {error}")))?;
+    Ok(spec)
+}
+
 #[async_trait]
 impl ConnectorRepo for SqliteStore {
     async fn upsert(
@@ -210,42 +241,24 @@ impl ConnectorRepo for SqliteStore {
         .fetch_all(&self.pool)
         .await
         .map_err(db_error)?;
+        rows.iter().map(row_to_resource).collect()
+    }
+
+    async fn resources_all(&self) -> RepoResult<Vec<(ConnectorId, ResourceSpec)>> {
+        let rows = sqlx::query(
+            "SELECT connector_id, name, path_template, required_scope, method, idempotent, \
+             body_json, body_typed_json, raw_body_json \
+             FROM connector_resources ORDER BY connector_id, name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?;
         rows.iter()
             .map(|row| {
-                let name: String = row.try_get("name").map_err(db_error)?;
-                let path_template: String = row.try_get("path_template").map_err(db_error)?;
-                let required_scope: String = row.try_get("required_scope").map_err(db_error)?;
-                let method_raw: String = row.try_get("method").map_err(db_error)?;
-                let method = ResourceMethod::parse(&method_raw).ok_or_else(|| {
-                    RepoError::Backend(format!("stored resource: unknown method {method_raw:?}"))
-                })?;
-                let idempotent: i64 = row.try_get("idempotent").map_err(db_error)?;
-                let body_raw: String = row.try_get("body_json").map_err(db_error)?;
-                let typed_body_raw: Option<String> =
-                    row.try_get("body_typed_json").map_err(db_error)?;
-                let raw_body_raw: Option<String> =
-                    row.try_get("raw_body_json").map_err(db_error)?;
-                // Rebuild through the constructor so a hand-edited row cannot
-                // smuggle in a template or body the gateway would otherwise accept.
-                let spec = ResourceSpec::new(name, path_template)
-                    .map_err(|error| RepoError::Backend(format!("stored resource: {error}")))?;
-                let spec = if let Some(raw) = raw_body_raw {
-                    let raw_body = parse_raw_body(&raw)?;
-                    spec.with_transport_declared(method, Vec::new(), idempotent != 0, true)
-                        .and_then(|spec| spec.with_raw_body(raw_body))
-                } else if let Some(raw) = typed_body_raw {
-                    let body = parse_typed_body(&raw)?;
-                    spec.with_transport_declared(method, body, idempotent != 0, true)
-                } else {
-                    let body = parse_body(&body_raw)?;
-                    // Old rows have no declaration bit. For POST, `{}` is the
-                    // only possible legacy spelling of an explicit empty body.
-                    let body_declared = method == ResourceMethod::Post || !body.is_empty();
-                    spec.with_transport_declared(method, body, idempotent != 0, body_declared)
-                }
-                .and_then(|spec| spec.with_scope(required_scope))
-                .map_err(|error| RepoError::Backend(format!("stored resource: {error}")))?;
-                Ok(spec)
+                let connector = ConnectorId(parse_uuid(
+                    &row.try_get::<String, _>("connector_id").map_err(db_error)?,
+                )?);
+                Ok((connector, row_to_resource(row)?))
             })
             .collect()
     }

@@ -698,11 +698,23 @@ impl AdminService {
 
     pub async fn list_connectors(&self) -> Result<Vec<AdminConnectorView>, AdminError> {
         let records = self.storage.connectors().list().await?;
-        let mut views = Vec::with_capacity(records.len());
-        for record in records {
-            views.push(self.connector_view(record).await?);
+        let mut resources = std::collections::HashMap::new();
+        for (connector, resource) in self.storage.connectors().resources_all().await? {
+            resources
+                .entry(connector)
+                .or_insert_with(Vec::new)
+                .push(resource);
         }
-        Ok(views)
+        for entries in resources.values_mut() {
+            entries.sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        Ok(records
+            .into_iter()
+            .map(|record| {
+                let entries = resources.remove(&record.id).unwrap_or_default();
+                Self::connector_view(record, entries)
+            })
+            .collect())
     }
 
     pub async fn get_connector(&self, id: &ConnectorId) -> Result<AdminConnectorView, AdminError> {
@@ -712,20 +724,20 @@ impl AdminService {
             .get(id)
             .await?
             .ok_or(AdminError::NotFound)?;
-        self.connector_view(record).await
+        let resources = self.storage.connectors().resources(&record.id).await?;
+        Ok(Self::connector_view(record, resources))
     }
 
-    async fn connector_view(
-        &self,
+    fn connector_view(
         record: ConnectorRecord,
-    ) -> Result<AdminConnectorView, AdminError> {
-        let resources = self.storage.connectors().resources(&record.id).await?;
+        resources: Vec<re0auth_api::connector::ResourceSpec>,
+    ) -> AdminConnectorView {
         let display_name = if record.display_name.trim().is_empty() {
             record.name.clone()
         } else {
             record.display_name
         };
-        Ok(AdminConnectorView {
+        AdminConnectorView {
             id: record.id.0.to_string(),
             name: record.name,
             display_name,
@@ -742,7 +754,7 @@ impl AdminService {
                     idempotent: spec.idempotent,
                 })
                 .collect(),
-        })
+        }
     }
 
     // ---- Bindings --------------------------------------------------------

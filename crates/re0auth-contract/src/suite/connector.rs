@@ -95,6 +95,14 @@ pub async fn connector_contract<S: Storage>(store: &S) {
         stored, expected,
         "the entire resource specification must survive the mirror"
     );
+    let bulk = store
+        .connectors()
+        .resources_all()
+        .await
+        .expect("all resources");
+    let mut bulk_specs: Vec<_> = bulk.into_iter().map(|(_, resource)| resource).collect();
+    bulk_specs.sort_by(|left, right| left.name.cmp(&right.name));
+    assert_eq!(bulk_specs, expected);
 
     // A second upsert replaces the resource set rather than merging it: a
     // template removed from the config must stop being reachable.
