@@ -156,16 +156,14 @@ impl ScheduledTask for TelemetryFlushJob {
             }
         }
 
-        let mut appended = 0u64;
-        let mut failures = Vec::new();
-        for event in &batch {
-            match self.storage.audits().append(&Self::to_record(event)).await {
-                Ok(()) => appended += 1,
-                // One bad row must not drop the rest of the batch: the queue is
-                // lossy by design, but losing a whole batch to one failure is not.
-                Err(error) => failures.push(error.to_string()),
-            }
-        }
+        let records: Vec<_> = batch.iter().map(Self::to_record).collect();
+        let (appended, failures) = self
+            .storage
+            .audits()
+            .append_batch(&records)
+            .await
+            .map_err(|error| TaskError::failed(error.to_string()))?;
+        let failures: Vec<_> = failures.iter().map(ToString::to_string).collect();
         self.report_drops();
         if failures.is_empty() {
             return Ok(());

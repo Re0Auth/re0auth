@@ -79,6 +79,32 @@ fn row_to_audit(row: &SqliteRow) -> RepoResult<AuditRecord> {
     })
 }
 
+async fn append_with_executor<'e, E>(record: &AuditRecord, executor: E) -> RepoResult<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO audit_logs \
+         (id, occurred_at, actor_user_id, client_id, action, target, outcome, request_id, \
+          severity, detail_json, tier) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'telemetry')",
+    )
+    .bind(record.id.0.to_string())
+    .bind(record.occurred_at)
+    .bind(record.actor_user_id.map(|id| id.0.to_string()))
+    .bind(record.client_id.map(|id| id.0.to_string()))
+    .bind(record.action.as_str())
+    .bind(&record.target)
+    .bind(record.outcome.as_str())
+    .bind(record.request_id.as_deref())
+    .bind(record.severity.as_str())
+    .bind(&record.detail)
+    .execute(executor)
+    .await
+    .map_err(db_error)?;
+    Ok(())
+}
+
 #[async_trait]
 impl AuditRepo for SqliteStore {
     async fn recent(&self, limit: u32) -> RepoResult<Vec<AuditRecord>> {
@@ -119,29 +145,44 @@ impl AuditRepo for SqliteStore {
     }
 
     async fn append(&self, record: &AuditRecord) -> RepoResult<()> {
-        // The tier is forced rather than taken from the record: this port is the
-        // telemetry path (ADR-0025), and letting a caller write a security fact
-        // through the lossy path would be exactly the mistake it exists to prevent.
-        sqlx::query(
-            "INSERT INTO audit_logs \
-             (id, occurred_at, actor_user_id, client_id, action, target, outcome, request_id, \
-              severity, detail_json, tier) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'telemetry')",
-        )
-        .bind(record.id.0.to_string())
-        .bind(record.occurred_at)
-        .bind(record.actor_user_id.map(|id| id.0.to_string()))
-        .bind(record.client_id.map(|id| id.0.to_string()))
-        .bind(record.action.as_str())
-        .bind(&record.target)
-        .bind(record.outcome.as_str())
-        .bind(record.request_id.as_deref())
-        .bind(record.severity.as_str())
-        .bind(&record.detail)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(())
+        append_with_executor(record, &self.pool).await
+    }
+
+    async fn append_batch(&self, records: &[AuditRecord]) -> RepoResult<(u64, Vec<RepoError>)> {
+        if records.is_empty() {
+            return Ok((0, Vec::new()));
+        }
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let mut appended = 0;
+        let mut failures = Vec::new();
+        for record in records {
+            sqlx::query("SAVEPOINT telemetry_append")
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            match append_with_executor(record, &mut *tx).await {
+                Ok(()) => {
+                    sqlx::query("RELEASE SAVEPOINT telemetry_append")
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db_error)?;
+                    appended += 1;
+                }
+                Err(error) => {
+                    sqlx::query("ROLLBACK TO SAVEPOINT telemetry_append")
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db_error)?;
+                    sqlx::query("RELEASE SAVEPOINT telemetry_append")
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db_error)?;
+                    failures.push(error);
+                }
+            }
+        }
+        tx.commit().await.map_err(db_error)?;
+        Ok((appended, failures))
     }
 
     async fn record_fact(&self, fact: &SecurityFact) -> RepoResult<()> {

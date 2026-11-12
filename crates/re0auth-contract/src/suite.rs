@@ -1130,6 +1130,30 @@ pub async fn audit_contract<S: Storage>(store: &S) {
             .any(|record| record.tier == AuditTier::Telemetry),
         "telemetry survives a fact purge"
     );
+
+    let second = AuditRecord {
+        id: AuditId::new(),
+        ..telemetry.clone()
+    };
+    let first = AuditRecord {
+        id: AuditId::new(),
+        ..telemetry.clone()
+    };
+    let (appended, failures) = store
+        .audits()
+        .append_batch(&[first, second])
+        .await
+        .expect("append telemetry batch");
+    assert_eq!(appended, 2);
+    assert!(failures.is_empty());
+    let records = store.audits().recent(100).await.expect("batched rows");
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.tier == AuditTier::Telemetry)
+            .count(),
+        3
+    );
 }
 
 /// Admin listings and filters (B1): cursor order, role change, secret rotation,

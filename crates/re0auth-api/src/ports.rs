@@ -1187,6 +1187,8 @@ pub trait AuditRepo: Send + Sync {
     /// Appends a telemetry-tier record. Best effort by contract; callers count
     /// drops rather than retrying forever.
     async fn append(&self, record: &AuditRecord) -> RepoResult<()>;
+    /// 单事务批量写入，逐行隔离失败。
+    async fn append_batch(&self, records: &[AuditRecord]) -> RepoResult<(u64, Vec<RepoError>)>;
     /// Appends a security fact at fact tier.
     ///
     /// Separate from [`Self::append`], which forces telemetry: an action with no
