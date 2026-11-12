@@ -128,6 +128,8 @@ impl GatewayService {
             resource,
             cache_key,
             Arc::clone(&flight),
+            binding,
+            request.correlation_id.map(str::to_string),
             permit,
             connector_probe,
             binding_probe,
@@ -147,6 +149,8 @@ impl GatewayService {
         resource: ResourceRequest,
         cache_key: String,
         flight: Arc<AssetFlight>,
+        binding: Option<Binding>,
+        correlation_id: Option<String>,
         permit: tokio::sync::OwnedSemaphorePermit,
         mut connector_probe: Probe,
         mut binding_probe: Option<Probe>,
@@ -201,6 +205,30 @@ impl GatewayService {
                     }
                 }
                 Ok(Err(error)) => {
+                    let error = if let (Some(binding), Some(probe)) = (&binding, &mut binding_probe)
+                    {
+                        match service
+                            .apply_failure(
+                                binding,
+                                &mut connector_probe,
+                                probe,
+                                &error,
+                                now,
+                                correlation_id.as_deref(),
+                            )
+                            .await
+                        {
+                            Ok(()) => error,
+                            Err(apply_error) => {
+                                tracing::error!(error = %apply_error, "failed to record asset credential status");
+                                UpstreamError::Internal
+                            }
+                        }
+                    } else {
+                        let outcome = Outcome::from_fault_class(error.fault_class());
+                        connector_probe.settle(outcome, now);
+                        error
+                    };
                     if !service.asset_negative_ttl.is_zero()
                         && matches!(
                             error,

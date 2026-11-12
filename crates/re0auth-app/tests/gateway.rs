@@ -2427,6 +2427,42 @@ async fn shared_asset_users_share_one_upstream_call_and_cache_entry() {
 }
 
 #[tokio::test]
+async fn asset_credential_expiry_marks_the_binding_needs_reauth() {
+    let app = asset_harness(false).await;
+    app.harness
+        .connector
+        .set_asset_error("jacket", UpstreamError::CredentialExpired);
+    let error = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &scopes(),
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect_err("asset requires fresh credentials");
+    assert!(matches!(
+        error,
+        GatewayError::Upstream(UpstreamError::CredentialExpired)
+    ));
+    let binding = app
+        .harness
+        .store
+        .bindings()
+        .get(&app.harness.binding.id)
+        .await
+        .expect("load binding")
+        .expect("binding");
+    assert_eq!(binding.status, BindingStatus::NeedsReauth);
+    assert_eq!(binding.last_error_code.as_deref(), Some("upstream_401"));
+}
+
+#[tokio::test]
 async fn unavailable_assets_are_negative_cached_unless_ttl_is_zero() {
     let app = asset_harness(false).await;
     app.harness
