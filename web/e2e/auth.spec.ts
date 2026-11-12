@@ -517,7 +517,7 @@ test('admin audit keeps the newest filter response', async ({ browser }) => {
 		} else {
 			await initialResponse.promise;
 			await route.fulfill({
-				json: items: [auditRow('stale-filter')], next_cursor: null }
+				json: { items: [auditRow('stale-filter')], next_cursor: null }
 			});
 			initialResponded.resolve();
 		}
