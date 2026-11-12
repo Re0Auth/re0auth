@@ -30,6 +30,8 @@ pub enum UpstreamData {
     PhihubInfoFileVersion(PhihubInfoFileVersionData),
     PhihubPlayerIds(PhihubPlayerIdsData),
     PhihubRank(PhihubRankData),
+    PhihubRankSummary(PhihubRankSummaryData),
+    PhihubTagNames(PhihubTagNamesData),
     PhigrosVerifyPublicKey(PhigrosVerifyPublicKeyData),
     PhigrosStatsSummary(PhigrosStatsSummaryData),
     PhigrosLeaderboard(PhigrosLeaderboardPage),
@@ -423,6 +425,18 @@ pub struct PhihubRankData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRankSummaryData {
+    pub total: i64,
+    pub start_rank: i64,
+    pub end_rank: i64,
+    pub users: Vec<PhihubRankUser>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct PhihubTagNamesData(pub Vec<String>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PhihubRankUser {
     pub gameuser: PhihubRankGameUser,
     #[serde(rename = "saveInfo")]
@@ -569,6 +583,33 @@ mod tests {
         }));
         assert_eq!(data.total, 152735);
         assert_eq!(data.users[0].save_info.summary.challenge_mode_rank, 551);
+    }
+
+    #[test]
+    fn rank_summary_sample_matches() {
+        let data: PhihubRankSummaryData = decode(json!({
+            "total": 152769,
+            "start_rank": 1,
+            "end_rank": 5,
+            "users": [{
+                "gameuser": {"background": "Rrharil.TeamGrimoire.0"},
+                "saveInfo": {
+                    "summary": {"rankingScore": 17.32, "challengeModeRank": 551, "avatar": "Gino-AprilFool"},
+                    "modifiedAt": {"iso": "2026-10-24T23:07:40.987Z"},
+                    "PlayerId": "TEN—风风"
+                },
+                "index": 1,
+                "me": false
+            }]
+        }));
+        assert_eq!(data.start_rank, 1);
+        assert_eq!(data.users[0].index, 1);
+    }
+
+    #[test]
+    fn tag_names_sample_matches() {
+        let data: PhihubTagNamesData = decode(json!(["差速", "脑裂"]));
+        assert_eq!(data.0.len(), 2);
     }
 
     #[test]

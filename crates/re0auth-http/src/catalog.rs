@@ -102,6 +102,8 @@ pub fn schema_name(connector: &str, resource: &str) -> Option<&'static str> {
         ("phihub", "info_file_version") => Some("PhihubInfoFileVersionData"),
         ("phihub", "player_ids") => Some("PhihubPlayerIdsData"),
         ("phihub", "rank_by_rank") => Some("PhihubRankData"),
+        ("phihub", "rank_summary") => Some("PhihubRankSummaryData"),
+        ("phihub", "tag_names") => Some("PhihubTagNamesData"),
         ("phigros-query", "verify_public_key") => Some("PhigrosVerifyPublicKeyData"),
         ("phigros-query", "stats_summary") => Some("PhigrosStatsSummaryData"),
         ("phigros-query", "leaderboard_top") => Some("PhigrosLeaderboardPage"),
@@ -138,6 +140,10 @@ pub fn schema_json(connector: &str, resource: &str) -> Option<Value> {
             schema_value::<re0auth_app::upstream_models::PhihubPlayerIdsData>()
         }
         "PhihubRankData" => schema_value::<re0auth_app::upstream_models::PhihubRankData>(),
+        "PhihubRankSummaryData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubRankSummaryData>()
+        }
+        "PhihubTagNamesData" => schema_value::<re0auth_app::upstream_models::PhihubTagNamesData>(),
         "PhigrosVerifyPublicKeyData" => {
             schema_value::<re0auth_app::upstream_models::PhigrosVerifyPublicKeyData>()
         }
@@ -199,6 +205,8 @@ mod tests {
             ("phihub", "info_file_version"),
             ("phihub", "player_ids"),
             ("phihub", "rank_by_rank"),
+            ("phihub", "rank_summary"),
+            ("phihub", "tag_names"),
             ("phigros-query", "verify_public_key"),
             ("phigros-query", "stats_summary"),
             ("phigros-query", "leaderboard_top"),

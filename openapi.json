@@ -5812,6 +5812,35 @@
           }
         }
       },
+      "PhihubRankSummaryData": {
+        "type": "object",
+        "required": [
+          "total",
+          "start_rank",
+          "end_rank",
+          "users"
+        ],
+        "properties": {
+          "end_rank": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "start_rank": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhihubRankUser"
+            }
+          }
+        }
+      },
       "PhihubRankUser": {
         "type": "object",
         "required": [
@@ -6095,6 +6124,12 @@
           }
         ],
         "description": "`POST /get/cloud/song`: every difficulty of one song, or one difficulty.\n\nUpstream returns a four-slot array (missing difficulties are `null`) when\n`difficulty` is absent, and a single record when it is present."
+      },
+      "PhihubTagNamesData": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "ProblemBody": {
         "type": "object",
@@ -6403,6 +6438,12 @@
           },
           {
             "$ref": "#/components/schemas/PhihubRankData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubRankSummaryData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubTagNamesData"
           },
           {
             "$ref": "#/components/schemas/PhigrosVerifyPublicKeyData"
