@@ -235,7 +235,7 @@ function createClient(config: string, name: string): string {
 		.slice('client_id='.length);
 }
 
-function createAdminSession(config: string): { name: string; value: string; url: string } {
+function createAdminSession(config: string): Array<{ name: string; value: string; url: string }> {
 	const created = spawnSync(
 		binary,
 		['--config', config, 'admin', 'create-user', '--display-name', 'Race Admin', '--role', 'admin'],
@@ -260,7 +260,15 @@ function createAdminSession(config: string): { name: string; value: string; url:
 		.find((line) => line.startsWith('session_cookie='));
 	if (!line) throw new Error('admin session cookie was not returned');
 	const [name, value] = line.slice('session_cookie='.length).split('=');
-	return { name, value, url: APP };
+	const csrfLine = createdSession.stdout
+		.split('\n')
+		.find((line) => line.startsWith('csrf_token='));
+	if (!csrfLine) throw new Error('admin session CSRF token was not returned');
+	const csrf = csrfLine.slice('csrf_token='.length).trim();
+	return [
+		{ name, value, url: APP },
+		{ name: 're0auth_csrf', value: csrf, url: APP }
+	];
 }
 
 async function startRe0auth(): Promise<void> {
