@@ -469,6 +469,50 @@ async fn rebinding_keeps_the_id_and_says_so() {
 }
 
 #[tokio::test]
+async fn a_flow_started_before_revocation_cannot_reactivate_the_binding() {
+    let (store, service, user) = setup(RecordingAuth::ok()).await;
+    let first = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    let created = service
+        .complete(user, &first.state, "code-1")
+        .await
+        .expect("first");
+    let stale = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("restart");
+    store
+        .bindings()
+        .revoke(
+            &created.binding.id,
+            &SecurityFact::new(AuditAction::BindingRevoked, NOW + 1, "binding"),
+            NOW + 1,
+        )
+        .await
+        .expect("revoke");
+
+    let result = service.complete(user, &stale.state, "code-2").await;
+    assert!(matches!(result, Err(BindingError::FlowNotValid)));
+    let stored = store
+        .bindings()
+        .find(&user, "phigros")
+        .await
+        .expect("find")
+        .expect("binding kept");
+    assert_eq!(stored.status, BindingStatus::Revoked);
+    assert_eq!(
+        store
+            .bindings()
+            .load_sub_credential(&stored.id)
+            .await
+            .expect("credential"),
+        None
+    );
+}
+
+#[tokio::test]
 async fn rebinding_invalidates_cached_responses() {
     let cache: Arc<dyn Cache> = Arc::new(ClockedCache::new(
         MemoryCache::new(),

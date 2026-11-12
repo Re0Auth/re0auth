@@ -89,6 +89,7 @@ impl BindingRepo for MemoryStore {
         binding: &Binding,
         sealed: &SealedSecret,
         fact: &SecurityFact,
+        flow_started_at: Unix,
         _now: Unix,
     ) -> RepoResult<Binding> {
         let mut inner = self.lock();
@@ -106,6 +107,13 @@ impl BindingRepo for MemoryStore {
             Some(existing_id) => {
                 if existing_id != binding.id {
                     return Err(RepoError::Conflict("binding id"));
+                }
+                if inner
+                    .binding_revocations
+                    .get(&existing_id)
+                    .is_some_and(|revoked| *revoked >= flow_started_at)
+                {
+                    return Err(RepoError::Conflict("binding revoked"));
                 }
                 Binding {
                     created_at: inner

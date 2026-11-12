@@ -54,6 +54,7 @@ impl BindingRepo for SqliteStore {
         binding: &Binding,
         sealed: &SealedSecret,
         fact: &SecurityFact,
+        flow_started_at: Unix,
         now: Unix,
     ) -> RepoResult<Binding> {
         let mut tx = self
@@ -63,7 +64,7 @@ impl BindingRepo for SqliteStore {
             .map_err(db_error)?;
 
         let existing = sqlx::query(
-            "SELECT id, created_at FROM bindings WHERE user_id = ? AND upstream_id = ?",
+            "SELECT id, created_at, revoked_at FROM bindings WHERE user_id = ? AND upstream_id = ?",
         )
         .bind(binding.user_id.0.to_string())
         .bind(&binding.upstream_id)
@@ -77,6 +78,10 @@ impl BindingRepo for SqliteStore {
                 )?);
                 if stored_id != binding.id {
                     return Err(RepoError::Conflict("binding id"));
+                }
+                let revoked_at: Option<i64> = row.try_get("revoked_at").map_err(db_error)?;
+                if revoked_at.is_some_and(|revoked| revoked >= flow_started_at) {
+                    return Err(RepoError::Conflict("binding revoked"));
                 }
                 Binding {
                     created_at: row.try_get("created_at").map_err(db_error)?,

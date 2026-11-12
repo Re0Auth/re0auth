@@ -208,6 +208,7 @@ pub async fn binding_contract<S: Storage>(store: &S) {
             &combined,
             &fact(AuditAction::BindingRebound, 1_280, "binding"),
             1_280,
+            1_280,
         )
         .await
         .expect("upsert with credential");
@@ -262,6 +263,7 @@ pub async fn binding_contract<S: Storage>(store: &S) {
                 &wrong_sealed,
                 &fact(AuditAction::BindingRebound, 1_290, "binding"),
                 1_290,
+                1_290,
             )
             .await,
         Err(RepoError::Conflict("binding id"))
@@ -303,6 +305,59 @@ pub async fn binding_contract<S: Storage>(store: &S) {
             .expect("load after revoke"),
         None
     );
+    let revoked = store
+        .bindings()
+        .find(&user.id, "phigros")
+        .await
+        .expect("find revoked")
+        .expect("binding kept");
+    assert_eq!(revoked.status, BindingStatus::Revoked);
+    assert!(matches!(
+        store
+            .bindings()
+            .upsert_with_credential(
+                &with_credential,
+                &wrong_sealed,
+                &fact(AuditAction::BindingRebound, 1_300, "binding"),
+                1_299,
+                1_300,
+            )
+            .await,
+        Err(RepoError::Conflict("binding revoked"))
+    ));
+    assert_eq!(
+        store
+            .bindings()
+            .load_sub_credential(&first.id)
+            .await
+            .expect("stale flow credential"),
+        None
+    );
+
+    let fresh = Binding {
+        updated_at: 1_301,
+        ..with_credential.clone()
+    };
+    store
+        .bindings()
+        .upsert_with_credential(
+            &fresh,
+            &wrong_sealed,
+            &fact(AuditAction::BindingRebound, 1_301, "binding"),
+            1_301,
+            1_301,
+        )
+        .await
+        .expect("flow started after revocation");
+    store
+        .bindings()
+        .revoke(
+            &first.id,
+            &fact(AuditAction::BindingRevoked, 1_302, "binding"),
+            1_302,
+        )
+        .await
+        .expect("restore revoked binding");
     let revoked = store
         .bindings()
         .find(&user.id, "phigros")

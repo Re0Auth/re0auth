@@ -333,9 +333,12 @@ impl BindingService {
         let stored = self
             .storage
             .bindings()
-            .upsert_with_credential(&binding, &sealed, &fact, now)
+            .upsert_with_credential(&binding, &sealed, &fact, pending.created_at, now)
             .await
-            .map_err(|error| BindingError::Internal(error.to_string()))?;
+            .map_err(|error| match error {
+                RepoError::Conflict("binding revoked") => BindingError::FlowNotValid,
+                error => BindingError::Internal(error.to_string()),
+            })?;
         // Commit first, then sweep: a concurrent read must never repopulate the
         // old key before the new binding is durable.
         self.cache.invalidate(&binding_prefix(&stored.id)).await;

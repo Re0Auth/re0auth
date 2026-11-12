@@ -1058,12 +1058,14 @@ pub trait BindingRepo: Send + Sync {
     /// exists under another id, returns `Conflict("binding id")` instead of
     /// attaching the credential to the wrong row. The returned binding carries
     /// the stored id/created_at, and the fact target is rewritten to
-    /// `binding:{id}`.
+    /// `binding:{id}`。
+    /// 撤销不早于流程启动时拒绝旧回调。
     async fn upsert_with_credential(
         &self,
         binding: &Binding,
         sealed: &SealedSecret,
         fact: &SecurityFact,
+        flow_started_at: Unix,
         now: Unix,
     ) -> RepoResult<Binding>;
     async fn find(&self, user: &UserId, upstream: &str) -> RepoResult<Option<Binding>>;
