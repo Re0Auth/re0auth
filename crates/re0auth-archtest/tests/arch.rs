@@ -2397,8 +2397,9 @@ fn request_path_logs_are_absent_and_would_be_redacted() {
     // Two sites log an opaque binding id and a coarse error kind:
     // admin_service.rs (single revoke) and binding.rs (cascade batch). The asset
     // loader's third site logs only a panic message, with no request path or credential.
+    // The fourth logs only an internal GatewayError from recording binding status.
     assert_eq!(
-        call_sites, 3,
+        call_sites, 4,
         "the request path now has {call_sites} `tracing::*!` call site(s); this guard was \
          written when there were none. Re-read each site for token or secret \
          interpolation, then update the expected count here."
