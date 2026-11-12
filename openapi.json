@@ -4649,6 +4649,31 @@
           }
         }
       },
+      "PhigrosChartText": {
+        "type": "object",
+        "required": [
+          "song",
+          "difficulty",
+          "acc",
+          "rks"
+        ],
+        "properties": {
+          "acc": {
+            "type": "number",
+            "format": "double"
+          },
+          "difficulty": {
+            "type": "string"
+          },
+          "rks": {
+            "type": "number",
+            "format": "double"
+          },
+          "song": {
+            "type": "string"
+          }
+        }
+      },
       "PhigrosDifficulty": {
         "type": "string",
         "enum": [
@@ -4705,6 +4730,28 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "PhigrosFeatureUsage": {
+        "type": "object",
+        "required": [
+          "feature",
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "feature": {
+            "type": "string"
+          },
+          "lastAt": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4931,6 +4978,75 @@
           },
           "IN": {
             "$ref": "#/components/schemas/PhigrosCfcPCounts"
+          }
+        }
+      },
+      "PhigrosLeaderboardItem": {
+        "type": "object",
+        "required": [
+          "rank",
+          "user",
+          "score",
+          "updatedAt"
+        ],
+        "properties": {
+          "alias": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "apTop3": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PhigrosChartText"
+            }
+          },
+          "bestTop3": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PhigrosChartText"
+            }
+          },
+          "rank": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "score": {
+            "type": "number",
+            "format": "double"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "PhigrosLeaderboardPage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhigrosLeaderboardItem"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -5193,6 +5309,48 @@
           }
         }
       },
+      "PhigrosStatsSummaryData": {
+        "type": "object",
+        "required": [
+          "timezone",
+          "features"
+        ],
+        "properties": {
+          "config_start_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhigrosFeatureUsage"
+            }
+          },
+          "first_event_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_event_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "range_start_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timezone": {
+            "type": "string"
+          }
+        }
+      },
       "PhigrosSummary": {
         "type": "object",
         "required": [
@@ -5256,6 +5414,21 @@
           },
           "show_player_id": {
             "type": "boolean"
+          }
+        }
+      },
+      "PhigrosVerifyPublicKeyData": {
+        "type": "object",
+        "required": [
+          "version",
+          "public_key"
+        ],
+        "properties": {
+          "public_key": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
           }
         }
       },
@@ -5430,6 +5603,178 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "PhihubInfoFileVersionData": {
+        "type": "object",
+        "required": [
+          "version",
+          "version_code",
+          "version_label",
+          "update_date",
+          "whatsnew"
+        ],
+        "properties": {
+          "update_date": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "version_code": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "version_label": {
+            "type": "string"
+          },
+          "whatsnew": {
+            "type": "string"
+          }
+        }
+      },
+      "PhihubPlayerId": {
+        "type": "object",
+        "required": [
+          "api_id",
+          "player_id",
+          "rks",
+          "avatar",
+          "clg_mode"
+        ],
+        "properties": {
+          "api_id": {
+            "type": "string"
+          },
+          "avatar": {
+            "type": "string"
+          },
+          "clg_mode": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "player_id": {
+            "type": "string"
+          },
+          "rks": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "PhihubPlayerIdsData": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/PhihubPlayerId"
+        }
+      },
+      "PhihubRankData": {
+        "type": "object",
+        "required": [
+          "total",
+          "users"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhihubRankUser"
+            }
+          }
+        }
+      },
+      "PhihubRankGameUser": {
+        "type": "object",
+        "required": [
+          "background"
+        ],
+        "properties": {
+          "background": {
+            "type": "string"
+          }
+        }
+      },
+      "PhihubRankModifiedAt": {
+        "type": "object",
+        "required": [
+          "iso"
+        ],
+        "properties": {
+          "iso": {
+            "type": "string"
+          }
+        }
+      },
+      "PhihubRankSaveInfo": {
+        "type": "object",
+        "required": [
+          "summary",
+          "modifiedAt",
+          "PlayerId"
+        ],
+        "properties": {
+          "PlayerId": {
+            "type": "string"
+          },
+          "modifiedAt": {
+            "$ref": "#/components/schemas/PhihubRankModifiedAt"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/PhihubRankSummary"
+          }
+        }
+      },
+      "PhihubRankSummary": {
+        "type": "object",
+        "required": [
+          "rankingScore",
+          "challengeModeRank",
+          "avatar"
+        ],
+        "properties": {
+          "avatar": {
+            "type": "string"
+          },
+          "challengeModeRank": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rankingScore": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "PhihubRankUser": {
+        "type": "object",
+        "required": [
+          "gameuser",
+          "saveInfo",
+          "index",
+          "me"
+        ],
+        "properties": {
+          "gameuser": {
+            "$ref": "#/components/schemas/PhihubRankGameUser"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "me": {
+            "type": "boolean"
+          },
+          "saveInfo": {
+            "$ref": "#/components/schemas/PhihubRankSaveInfo"
           }
         }
       },
@@ -5988,6 +6333,24 @@
           },
           {
             "$ref": "#/components/schemas/PhigrosQuerySaveRksData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubInfoFileVersionData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubPlayerIdsData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubRankData"
+          },
+          {
+            "$ref": "#/components/schemas/PhigrosVerifyPublicKeyData"
+          },
+          {
+            "$ref": "#/components/schemas/PhigrosStatsSummaryData"
+          },
+          {
+            "$ref": "#/components/schemas/PhigrosLeaderboardPage"
           },
           {
             "$ref": "#/components/schemas/PageBody"

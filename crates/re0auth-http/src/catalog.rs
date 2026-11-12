@@ -98,6 +98,12 @@ pub fn schema_name(connector: &str, resource: &str) -> Option<&'static str> {
         ("phihub", "record_v4") => Some("PhihubRecordV4Data"),
         ("phigros-query", "save") => Some("PhigrosQuerySaveData"),
         ("phigros-query", "save_rks") => Some("PhigrosQuerySaveRksData"),
+        ("phihub", "info_file_version") => Some("PhihubInfoFileVersionData"),
+        ("phihub", "player_ids") => Some("PhihubPlayerIdsData"),
+        ("phihub", "rank_by_rank") => Some("PhihubRankData"),
+        ("phigros-query", "verify_public_key") => Some("PhigrosVerifyPublicKeyData"),
+        ("phigros-query", "stats_summary") => Some("PhigrosStatsSummaryData"),
+        ("phigros-query", "leaderboard_top") => Some("PhigrosLeaderboardPage"),
         _ => None,
     }
 }
@@ -121,6 +127,22 @@ pub fn schema_json(connector: &str, resource: &str) -> Option<Value> {
         }
         "PhigrosQuerySaveRksData" => {
             schema_value::<re0auth_app::upstream_models::PhigrosQuerySaveRksData>()
+        }
+        "PhihubInfoFileVersionData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubInfoFileVersionData>()
+        }
+        "PhihubPlayerIdsData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubPlayerIdsData>()
+        }
+        "PhihubRankData" => schema_value::<re0auth_app::upstream_models::PhihubRankData>(),
+        "PhigrosVerifyPublicKeyData" => {
+            schema_value::<re0auth_app::upstream_models::PhigrosVerifyPublicKeyData>()
+        }
+        "PhigrosStatsSummaryData" => {
+            schema_value::<re0auth_app::upstream_models::PhigrosStatsSummaryData>()
+        }
+        "PhigrosLeaderboardPage" => {
+            schema_value::<re0auth_app::upstream_models::PhigrosLeaderboardPage>()
         }
         _ => return None,
     };
@@ -165,5 +187,26 @@ mod tests {
         let save_schema = schema_json("phigros-query", "save").expect("schema");
         assert!(save_schema.get("properties").is_some());
         assert!(schema_json("phigros-query", "unknown").is_none());
+    }
+
+    #[test]
+    fn public_batch_resources_declare_a_schema() {
+        for (connector, resource) in [
+            ("phihub", "info_file_version"),
+            ("phihub", "player_ids"),
+            ("phihub", "rank_by_rank"),
+            ("phigros-query", "verify_public_key"),
+            ("phigros-query", "stats_summary"),
+            ("phigros-query", "leaderboard_top"),
+        ] {
+            assert!(
+                schema_name(connector, resource).is_some(),
+                "{connector}/{resource} has no schema name"
+            );
+            assert!(
+                schema_json(connector, resource).is_some(),
+                "{connector}/{resource} has no schema document"
+            );
+        }
     }
 }

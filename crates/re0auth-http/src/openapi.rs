@@ -157,6 +157,21 @@ use crate::{AppState, admin, binding_routes};
         re0auth_app::upstream_models::PhigrosChartRankingScore,
         re0auth_app::upstream_models::PhigrosGradeCounts,
         re0auth_app::upstream_models::PhigrosCfcPCounts,
+        re0auth_app::upstream_models::PhihubInfoFileVersionData,
+        re0auth_app::upstream_models::PhihubPlayerIdsData,
+        re0auth_app::upstream_models::PhihubPlayerId,
+        re0auth_app::upstream_models::PhihubRankData,
+        re0auth_app::upstream_models::PhihubRankUser,
+        re0auth_app::upstream_models::PhihubRankGameUser,
+        re0auth_app::upstream_models::PhihubRankSaveInfo,
+        re0auth_app::upstream_models::PhihubRankSummary,
+        re0auth_app::upstream_models::PhihubRankModifiedAt,
+        re0auth_app::upstream_models::PhigrosVerifyPublicKeyData,
+        re0auth_app::upstream_models::PhigrosStatsSummaryData,
+        re0auth_app::upstream_models::PhigrosFeatureUsage,
+        re0auth_app::upstream_models::PhigrosLeaderboardPage,
+        re0auth_app::upstream_models::PhigrosLeaderboardItem,
+        re0auth_app::upstream_models::PhigrosChartText,
     ))
 )]
 pub struct ApiDoc;
@@ -443,14 +458,20 @@ mod tests {
             "PhihubRecordV4Data",
             "PhigrosQuerySaveData",
             "PhigrosQuerySaveRksData",
+            "PhihubInfoFileVersionData",
+            "PhihubPlayerIdsData",
+            "PhihubRankData",
+            "PhigrosVerifyPublicKeyData",
+            "PhigrosStatsSummaryData",
+            "PhigrosLeaderboardPage",
         ] {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }
         let union = &json["components"]["schemas"]["UpstreamData"]["oneOf"];
         assert_eq!(
             union.as_array().map(Vec::len),
-            Some(10),
-            "the union carries nine resource models plus PageBody"
+            Some(16),
+            "the union carries fifteen resource models plus PageBody"
         );
     }
 

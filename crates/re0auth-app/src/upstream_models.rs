@@ -26,6 +26,12 @@ pub enum UpstreamData {
     PhihubRecordV4(PhihubRecordV4Data),
     PhigrosQuerySave(PhigrosQuerySaveData),
     PhigrosQuerySaveRks(PhigrosQuerySaveRksData),
+    PhihubInfoFileVersion(PhihubInfoFileVersionData),
+    PhihubPlayerIds(PhihubPlayerIdsData),
+    PhihubRank(PhihubRankData),
+    PhigrosVerifyPublicKey(PhigrosVerifyPublicKeyData),
+    PhigrosStatsSummary(PhigrosStatsSummaryData),
+    PhigrosLeaderboard(PhigrosLeaderboardPage),
     Page(crate::gateway::PageBody),
 }
 
@@ -362,4 +368,229 @@ pub struct PhigrosCfcPCounts {
     pub fc: u32,
     #[serde(rename = "P")]
     pub p: u32,
+}
+
+// ---------------------------------------------------------------------------
+// PhiHub: public catalog, player directory, and rank list
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubInfoFileVersionData {
+    pub version: u64,
+    pub version_code: u64,
+    pub version_label: String,
+    pub update_date: i64,
+    pub whatsnew: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct PhihubPlayerIdsData(pub Vec<PhihubPlayerId>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubPlayerId {
+    pub api_id: String,
+    pub player_id: String,
+    pub rks: f64,
+    pub avatar: String,
+    pub clg_mode: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRankData {
+    pub total: i64,
+    pub users: Vec<PhihubRankUser>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRankUser {
+    pub gameuser: PhihubRankGameUser,
+    #[serde(rename = "saveInfo")]
+    pub save_info: PhihubRankSaveInfo,
+    pub index: i64,
+    pub me: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRankGameUser {
+    pub background: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRankSaveInfo {
+    pub summary: PhihubRankSummary,
+    #[serde(rename = "modifiedAt")]
+    pub modified_at: PhihubRankModifiedAt,
+    #[serde(rename = "PlayerId")]
+    pub player_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRankSummary {
+    #[serde(rename = "rankingScore")]
+    pub ranking_score: f64,
+    #[serde(rename = "challengeModeRank")]
+    pub challenge_mode_rank: i64,
+    pub avatar: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubRankModifiedAt {
+    pub iso: String,
+}
+
+// ---------------------------------------------------------------------------
+// Phigros Query: public metadata, stats, and leaderboard
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhigrosVerifyPublicKeyData {
+    pub version: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhigrosStatsSummaryData {
+    pub timezone: String,
+    pub config_start_at: Option<String>,
+    pub first_event_at: Option<String>,
+    pub last_event_at: Option<String>,
+    pub range_start_at: Option<String>,
+    pub features: Vec<PhigrosFeatureUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PhigrosFeatureUsage {
+    pub feature: String,
+    pub count: i64,
+    pub last_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhigrosLeaderboardPage {
+    pub items: Vec<PhigrosLeaderboardItem>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PhigrosLeaderboardItem {
+    pub rank: i64,
+    pub alias: Option<String>,
+    pub user: String,
+    pub score: f64,
+    pub updated_at: String,
+    pub best_top3: Option<Vec<PhigrosChartText>>,
+    pub ap_top3: Option<Vec<PhigrosChartText>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhigrosChartText {
+    pub song: String,
+    pub difficulty: String,
+    pub acc: f64,
+    pub rks: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+        serde_json::from_value(value).expect("sample matches the declared schema")
+    }
+
+    #[test]
+    fn info_file_version_sample_matches() {
+        let data: PhihubInfoFileVersionData = decode(json!({
+            "version": 159,
+            "version_code": 159,
+            "version_label": "4.0.1.1",
+            "update_date": 1792338235,
+            "whatsnew": "更新"
+        }));
+        assert_eq!(data.version, 159);
+        assert_eq!(data.version_label, "4.0.1.1");
+    }
+
+    #[test]
+    fn player_ids_sample_matches() {
+        let data: PhihubPlayerIdsData = decode(json!([{
+            "api_id": "1974933332",
+            "player_id": "ax",
+            "rks": 15.77,
+            "avatar": "Oblivion: PHIN",
+            "clg_mode": 348
+        }]));
+        assert_eq!(data.0[0].api_id, "1974933332");
+        assert_eq!(data.0[0].clg_mode, 348);
+    }
+
+    #[test]
+    fn rank_sample_matches() {
+        let data: PhihubRankData = decode(json!({
+            "total": 152735,
+            "users": [{
+                "gameuser": {"background": "Rrharil.TeamGrimoire.0"},
+                "saveInfo": {
+                    "summary": {
+                        "rankingScore": 17.32,
+                        "challengeModeRank": 551,
+                        "avatar": "Gino-AprilFool"
+                    },
+                    "modifiedAt": {"iso": "2026-10-24T23:07:40.987Z"},
+                    "PlayerId": "TEN—风风"
+                },
+                "index": 1,
+                "me": true
+            }]
+        }));
+        assert_eq!(data.total, 152735);
+        assert_eq!(data.users[0].save_info.summary.challenge_mode_rank, 551);
+    }
+
+    #[test]
+    fn verify_public_key_sample_matches() {
+        let data: PhigrosVerifyPublicKeyData = decode(json!({
+            "version": "v4-beta",
+            "public_key": "d43a0647"
+        }));
+        assert_eq!(data.version, "v4-beta");
+        assert_eq!(data.public_key, "d43a0647");
+    }
+
+    #[test]
+    fn stats_summary_sample_matches() {
+        let data: PhigrosStatsSummaryData = decode(json!({
+            "timezone": "Asia/Shanghai",
+            "config_start_at": null,
+            "first_event_at": "2026-05-16T08:00:00+08:00",
+            "last_event_at": "2026-11-12T08:00:36+08:00",
+            "range_start_at": "2026-05-16T00:00:00+08:00",
+            "features": [{"feature": "save", "count": 253774, "lastAt": "2026-11-12T08:00:32+08:00"}]
+        }));
+        assert_eq!(data.features[0].feature, "save");
+        assert_eq!(data.config_start_at, None);
+    }
+
+    #[test]
+    fn leaderboard_page_sample_matches() {
+        let data: PhigrosLeaderboardPage = decode(json!({
+            "items": [{
+                "rank": 1,
+                "alias": "The_Only_Love",
+                "user": "27b6****",
+                "score": 17.316,
+                "updatedAt": "2026-10-03T13:21:28+00:00",
+                "bestTop3": [{"song": "Desultory Signals", "difficulty": "AT", "acc": 100.0, "rks": 18.0}],
+                "apTop3": []
+            }],
+            "next_cursor": "cursor"
+        }));
+        assert_eq!(data.items[0].rank, 1);
+        assert_eq!(data.items[0].best_top3.as_ref().map(Vec::len), Some(1));
+        assert_eq!(data.next_cursor.as_deref(), Some("cursor"));
+    }
 }
