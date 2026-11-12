@@ -31,7 +31,7 @@ pub fn resolve_master_key(
             "both RE0AUTH_ENCRYPTION_KEY and crypto.master_key_file are set; configure exactly one"
         ),
         (Some(value), None) => Ok(Zeroizing::new(value)),
-        (None, Some(path)) => read_key_file(path),
+        (None, Some(path)) => read_private_file(path, "encryption key"),
         (None, None) => anyhow::bail!(
             "no encryption key configured: set RE0AUTH_ENCRYPTION_KEY or crypto.master_key_file"
         ),
@@ -57,7 +57,7 @@ fn mode_is_private(mode: u32) -> bool {
     mode & 0o077 == 0
 }
 
-fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
+pub fn read_private_file(path: &Path, kind: &str) -> anyhow::Result<Zeroizing<String>> {
     #[cfg(unix)]
     {
         use std::io::Read;
@@ -68,16 +68,14 @@ fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
         let mut file = fs::OpenOptions::new()
             .read(true)
             .open(path)
-            .map_err(|error| {
-                anyhow::anyhow!("read encryption key file {}: {error}", path.display())
-            })?;
-        let metadata = file.metadata().map_err(|error| {
-            anyhow::anyhow!("read encryption key file {}: {error}", path.display())
-        })?;
+            .map_err(|error| anyhow::anyhow!("read {kind} file {}: {error}", path.display()))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| anyhow::anyhow!("read {kind} file {}: {error}", path.display()))?;
         let mode = metadata.mode() & 0o777;
         if !mode_is_private(mode) {
             anyhow::bail!(
-                "encryption key file {} must not be group/world accessible (mode {mode:o})",
+                "{kind} file {} must not be group/world accessible (mode {mode:o})",
                 path.display()
             );
         }
@@ -89,7 +87,7 @@ fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
                 && metadata.uid() != proc.uid()
             {
                 anyhow::bail!(
-                    "encryption key file {} must be owned by the current user (uid {}, expected {})",
+                    "{kind} file {} must be owned by the current user (uid {}, expected {})",
                     path.display(),
                     metadata.uid(),
                     proc.uid()
@@ -97,9 +95,8 @@ fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
             }
         }
         let mut content = Zeroizing::new(String::new());
-        file.read_to_string(&mut content).map_err(|error| {
-            anyhow::anyhow!("read encryption key file {}: {error}", path.display())
-        })?;
+        file.read_to_string(&mut content)
+            .map_err(|error| anyhow::anyhow!("read {kind} file {}: {error}", path.display()))?;
         Ok(Zeroizing::new(content.trim().to_string()))
     }
     #[cfg(not(unix))]
@@ -109,9 +106,8 @@ fn read_key_file(path: &Path) -> anyhow::Result<Zeroizing<String>> {
             path = %path.display(),
             "file permissions are not verified on this platform; restrict the key file to the service account"
         );
-        let content = fs::read_to_string(path).map_err(|error| {
-            anyhow::anyhow!("read encryption key file {}: {error}", path.display())
-        })?;
+        let content = fs::read_to_string(path)
+            .map_err(|error| anyhow::anyhow!("read {kind} file {}: {error}", path.display()))?;
         Ok(Zeroizing::new(content.trim().to_string()))
     }
 }

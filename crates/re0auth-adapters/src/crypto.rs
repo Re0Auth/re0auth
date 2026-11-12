@@ -72,10 +72,7 @@ impl SigningKey {
     /// always gets a different one — reusing a `kid` for a new key is the known
     /// failure mode where old tokens resolve to the wrong key.
     pub fn load(path: &Path, now: Unix) -> anyhow::Result<Self> {
-        let pem = Zeroizing::new(
-            fs::read_to_string(path)
-                .with_context(|| format!("read signing key {}", path.display()))?,
-        );
+        let pem = re0auth_runtime::master_key::read_private_file(path, "signing key")?;
         let der = pem_body(&pem).with_context(|| {
             format!(
                 "signing key {} must be a PKCS#8 PEM (`BEGIN PRIVATE KEY`); \
@@ -557,6 +554,15 @@ mod tests {
             .expect("signer")
     }
 
+    fn make_private(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .expect("private key permissions");
+        }
+    }
+
     fn access_claims() -> AccessTokenClaims {
         AccessTokenClaims {
             iss: "https://auth.example.com".to_string(),
@@ -818,6 +824,19 @@ mod tests {
         assert!(pem.contains("-----END PRIVATE KEY-----"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn group_or_world_readable_signing_keys_are_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new();
+        signer(&dir);
+        fs::set_permissions(dir.key(), fs::Permissions::from_mode(0o644))
+            .expect("relax key permissions");
+        let error = SigningKey::load(&dir.key(), 1_000).expect_err("insecure key");
+        assert!(error.to_string().contains("group/world accessible"));
+    }
+
     #[test]
     fn a_pkcs1_key_is_rejected_with_a_conversion_hint() {
         // PKCS#1 is the older RSA-only layout. Rejecting it is deliberate; the
@@ -830,6 +849,7 @@ mod tests {
             "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK\n-----END RSA PRIVATE KEY-----\n",
         )
         .expect("write pkcs1 key");
+        make_private(&path);
         let error = SigningKey::load(&path, 1_000).expect_err("pkcs1 must be rejected");
         let message = format!("{error:#}");
         assert!(
@@ -875,6 +895,7 @@ mod tests {
 
         let second = TempDir::new();
         fs::write(second.key(), &pem).expect("copy key");
+        make_private(&second.key());
         let first_signer = SigningKey::load(&dir.key(), 1_000).expect("load first");
         let second_signer = SigningKey::load(&second.key(), 2_000).expect("load second");
         assert_eq!(first_signer.record.kid, second_signer.record.kid);
