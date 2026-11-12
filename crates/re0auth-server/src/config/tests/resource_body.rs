@@ -100,7 +100,7 @@ fn phihub_sync_read_preserves_null_and_is_not_idempotent() {
     let raw = r#"
 name = "sync_read"
 path = "/get/cloud/sync"
-scope = "phihub.save.read"
+scope = "phigros.phihub.read"
 method = "post"
 idempotent = false
 body = {}

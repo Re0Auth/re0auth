@@ -230,7 +230,7 @@ mod tests {
                 name: "save".to_string(),
                 method: "get".to_string(),
                 upstream_method: "post".to_string(),
-                scope: "phigros.query.save.read".to_string(),
+                scope: "phigros.xtower.read".to_string(),
                 path: "/api/v1/upstreams/phigros-query/save".to_string(),
                 raw_path: "/api/v1/raw/phigros-query/save".to_string(),
                 data_schema: Some("PhigrosQuerySaveData".to_string()),

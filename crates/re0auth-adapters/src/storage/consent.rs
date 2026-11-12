@@ -179,7 +179,7 @@ impl ConsentRepo for SqliteStore {
             .await
             .map_err(db_error)?;
         let existing = sqlx::query(
-            "SELECT scopes, revoked_at FROM consents WHERE user_id = ? AND client_id = ?",
+            "SELECT scopes, revoked_at, updated_at FROM consents WHERE user_id = ? AND client_id = ?",
         )
         .bind(consent.user_id.0.to_string())
         .bind(consent.client_id.0.to_string())
@@ -187,12 +187,8 @@ impl ConsentRepo for SqliteStore {
         .await
         .map_err(db_error)?;
         if let Some(row) = &existing {
-            let revoked: Option<i64> = row.try_get("revoked_at").map_err(db_error)?;
-            // A revocation at or after this flow began wins; an older one is
-            // history and the new approval may replace it. `now` has
-            // one-second resolution, so `>` would let a same-second revoke
-            // through.
-            if revoked.is_some_and(|revoked| revoked >= revive_after) {
+            let updated_at: i64 = row.try_get("updated_at").map_err(db_error)?;
+            if updated_at >= revive_after {
                 return Ok(None);
             }
         }

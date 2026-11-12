@@ -218,7 +218,11 @@ function createClient(config: string, name: string): string {
 			'--scope',
 			'openid',
 			'--scope',
-			'profile'
+			'profile',
+			'--scope',
+			'phigros.xtower.read',
+			'--scope',
+			'phigros.phihub.read'
 		],
 		{ cwd: work, encoding: 'utf8' }
 	);
@@ -318,7 +322,7 @@ test('consent page approves and account can revoke', async ({ browser }) => {
 		response_type: 'code',
 		client_id: clientId,
 		redirect_uri: CLIENT_REDIRECT,
-		scope: 'openid profile',
+		scope: 'openid profile phigros.xtower.read phigros.phihub.read',
 		code_challenge: challenge,
 		code_challenge_method: 'S256',
 		state: 'e2e-state'
@@ -329,6 +333,8 @@ test('consent page approves and account can revoke', async ({ browser }) => {
 	await page.getByRole('button', { name: /继续登录/ }).click();
 	await expect(page.getByRole('heading', { name: '确认授权' })).toBeVisible();
 	await expect(page.getByText('E2E Client')).toBeVisible();
+	await expect(page.getByText('读取你的 Phigros 游戏数据（Phigros Query 数据源）')).toBeVisible();
+	await expect(page.getByText('读取你的 Phigros 游戏数据（PhiHub 数据源）')).toBeVisible();
 	await page.getByRole('button', { name: '批准' }).click();
 	await expect(page).toHaveURL(new RegExp(`127\\.0\\.0\\.1:${CALLBACK_PORT}/callback`));
 	const params = await waitForCallback();

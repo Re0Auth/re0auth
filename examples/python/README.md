@@ -17,7 +17,7 @@
 
    ```sh
    re0auth-server --config config.toml admin create-client \
-       --name "示例机器人" --scope openid --scope profile
+       --name "示例机器人" --scope openid --scope profile --scope phigros.phihub.read
    ```
 
    输出里的 `client_id` 下面要用；如果建的是机密客户端，还会给一次性 `secret`。
@@ -44,7 +44,7 @@ python3 examples/python/re0auth_bot.py \
     --client-id <client_id> \
     --connector phihub \
     --resource save_info \
-    --scope "openid profile"
+    --scope "openid profile phigros.phihub.read"
 ```
 
 按提示打开打印出的地址、输入设备码并批准；脚本随后取数、打印信封、撤销令牌。

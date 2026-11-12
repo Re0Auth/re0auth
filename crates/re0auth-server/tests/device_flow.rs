@@ -9,8 +9,10 @@ use re0auth_adapters::crypto::RsaTokenSigner;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
 use re0auth_api::oauth::{AccessTokenClaims, ApprovalTicketClaims, IdTokenClaims, TokenSigner};
-use re0auth_api::ports::{Client, ClientStatus, DeviceCodeStatus, Storage, User, UserRole};
-use re0auth_api::{ClientId, Clock, UserId};
+use re0auth_api::ports::{
+    Client, ClientStatus, Consent, DeviceCodeStatus, Storage, User, UserRole,
+};
+use re0auth_api::{ClientId, Clock, ConsentId, UserId};
 use re0auth_app::admin;
 use re0auth_app::auth::AuthService;
 use re0auth_app::oauth::{OAuthError, OAuthService};
@@ -68,6 +70,13 @@ async fn setup() -> TestApp {
 /// The user code is drawn from the random source, so the only way to reach the
 /// collision path on purpose is to script which bytes come back.
 async fn setup_with_random(random: Arc<dyn re0auth_api::Random>) -> TestApp {
+    setup_with_random_and_scopes(random, None).await
+}
+
+async fn setup_with_random_and_scopes(
+    random: Arc<dyn re0auth_api::Random>,
+    client_scopes: Option<&[&str]>,
+) -> TestApp {
     let store = SqliteStore::connect("sqlite::memory:")
         .await
         .expect("SQLite store");
@@ -120,7 +129,11 @@ async fn setup_with_random(random: Arc<dyn re0auth_api::Random>) -> TestApp {
                 id: client_id,
                 name: "device-client".to_string(),
                 redirect_uris: vec!["https://client.example/callback".to_string()],
-                allowed_scopes: vec!["openid".to_string(), "profile".to_string()],
+                allowed_scopes: client_scopes
+                    .unwrap_or(&["openid", "profile"])
+                    .iter()
+                    .map(|scope| (*scope).to_string())
+                    .collect(),
                 raw_access: false,
                 status: ClientStatus::Approved,
                 secret_hash: None,
@@ -311,11 +324,15 @@ async fn body_json(response: axum::response::Response) -> Value {
 }
 
 async fn start_device(app: &TestApp) -> Value {
+    start_device_with_scope(app, "openid profile").await
+}
+
+async fn start_device_with_scope(app: &TestApp, scope: &str) -> Value {
     let client_id = app.client_id.0.to_string();
     let response = post_form(
         app,
         "/oauth/device_authorization",
-        form(&[("client_id", &client_id), ("scope", "openid profile")]),
+        form(&[("client_id", &client_id), ("scope", scope)]),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -403,6 +420,111 @@ async fn device_flow_pending_slow_down_approval_and_reuse() {
     let reused = poll_device(&app, device_code).await;
     assert_eq!(reused.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(reused).await["error"], "invalid_grant");
+}
+
+#[tokio::test]
+async fn migrated_scope_cannot_redeem_an_approved_legacy_device_code() {
+    let app = setup_with_random_and_scopes(
+        Arc::new(OsRandom),
+        Some(&[
+            "openid",
+            "profile",
+            "phigros.stats.read",
+            "phigros.xtower.read",
+        ]),
+    )
+    .await;
+    let now = app.clock.now();
+    app.store
+        .consents()
+        .grant(
+            &Consent {
+                id: ConsentId::new(),
+                user_id: app.user_id,
+                client_id: app.client_id,
+                scopes: vec!["openid".to_string(), "phigros.stats.read".to_string()],
+                created_at: now,
+                updated_at: now,
+                revoked_at: None,
+                version: re0auth_api::oauth::ConsentVersion(1),
+            },
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::ConsentGranted,
+                now,
+                "legacy device consent",
+            ),
+        )
+        .await
+        .expect("legacy consent");
+
+    let legacy = start_device_with_scope(&app, "openid profile phigros.stats.read").await;
+    let legacy_device = legacy["device_code"]
+        .as_str()
+        .expect("legacy device code")
+        .to_string();
+    admin::approve_device(
+        &app.store,
+        &app.clock,
+        legacy["user_code"].as_str().expect("legacy user code"),
+        app.user_id,
+    )
+    .await
+    .expect("approve legacy device");
+
+    app.clock.advance(1);
+    let now = app.clock.now();
+    app.store
+        .consents()
+        .revoke(
+            &app.user_id,
+            &app.client_id,
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::ConsentRevoked,
+                now,
+                "baseline scope consolidation",
+            ),
+            now,
+        )
+        .await
+        .expect("simulate baseline revocation");
+
+    let response = poll_device(&app, &legacy_device).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
+    app.clock.advance(1);
+    let current = start_device_with_scope(&app, "openid phigros.xtower.read").await;
+    let current_device = current["device_code"]
+        .as_str()
+        .expect("current device code")
+        .to_string();
+    admin::approve_device(
+        &app.store,
+        &app.clock,
+        current["user_code"].as_str().expect("current user code"),
+        app.user_id,
+    )
+    .await
+    .expect("approve current device");
+    app.clock.advance(6);
+    let response = poll_device(&app, &current_device).await;
+    let status = response.status();
+    let tokens = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    assert_eq!(tokens["scope"], "openid phigros.xtower.read");
+    let consent = app
+        .store
+        .consents()
+        .find(&app.user_id, &app.client_id)
+        .await
+        .expect("current consent lookup")
+        .expect("current consent");
+    assert_eq!(consent.scopes, ["openid", "phigros.xtower.read"]);
+    assert!(!consent.scopes.contains(&"phigros.stats.read".to_string()));
+
+    let response = poll_device(&app, &legacy_device).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
 }
 
 #[tokio::test]

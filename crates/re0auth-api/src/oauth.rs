@@ -7,15 +7,8 @@ use crate::{Re0Result, Unix};
 pub const SUPPORTED_SCOPES: &[&str] = &[
     "openid",
     "profile",
-    "phigros.stats.read",
-    "phigros.songs.read",
-    "phigros.leaderboard.read",
-    "phigros.verify.read",
-    "phihub.save.read",
-    "phihub.catalog.read",
-    "phihub.rank.read",
-    "phihub.charts.read",
-    "phihub.comment.read",
+    "phigros.xtower.read",
+    "phigros.phihub.read",
 ];
 pub const ACCESS_TOKEN_USE: &str = "access";
 pub const APPROVAL_TICKET_USE: &str = "approval_ticket";

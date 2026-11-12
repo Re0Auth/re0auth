@@ -69,6 +69,10 @@ struct TestApp {
 }
 
 async fn setup() -> TestApp {
+    setup_with_scopes(None).await
+}
+
+async fn setup_with_scopes(client_scopes: Option<&[&str]>) -> TestApp {
     let store = SqliteStore::connect("sqlite::memory:")
         .await
         .expect("SQLite store");
@@ -137,7 +141,11 @@ async fn setup() -> TestApp {
                 id: client_id,
                 name: "flow-client".to_string(),
                 redirect_uris: vec![REDIRECT_URI.to_string()],
-                allowed_scopes: vec!["openid".to_string(), "profile".to_string()],
+                allowed_scopes: client_scopes
+                    .unwrap_or(&["openid", "profile"])
+                    .iter()
+                    .map(|scope| (*scope).to_string())
+                    .collect(),
                 raw_access: false,
                 status: ClientStatus::Approved,
                 secret_hash: None,
@@ -1043,6 +1051,137 @@ async fn revoking_an_unknown_token_returns_200() {
     drop(app.key);
 }
 
+async fn authorization_code_with_scope(app: &TestApp, scope: &str) -> String {
+    let response = authorize_with_redirect(app, REDIRECT_URI, scope).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .expect("location")
+        .to_str()
+        .expect("location UTF-8")
+        .to_string();
+    let redirect = if location.starts_with("/consent?request=") {
+        let request_id = consent_request_id(&response);
+        let consent = post_json(
+            app,
+            "/api/oauth/consent",
+            serde_json::json!({"request_id": request_id, "decision": "approve"}),
+            &[
+                ("cookie", &format!("__Host-re0auth_session={SESSION_RAW}")),
+                ("x-csrf-token", "csrf"),
+            ],
+        )
+        .await;
+        assert_eq!(consent.status(), StatusCode::OK);
+        body_json(consent).await["redirect_to"]
+            .as_str()
+            .expect("redirect_to")
+            .to_string()
+    } else {
+        location
+    };
+    url::Url::parse(&redirect)
+        .expect("client redirect")
+        .query_pairs()
+        .find(|(key, _)| key == "code")
+        .map(|(_, value)| value.to_string())
+        .expect("authorization code")
+}
+
+#[tokio::test]
+async fn migrated_read_scopes_cannot_be_resurrected_by_old_grants() {
+    let app = setup_with_scopes(Some(&[
+        "openid",
+        "profile",
+        "phigros.stats.read",
+        "phigros.xtower.read",
+    ]))
+    .await;
+    let legacy_scope = "openid profile phigros.stats.read";
+    let legacy_code = authorization_code_with_scope(&app, legacy_scope).await;
+    let tokens_response = exchange_code(&app, &legacy_code).await;
+    assert_eq!(tokens_response.status(), StatusCode::OK);
+    let tokens = body_json(tokens_response).await;
+    let old_access = tokens["access_token"]
+        .as_str()
+        .expect("old access token")
+        .to_string();
+    let old_refresh = tokens["refresh_token"]
+        .as_str()
+        .expect("old refresh token")
+        .to_string();
+    let outstanding_code = authorization_code_with_scope(&app, legacy_scope).await;
+
+    let now = app.clock.now();
+    app.store
+        .consents()
+        .revoke(
+            &app.user_id,
+            &app.client_id,
+            &re0auth_api::audit::SecurityFact::new(
+                re0auth_api::audit::AuditAction::ConsentRevoked,
+                now,
+                "baseline scope consolidation",
+            ),
+            now,
+        )
+        .await
+        .expect("simulate baseline revocation");
+
+    assert_eq!(
+        userinfo(&app, &old_access).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = post_form_path(
+        &app,
+        "/oauth/introspect",
+        token_form(&[
+            ("client_id", &app.client_id.0.to_string()),
+            ("token", &old_access),
+        ]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["active"], false);
+    let response = refresh_tokens(&app, &old_refresh).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+    let response = exchange_code(&app, &outstanding_code).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
+    let new_code = authorization_code_with_scope(&app, "openid profile phigros.xtower.read").await;
+    let consent = app
+        .store
+        .consents()
+        .find(&app.user_id, &app.client_id)
+        .await
+        .expect("new consent lookup")
+        .expect("new consent");
+    assert_eq!(consent.scopes, ["openid", "phigros.xtower.read", "profile"]);
+    assert!(!consent.scopes.contains(&"phigros.stats.read".to_string()));
+    assert_eq!(
+        userinfo(&app, &old_access).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response = refresh_tokens(&app, &old_refresh).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+    let response = exchange_code(&app, &outstanding_code).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_json(response).await["error"], "invalid_grant");
+
+    let new_tokens = body_json(exchange_code(&app, &new_code).await).await;
+    assert_eq!(new_tokens["scope"], "openid phigros.xtower.read profile");
+    let narrowed = refresh_tokens_with_scope(&app, &old_refresh, "openid").await;
+    assert_eq!(narrowed.status(), StatusCode::OK);
+    let narrowed = body_json(narrowed).await;
+    assert_eq!(narrowed["scope"], "openid");
+
+    drop(app.key);
+}
+
 #[tokio::test]
 async fn discovery_and_jwks_are_public() {
     let app = setup().await;
@@ -1062,6 +1201,15 @@ async fn discovery_and_jwks_are_public() {
     let discovery = body_json(response).await;
     assert_eq!(discovery["issuer"], ISSUER);
     assert_eq!(discovery["jwks_uri"], format!("{ISSUER}/jwks.json"));
+    assert_eq!(
+        discovery["scopes_supported"],
+        serde_json::json!([
+            "openid",
+            "profile",
+            "phigros.xtower.read",
+            "phigros.phihub.read"
+        ])
+    );
 
     let response = app
         .router

@@ -885,7 +885,7 @@ pub(super) fn phihub_resource(name: &str, path: &str, fields: &[(&str, &str)]) -
     ResourceConfig {
         name: name.to_string(),
         path: path.to_string(),
-        scope: Some("phihub.save.read".to_string()),
+        scope: Some("phigros.phihub.read".to_string()),
         method: Some("post".to_string()),
         idempotent: Some(true),
         body: Some(std::collections::BTreeMap::from([(

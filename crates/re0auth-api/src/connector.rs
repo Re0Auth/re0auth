@@ -940,6 +940,24 @@ mod tests {
     }
 
     #[test]
+    fn coarse_upstream_read_scopes() {
+        for scope in ["phigros.xtower.read", "phigros.phihub.read"] {
+            let spec = ResourceSpec::new("scores", "/v1/scores/{subject}")
+                .expect("spec")
+                .with_scope(scope)
+                .expect("coarse read scope");
+            assert_eq!(spec.required_scope, scope);
+        }
+
+        assert!(
+            ResourceSpec::new("scores", "/v1/scores/{subject}")
+                .expect("spec")
+                .with_scope("phi-xtower.read")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn a_resource_defaults_to_an_idempotent_get_without_a_body() {
         let spec = ResourceSpec::new("scores", "/v1/scores/{subject}").expect("spec");
         assert_eq!(spec.method, ResourceMethod::Get);

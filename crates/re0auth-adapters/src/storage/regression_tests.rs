@@ -18,34 +18,97 @@ async fn s22_repeated_startup_against_the_same_file_succeeds() {
 }
 
 #[tokio::test]
-async fn s23_legacy_expired_bindings_are_normalized() {
+async fn baseline_tracking_rejects_untracked_business_tables() {
     let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
-    sqlx::query(
-        "CREATE TABLE bindings (status TEXT NOT NULL \
-         CHECK (status IN ('pending','active','needs_reauth','revoked','expired')))",
-    )
-    .execute(&pool)
-    .await
-    .expect("old table");
-    sqlx::query("INSERT INTO bindings (status) VALUES ('expired')")
+    sqlx::query("CREATE TABLE untracked_business (id TEXT PRIMARY KEY)")
         .execute(&pool)
         .await
-        .expect("legacy row");
+        .expect("business table");
+    let before: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'untracked_business'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("schema before guard");
 
-    normalize_legacy_bindings(&pool).await.expect("normalize");
-    let status: String = sqlx::query_scalar("SELECT status FROM bindings")
+    let error = validate_baseline_tracking(&pool)
+        .await
+        .expect_err("untracked business tables must fail closed");
+    assert!(error.to_string().contains("存在无迁移历史的业务库"));
+    let after: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'untracked_business'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("schema after guard");
+    assert_eq!(after, before);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+        )
         .fetch_one(&pool)
         .await
-        .expect("status");
-    assert_eq!(status, "needs_reauth");
+        .expect("tracking table count"),
+        0
+    );
 }
 
 #[tokio::test]
-async fn s23_missing_bindings_table_is_not_an_error() {
-    let pool = SqlitePool::connect("sqlite::memory:").await.expect("pool");
-    normalize_legacy_bindings(&pool)
+async fn baseline_tracking_allows_fresh_and_prepared_databases() {
+    let fresh = SqliteStore::connect("sqlite::memory:")
         .await
-        .expect("fresh database");
+        .expect("fresh schema");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&fresh.pool)
+            .await
+            .expect("fresh migration"),
+        1
+    );
+    fresh.close().await;
+
+    let path = std::env::temp_dir().join(format!("re0auth-baseline-{}.db", Uuid::now_v7()));
+    let url = format!("sqlite://{}", path.display());
+    let first = SqliteStore::connect_with(&url, DatabaseOptions::default())
+        .await
+        .expect("initial store");
+    sqlx::query(
+        "INSERT INTO users (id, display_name, role, created_at, updated_at) \
+         VALUES ('prepared-user', 'prepared', 'user', 1, 1)",
+    )
+    .execute(&first.pool)
+    .await
+    .expect("business row");
+    first.close().await;
+
+    let pool = SqlitePool::connect(&url).await.expect("existing database");
+    sqlx::query("DELETE FROM _sqlx_migrations")
+        .execute(&pool)
+        .await
+        .expect("prepare controlled cutover");
+    pool.close().await;
+
+    let migrated = SqliteStore::connect_with(&url, DatabaseOptions::default())
+        .await
+        .expect("prepared cutover");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&migrated.pool)
+            .await
+            .expect("cutover migration"),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT display_name FROM users WHERE id = 'prepared-user'"
+        )
+        .fetch_one(&migrated.pool)
+        .await
+        .expect("preserved business row"),
+        "prepared"
+    );
+    migrated.close().await;
+    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]

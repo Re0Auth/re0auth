@@ -33,7 +33,7 @@ use tower::ServiceExt;
 const KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 const ISSUER: &str = "https://issuer.test";
 const TEST_MASTER: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-const SCOPE: &str = "probe.records.read";
+const SCOPE: &str = "phigros.xtower.read";
 
 struct Fixture {
     router: axum::Router,
@@ -382,6 +382,84 @@ async fn successful_fetch_reaches_the_connector_with_the_binding_subject() {
     assert_eq!(calls[0].resource, "scores");
     // The subject comes from the binding, never from the request.
     assert_eq!(calls[0].subject, "player-1");
+}
+
+#[tokio::test]
+async fn consolidated_scope_reads_multiple_resources_without_legacy_aliases() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "scores",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"rks":15.2}"#.to_vec(),
+        }),
+    );
+    fixture.connector.set_response(
+        "profile",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"data":{"user":{"id":"player-1"}}}"#.to_vec(),
+        }),
+    );
+
+    let current = fixture
+        .store
+        .consents()
+        .find(&fixture.user, &fixture.client_id)
+        .await
+        .expect("consent lookup")
+        .expect("current consent");
+    let mut consolidated_scopes = current.scopes.clone();
+    consolidated_scopes.push("phigros.stats.read".to_string());
+    let now = SystemClock.now();
+    let consolidated = fixture
+        .store
+        .consents()
+        .grant(
+            &Consent {
+                scopes: consolidated_scopes,
+                updated_at: now,
+                ..current
+            },
+            &SecurityFact::new(AuditAction::ConsentGranted, now, "consolidated consent"),
+        )
+        .await
+        .expect("append legacy scope");
+    assert_eq!(consolidated.version, ConsentVersion(2));
+
+    let new_token =
+        access_token_with_version(&fixture, "openid phigros.xtower.read", consolidated.version);
+    let (status, body) = get(&fixture, "/api/v1/upstreams/probe/scores", Some(&new_token)).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let envelope: serde_json::Value = serde_json::from_slice(&body).expect("scores envelope");
+    assert_eq!(envelope["data"]["rks"], 15.2);
+
+    let (status, body) = get(
+        &fixture,
+        "/api/v1/upstreams/probe/profile",
+        Some(&new_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let envelope: serde_json::Value = serde_json::from_slice(&body).expect("profile envelope");
+    assert_eq!(envelope["data"]["player"], "player-1");
+    let calls = fixture.connector.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].resource, "scores");
+    assert_eq!(calls[1].resource, "profile");
+
+    let legacy_token =
+        access_token_with_version(&fixture, "openid phigros.stats.read", consolidated.version);
+    let (status, body) = get(
+        &fixture,
+        "/api/v1/upstreams/probe/scores",
+        Some(&legacy_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let problem: serde_json::Value = serde_json::from_slice(&body).expect("scope problem");
+    assert_eq!(problem["code"], "insufficient_scope");
+    assert_eq!(fixture.connector.calls().len(), 2);
 }
 
 #[tokio::test]

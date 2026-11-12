@@ -495,7 +495,7 @@ impl OAuthService {
         now: Unix,
         correlation_id: Option<&str>,
         // `None` = interactive grant (may revive). `Some(t)` = device flow,
-        // where a revocation at or after `t` still wins.
+        // where a consent change at or after `t` still wins.
         revive_after: Option<Unix>,
     ) -> Result<Consent, OAuthError> {
         // INV-CONSENT-01: the consent record stores only the union of scopes.

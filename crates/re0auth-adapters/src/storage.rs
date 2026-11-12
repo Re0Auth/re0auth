@@ -127,7 +127,7 @@ impl SqliteStore {
             // SQLite's migration lock is a no-op, so the loser's transaction
             // fails; a retry re-reads the applied versions and skips them. This
             // is the serialization point without touching the vendored driver.
-            normalize_legacy_bindings(&pool).await?;
+            validate_baseline_tracking(&pool).await?;
             let mut attempt = 0;
             loop {
                 match sqlx::migrate!("./migrations").run(&pool).await {
@@ -1320,26 +1320,27 @@ mod tests {
     }
 }
 
-/// Normalizes rows written before the `expired` binding state was removed.
-///
-/// Migration `0018` rebuilds `bindings` with a CHECK that no longer allows
-/// `expired`; a later migration could not rescue it because `0018` would already
-/// have aborted. Done in code, before the migrator runs.
-async fn normalize_legacy_bindings(pool: &SqlitePool) -> anyhow::Result<()> {
-    let table: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bindings'",
+async fn validate_baseline_tracking(pool: &SqlitePool) -> anyhow::Result<()> {
+    let tracking: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
     )
     .fetch_optional(pool)
     .await
-    .context("probe bindings table")?;
-    if table.is_some() {
-        sqlx::query("UPDATE bindings SET status = 'needs_reauth' WHERE status = 'expired'")
-            .execute(pool)
-            .await
-            .context("normalize legacy binding status")?;
+    .context("probe migration tracking table")?;
+    let business_tables: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+         AND name NOT LIKE 'sqlite_%' AND name != '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await
+    .context("probe untracked business tables")?;
+    if tracking.is_none() && business_tables > 0 {
+        anyhow::bail!("存在无迁移历史的业务库，应恢复带历史的备份或改用空库");
     }
     Ok(())
 }
 
+#[cfg(test)]
+mod baseline_migration_tests;
 #[cfg(test)]
 mod regression_tests;

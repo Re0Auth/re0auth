@@ -199,7 +199,7 @@ inbound_body_bytes = 1048576
 # 路径模板只能写在这里，请求方无权限指定 URL。`{subject}` 会替换为绑定里的上游用户 ID。
 # 未写 scope 时默认为 `upstream.<name>.read`。
 # [[connectors]]
-# id = "phigros"
+# id = "phigros-query"
 # 展示名；只影响界面，URL 与绑定仍用 id。留空则显示 id。
 # display_name = "Phigros Query"
 # base_url = "https://api.example.com"
@@ -213,7 +213,7 @@ inbound_body_bytes = 1048576
 # [[connectors.resources]]
 # name = "scores"
 # path = "/v1/scores/{subject}"
-# scope = "phigros.records.read"
+# scope = "phigros.xtower.read"
 #
 # 读取方法对上游无感（ADR-0046）：默认 GET。上游只提供 POST + 请求体时，
 # 声明 method 与 body；body 保留 JSON 类型，可写嵌套表、数组、布尔值与数值。
@@ -233,7 +233,7 @@ inbound_body_bytes = 1048576
 # [[connectors.resources]]
 # name = "read_scores"
 # path = "/get/scoreList/user"
-# scope = "phihub.scores.read"
+# scope = "phigros.xtower.read"
 # method = "post"
 # idempotent = true
 # [connectors.resources.body]
@@ -252,7 +252,7 @@ inbound_body_bytes = 1048576
 # [[connectors.resources]]
 # name = "records"
 # path = "/v1/records/{subject}"
-# scope = "phigros.records.read"
+# scope = "phigros.xtower.read"
 # [connectors.resources.view]
 # items_path = "$.data.items"
 # [connectors.resources.view.fields]
@@ -289,7 +289,7 @@ inbound_body_bytes = 1048576
 # [[connectors.resources]]
 # name = "jacket"
 # path = "/jackets/{song}"
-# scope = "phigros.jacket.read"
+# scope = "phigros.xtower.read"
 # response = "binary"
 # content_types = ["image/png", "image/webp", "image/avif"]
 # shared = true
@@ -332,7 +332,7 @@ inbound_body_bytes = 1048576
 # [[connectors.resources]]
 # name = "save_info"
 # path = "/get/cloud/saveInfo"
-# scope = "phihub.save.read"
+# scope = "phigros.phihub.read"
 # method = "post"
 # idempotent = true
 # [connectors.resources.body]
@@ -350,7 +350,7 @@ inbound_body_bytes = 1048576
 # [[connectors.resources]]
 # name = "save"
 # path = "/get/cloud/saves"
-# scope = "phihub.save.read"
+# scope = "phigros.phihub.read"
 # method = "post"
 # idempotent = true
 # [connectors.resources.body]
@@ -368,7 +368,7 @@ inbound_body_bytes = 1048576
 # [[connectors.resources]]
 # name = "history"
 # path = "/get/history/historyV4"
-# scope = "phihub.save.read"
+# scope = "phigros.phihub.read"
 # method = "post"
 # idempotent = true
 # [connectors.resources.body]
@@ -388,6 +388,7 @@ inbound_body_bytes = 1048576
 # refresh_endpoint = "https://phib19.top:8080/delegations/refresh"
 # client_id = "re0auth"
 # client_secret_file = "/run/secrets/phihub-delegation-secret"
+# 这是 PhiHub 上游委托协议值，不是 Re0Auth 资源 scope。
 # scopes = ["phihub.save.read"]
 # userinfo_endpoint = "https://phib19.top:8080/delegations/me"
 # subject_field = "id"
