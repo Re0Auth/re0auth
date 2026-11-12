@@ -767,6 +767,7 @@ pub struct PendingBinding {
     /// Where to send the browser afterwards. Validated against a local-path
     /// allowlist before use, never echoed from the query string.
     pub return_to: String,
+    pub revocation_generation: u64,
     pub created_at: Unix,
     pub expires_at: Unix,
     pub consumed_at: Option<Unix>,
@@ -1080,9 +1081,10 @@ pub trait BindingRepo: Send + Sync {
         binding: &Binding,
         sealed: &SealedSecret,
         fact: &SecurityFact,
-        flow_started_at: Unix,
+        flow_revocation_generation: u64,
         now: Unix,
     ) -> RepoResult<Binding>;
+    async fn revocation_generation(&self, user: &UserId, upstream: &str) -> RepoResult<u64>;
     async fn find(&self, user: &UserId, upstream: &str) -> RepoResult<Option<Binding>>;
     /// Looks one binding up by id, across users.
     ///

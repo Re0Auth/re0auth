@@ -554,11 +554,11 @@ mod tests {
             .expect("signer")
     }
 
-    fn make_private(path: &Path) {
+    fn make_private(_path: &Path) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            fs::set_permissions(_path, fs::Permissions::from_mode(0o600))
                 .expect("private key permissions");
         }
     }

@@ -74,7 +74,7 @@ async fn concurrent_rebinds_never_mix_subject_and_credential() {
             barrier.wait().await;
             store
                 .bindings()
-                .upsert_with_credential(&binding, &sealed, &fact(), 1_000, 1_000)
+                .upsert_with_credential(&binding, &sealed, &fact(), 0, 1_000)
                 .await
         }));
     }
@@ -134,7 +134,7 @@ async fn a_failed_credential_write_rolls_back_the_binding() {
             &binding(user, id, "old-subject"),
             &sealed(0x01),
             &fact(),
-            1_000,
+            0,
             1_000,
         )
         .await
@@ -164,7 +164,7 @@ async fn a_failed_credential_write_rolls_back_the_binding() {
             &binding(user, id, "new-subject"),
             &sealed(0x02),
             &fact(),
-            1_100,
+            0,
             1_100,
         )
         .await;

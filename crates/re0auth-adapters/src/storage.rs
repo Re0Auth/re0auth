@@ -329,6 +329,7 @@ fn row_to_pending_binding(row: &SqliteRow) -> RepoResult<PendingBinding> {
         upstream_id: row.try_get("upstream_id").map_err(db_error)?,
         pkce_verifier: row.try_get("pkce_verifier").map_err(db_error)?,
         return_to: row.try_get("return_to").map_err(db_error)?,
+        revocation_generation: 0,
         created_at: row.try_get("created_at").map_err(db_error)?,
         expires_at: row.try_get("expires_at").map_err(db_error)?,
         consumed_at: row.try_get("consumed_at").map_err(db_error)?,
@@ -915,6 +916,9 @@ impl LoginTransactionRepo for SqliteStore {
 #[async_trait]
 impl PendingBindingRepo for SqliteStore {
     async fn insert(&self, pending: &PendingBinding) -> RepoResult<()> {
+        let generation = i64::try_from(pending.revocation_generation)
+            .map_err(|_| RepoError::Backend("binding revocation generation out of range".into()))?;
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
         sqlx::query(
             "INSERT INTO pending_bindings \
              (state_hash, user_id, upstream_id, pkce_verifier, return_to, created_at, \
@@ -929,9 +933,18 @@ impl PendingBindingRepo for SqliteStore {
         .bind(pending.created_at)
         .bind(pending.expires_at)
         .bind(pending.consumed_at)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db_error)?;
+        sqlx::query(
+            "INSERT INTO pending_binding_epochs (state_hash, revocation_generation) VALUES (?, ?)",
+        )
+        .bind(pending.state_hash.as_slice())
+        .bind(generation)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
         Ok(())
     }
 
@@ -949,7 +962,18 @@ impl PendingBindingRepo for SqliteStore {
         .await
         .map_err(db_error)?;
         if let Some(row) = row {
-            return row_to_pending_binding(&row);
+            let mut pending = row_to_pending_binding(&row)?;
+            let generation = sqlx::query_scalar::<_, i64>(
+                "SELECT revocation_generation FROM pending_binding_epochs WHERE state_hash = ?",
+            )
+            .bind(state_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_error)?
+            .unwrap_or(0);
+            pending.revocation_generation = u64::try_from(generation)
+                .map_err(|_| RepoError::Backend("invalid pending binding generation".into()))?;
+            return Ok(pending);
         }
 
         // Tell "already used" apart from "never existed": the former is a replay

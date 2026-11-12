@@ -207,7 +207,7 @@ pub async fn binding_contract<S: Storage>(store: &S) {
             &with_credential,
             &combined,
             &fact(AuditAction::BindingRebound, 1_280, "binding"),
-            1_280,
+            0,
             1_280,
         )
         .await
@@ -262,7 +262,7 @@ pub async fn binding_contract<S: Storage>(store: &S) {
                 &wrong,
                 &wrong_sealed,
                 &fact(AuditAction::BindingRebound, 1_290, "binding"),
-                1_290,
+                0,
                 1_290,
             )
             .await,
@@ -288,6 +288,11 @@ pub async fn binding_contract<S: Storage>(store: &S) {
         "a mismatched id must not change the credential"
     );
 
+    let before_revocation = store
+        .bindings()
+        .revocation_generation(&user.id, "phigros")
+        .await
+        .expect("generation before revoke");
     store
         .bindings()
         .revoke(
@@ -319,7 +324,7 @@ pub async fn binding_contract<S: Storage>(store: &S) {
                 &with_credential,
                 &wrong_sealed,
                 &fact(AuditAction::BindingRebound, 1_300, "binding"),
-                1_299,
+                before_revocation,
                 1_300,
             )
             .await,
@@ -338,13 +343,18 @@ pub async fn binding_contract<S: Storage>(store: &S) {
         updated_at: 1_301,
         ..with_credential.clone()
     };
+    let current_generation = store
+        .bindings()
+        .revocation_generation(&user.id, "phigros")
+        .await
+        .expect("generation after revoke");
     store
         .bindings()
         .upsert_with_credential(
             &fresh,
             &wrong_sealed,
             &fact(AuditAction::BindingRebound, 1_301, "binding"),
-            1_301,
+            current_generation,
             1_301,
         )
         .await

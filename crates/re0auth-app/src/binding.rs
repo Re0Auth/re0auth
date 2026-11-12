@@ -196,6 +196,12 @@ impl BindingService {
             self.auth
                 .authorization_url(&endpoint, &state, &self.redirect_uri, Some(&challenge))?;
 
+        let revocation_generation = self
+            .storage
+            .bindings()
+            .revocation_generation(&user, upstream_id)
+            .await
+            .map_err(|error| BindingError::Internal(error.to_string()))?;
         self.storage
             .pending_bindings()
             .insert(&PendingBinding {
@@ -204,6 +210,7 @@ impl BindingService {
                 upstream_id: upstream_id.to_string(),
                 pkce_verifier: verifier,
                 return_to: return_to::or_fallback(return_to),
+                revocation_generation,
                 created_at: now,
                 expires_at: now + PENDING_BINDING_TTL_SECS,
                 consumed_at: None,
@@ -333,7 +340,7 @@ impl BindingService {
         let stored = self
             .storage
             .bindings()
-            .upsert_with_credential(&binding, &sealed, &fact, pending.created_at, now)
+            .upsert_with_credential(&binding, &sealed, &fact, pending.revocation_generation, now)
             .await
             .map_err(|error| match error {
                 RepoError::Conflict("binding revoked") => BindingError::FlowNotValid,

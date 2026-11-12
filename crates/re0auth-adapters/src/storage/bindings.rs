@@ -54,7 +54,7 @@ impl BindingRepo for SqliteStore {
         binding: &Binding,
         sealed: &SealedSecret,
         fact: &SecurityFact,
-        flow_started_at: Unix,
+        flow_revocation_generation: u64,
         now: Unix,
     ) -> RepoResult<Binding> {
         let mut tx = self
@@ -64,7 +64,10 @@ impl BindingRepo for SqliteStore {
             .map_err(db_error)?;
 
         let existing = sqlx::query(
-            "SELECT id, created_at, revoked_at FROM bindings WHERE user_id = ? AND upstream_id = ?",
+            "SELECT bindings.id, bindings.created_at, binding_revocation_epochs.generation \
+             FROM bindings LEFT JOIN binding_revocation_epochs \
+             ON binding_revocation_epochs.binding_id = bindings.id \
+             WHERE bindings.user_id = ? AND bindings.upstream_id = ?",
         )
         .bind(binding.user_id.0.to_string())
         .bind(&binding.upstream_id)
@@ -79,8 +82,11 @@ impl BindingRepo for SqliteStore {
                 if stored_id != binding.id {
                     return Err(RepoError::Conflict("binding id"));
                 }
-                let revoked_at: Option<i64> = row.try_get("revoked_at").map_err(db_error)?;
-                if revoked_at.is_some_and(|revoked| revoked >= flow_started_at) {
+                let generation = row
+                    .try_get::<Option<i64>, _>("generation")
+                    .map_err(db_error)?
+                    .unwrap_or(0);
+                if generation < 0 || generation as u64 != flow_revocation_generation {
                     return Err(RepoError::Conflict("binding revoked"));
                 }
                 Binding {
@@ -127,6 +133,24 @@ impl BindingRepo for SqliteStore {
         record_fact(&mut tx, &fact).await?;
         tx.commit().await.map_err(db_error)?;
         Ok(stored)
+    }
+
+    async fn revocation_generation(&self, user: &UserId, upstream: &str) -> RepoResult<u64> {
+        let generation = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT binding_revocation_epochs.generation FROM bindings \
+             LEFT JOIN binding_revocation_epochs \
+             ON binding_revocation_epochs.binding_id = bindings.id \
+             WHERE bindings.user_id = ? AND bindings.upstream_id = ?",
+        )
+        .bind(user.0.to_string())
+        .bind(upstream)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?
+        .flatten()
+        .unwrap_or(0);
+        u64::try_from(generation)
+            .map_err(|_| RepoError::Backend("negative binding revocation generation".into()))
     }
 
     async fn find(&self, user: &UserId, upstream: &str) -> RepoResult<Option<Binding>> {
@@ -233,6 +257,14 @@ impl BindingRepo for SqliteStore {
                 Err(RepoError::NotFound)
             };
         }
+        sqlx::query(
+            "INSERT INTO binding_revocation_epochs (binding_id, generation) VALUES (?, 1) \
+             ON CONFLICT(binding_id) DO UPDATE SET generation = generation + 1",
+        )
+        .bind(id.0.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
         // The row is kept for audit and for the user's history, but the sealed
         // sub-credential must go: leaving it behind would let a revoked binding
         // keep fetching if the gateway ever looked up by binding id alone.
@@ -248,20 +280,31 @@ impl BindingRepo for SqliteStore {
 
     async fn revoke_all(&self, user: &UserId, fact: &SecurityFact, now: Unix) -> RepoResult<u64> {
         let mut tx = self.pool.begin().await.map_err(db_error)?;
-        let result = sqlx::query(
+        let rows = sqlx::query(
             "UPDATE bindings SET status = 'revoked', updated_at = ?, revoked_at = ? \
-             WHERE user_id = ? AND status != 'revoked'",
+             WHERE user_id = ? AND status != 'revoked' RETURNING id",
         )
         .bind(now)
         .bind(now)
         .bind(user.0.to_string())
-        .execute(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
         .map_err(db_error)?;
-        let revoked = result.rows_affected();
-        if revoked == 0 {
+        if rows.is_empty() {
             // Nothing moved, so there is no change for the fact to describe.
             return Ok(0);
+        }
+        let revoked = rows.len() as u64;
+        for row in rows {
+            let id: String = row.try_get("id").map_err(db_error)?;
+            sqlx::query(
+                "INSERT INTO binding_revocation_epochs (binding_id, generation) VALUES (?, 1) \
+                 ON CONFLICT(binding_id) DO UPDATE SET generation = generation + 1",
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
         }
         // Every credential of this user's bindings goes, not only the rows this
         // statement touched: a binding revoked earlier must not keep a readable

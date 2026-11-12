@@ -63,7 +63,7 @@ async fn baseline_tracking_allows_fresh_and_prepared_databases() {
             .fetch_one(&fresh.pool)
             .await
             .expect("fresh migration"),
-        1
+        2
     );
     fresh.close().await;
 
@@ -96,7 +96,7 @@ async fn baseline_tracking_allows_fresh_and_prepared_databases() {
             .fetch_one(&migrated.pool)
             .await
             .expect("cutover migration"),
-        1
+        2
     );
     assert_eq!(
         sqlx::query_scalar::<_, String>(

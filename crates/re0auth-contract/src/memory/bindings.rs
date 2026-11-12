@@ -89,7 +89,7 @@ impl BindingRepo for MemoryStore {
         binding: &Binding,
         sealed: &SealedSecret,
         fact: &SecurityFact,
-        flow_started_at: Unix,
+        flow_revocation_generation: u64,
         _now: Unix,
     ) -> RepoResult<Binding> {
         let mut inner = self.lock();
@@ -108,11 +108,12 @@ impl BindingRepo for MemoryStore {
                 if existing_id != binding.id {
                     return Err(RepoError::Conflict("binding id"));
                 }
-                if inner
-                    .binding_revocations
+                let generation = inner
+                    .binding_revocation_epochs
                     .get(&existing_id)
-                    .is_some_and(|revoked| *revoked >= flow_started_at)
-                {
+                    .copied()
+                    .unwrap_or(0);
+                if generation != flow_revocation_generation {
                     return Err(RepoError::Conflict("binding revoked"));
                 }
                 Binding {
@@ -138,6 +139,17 @@ impl BindingRepo for MemoryStore {
         fact.target = format!("binding:{}", stored.id.0);
         Self::push_fact(&mut inner, &fact);
         Ok(stored)
+    }
+
+    async fn revocation_generation(&self, user: &UserId, upstream: &str) -> RepoResult<u64> {
+        let inner = self.lock();
+        Ok(inner
+            .bindings
+            .iter()
+            .find(|(_, binding)| binding.user_id == *user && binding.upstream_id == upstream)
+            .and_then(|(id, _)| inner.binding_revocation_epochs.get(id))
+            .copied()
+            .unwrap_or(0))
     }
 
     async fn find(&self, user: &UserId, upstream: &str) -> RepoResult<Option<Binding>> {
@@ -196,6 +208,7 @@ impl BindingRepo for MemoryStore {
         binding.updated_at = now;
         inner.sub_credentials.remove(id);
         inner.binding_revocations.insert(*id, now);
+        *inner.binding_revocation_epochs.entry(*id).or_insert(0) += 1;
         Self::push_fact(&mut inner, fact);
         Ok(())
     }
@@ -219,6 +232,7 @@ impl BindingRepo for MemoryStore {
             binding.updated_at = now;
             inner.sub_credentials.remove(id);
             inner.binding_revocations.insert(*id, now);
+            *inner.binding_revocation_epochs.entry(*id).or_insert(0) += 1;
         }
         Self::push_fact(&mut inner, fact);
         Ok(ids.len() as u64)

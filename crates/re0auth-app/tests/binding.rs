@@ -513,6 +513,38 @@ async fn a_flow_started_before_revocation_cannot_reactivate_the_binding() {
 }
 
 #[tokio::test]
+async fn a_flow_started_after_revocation_in_the_same_second_can_rebind() {
+    let (store, service, user) = setup(RecordingAuth::ok()).await;
+    let first = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    let created = service
+        .complete(user, &first.state, "code-1")
+        .await
+        .expect("first");
+    store
+        .bindings()
+        .revoke(
+            &created.binding.id,
+            &SecurityFact::new(AuditAction::BindingRevoked, NOW, "binding"),
+            NOW,
+        )
+        .await
+        .expect("revoke");
+
+    let restarted = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("restart after revoke");
+    let rebound = service
+        .complete(user, &restarted.state, "code-2")
+        .await
+        .expect("same-second rebind");
+    assert_eq!(rebound.binding.status, BindingStatus::Active);
+}
+
+#[tokio::test]
 async fn rebinding_invalidates_cached_responses() {
     let cache: Arc<dyn Cache> = Arc::new(ClockedCache::new(
         MemoryCache::new(),

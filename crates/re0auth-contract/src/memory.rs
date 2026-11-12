@@ -54,6 +54,7 @@ struct Inner {
     /// When each binding was revoked, so the anonymization window does not have
     /// to ride on `Binding::updated_at` (which any later write moves).
     binding_revocations: HashMap<BindingId, Unix>,
+    binding_revocation_epochs: HashMap<BindingId, u64>,
     clients: HashMap<ClientId, Client>,
     audits: Vec<AuditRecord>,
     access_revocations: HashMap<String, Unix>,
