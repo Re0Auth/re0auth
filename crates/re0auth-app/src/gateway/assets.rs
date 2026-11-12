@@ -305,6 +305,10 @@ impl GatewayService {
                 .filter(|total| *total <= max_body)
                 .ok_or(UpstreamError::Truncated)?;
             if chunk.is_empty() {
+                // 空块仍须触发孤儿取消检查
+                if published {
+                    self.ensure_asset_reader_permit(&flight, guard)?;
+                }
                 continue;
             }
             if !published {
