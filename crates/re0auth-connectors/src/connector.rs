@@ -420,25 +420,25 @@ fn interpolate_string(
             cursor += 2;
             continue;
         }
-        if rest.starts_with('{') {
-            if let Some(end) = rest.find('}') {
-                let token = &rest[1..end];
-                match token {
-                    "subject" => output.push_str(subject),
-                    "credential" => {
-                        *credential_in_body = true;
-                        output.push_str(credential);
-                    }
-                    "subject:int" | "subject:uint" | "subject:number" | "subject:bool" => {
-                        return Err(UpstreamError::Rejected);
-                    }
-                    _ => {
-                        output.push_str(&rest[..=end]);
-                    }
+        if rest.starts_with('{')
+            && let Some(end) = rest.find('}')
+        {
+            let token = &rest[1..end];
+            match token {
+                "subject" => output.push_str(subject),
+                "credential" => {
+                    *credential_in_body = true;
+                    output.push_str(credential);
                 }
-                cursor += end + 1;
-                continue;
+                "subject:int" | "subject:uint" | "subject:number" | "subject:bool" => {
+                    return Err(UpstreamError::Rejected);
+                }
+                _ => {
+                    output.push_str(&rest[..=end]);
+                }
             }
+            cursor += end + 1;
+            continue;
         }
         let character = rest.chars().next().expect("nonempty remainder");
         output.push(character);

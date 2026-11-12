@@ -302,16 +302,16 @@ pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
                     "502": {"description": "Upstream contract changed or unavailable."}
                 }
             });
-            if resource.response != "binary" {
-                if let Some(schema) = &resource.data_schema {
-                    operation
-                        .as_object_mut()
-                        .expect("operation is an object")
-                        .insert(
-                            "x-re0auth-data-schema".to_string(),
-                            Value::String(format!("#/components/schemas/{schema}")),
-                        );
-                }
+            if resource.response != "binary"
+                && let Some(schema) = &resource.data_schema
+            {
+                operation
+                    .as_object_mut()
+                    .expect("operation is an object")
+                    .insert(
+                        "x-re0auth-data-schema".to_string(),
+                        Value::String(format!("#/components/schemas/{schema}")),
+                    );
             }
             paths.insert(resource.path.clone(), json!({"get": operation}));
         }

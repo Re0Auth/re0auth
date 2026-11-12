@@ -367,7 +367,7 @@ mod tests {
             }))
             .expect("raw body");
         store
-            .upsert(&record, &[raw_resource.clone()], now)
+            .upsert(&record, std::slice::from_ref(&raw_resource), now)
             .await
             .expect("upsert raw resource");
 

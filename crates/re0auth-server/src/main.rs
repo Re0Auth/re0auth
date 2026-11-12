@@ -449,7 +449,7 @@ async fn build_data_plane(
         std::time::Duration::from_secs(cfg.timeouts.request_secs),
         std::time::Duration::from_secs(cfg.timeouts.upstream_secs),
     )
-    .with_asset_spawner(Arc::new(|future| re0auth_runtime::spawn_detached(future)))
+    .with_asset_spawner(Arc::new(re0auth_runtime::spawn_detached))
     .with_observer(observer)
     .with_telemetry(telemetry);
     let gateway = match refresh_auth {

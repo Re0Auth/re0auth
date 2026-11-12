@@ -2020,7 +2020,7 @@ async fn panic_mid_asset_stream_removes_flight_for_fresh_retry() {
 
 #[tokio::test(start_paused = true)]
 async fn open_asset_circuit_preflights_before_waiting_for_a_loader_permit() {
-    let (mut app, broker) = controlled_asset_harness(false, 0, 1, 1, 45, 0).await;
+    let (app, broker) = controlled_asset_harness(false, 0, 1, 1, 45, 0).await;
     broker.set_asset_handler("jacket", || Err(UpstreamError::Unavailable));
     let granted = scopes();
     for _ in 0..2 {
@@ -2571,8 +2571,7 @@ async fn shared_assets_need_no_binding_but_private_assets_still_do() {
             Some("image/png"),
         )
         .await
-        .err()
-        .expect("private binding required");
+        .expect_err("private binding required");
     assert!(matches!(error, GatewayError::BindingRequired));
 }
 
@@ -2597,8 +2596,7 @@ async fn negative_assets_expire_on_the_injected_clock() {
                 Some("image/png"),
             )
             .await
-            .err()
-            .expect("negative response");
+            .expect_err("negative response");
         assert!(matches!(
             error,
             GatewayError::Upstream(UpstreamError::NotFound)
@@ -2618,8 +2616,7 @@ async fn negative_assets_expire_on_the_injected_clock() {
             Some("image/png"),
         )
         .await
-        .err()
-        .expect("expired negative");
+        .expect_err("expired negative");
     assert_eq!(app.harness.connector.calls().len(), 2);
 }
 
@@ -2640,8 +2637,7 @@ async fn accept_magic_and_normalized_route_are_enforced() {
             Some("image/jpeg"),
         )
         .await
-        .err()
-        .expect("unacceptable type");
+        .expect_err("unacceptable type");
     assert!(matches!(error, GatewayError::NotAcceptable));
 
     app.harness.connector.set_asset_stream(
@@ -2662,8 +2658,7 @@ async fn accept_magic_and_normalized_route_are_enforced() {
             Some("image/png"),
         )
         .await
-        .err()
-        .expect("magic mismatch");
+        .expect_err("magic mismatch");
     assert!(matches!(
         error,
         GatewayError::Upstream(UpstreamError::ContractChanged)
@@ -2680,8 +2675,7 @@ async fn accept_magic_and_normalized_route_are_enforced() {
             "jacket",
         ))
         .await
-        .err()
-        .expect("normalized fetch rejects binary");
+        .expect_err("normalized fetch rejects binary");
     assert!(matches!(
         error,
         GatewayError::InvalidRequest("binary resource requires /api/v1/assets")

@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -102,6 +103,10 @@ impl AssetFlight {
     }
 }
 
+/// A pending `watch::Receiver::changed` future, boxed so the cursor struct keeps
+/// a fixed size across awaits.
+type ChangedFuture = Pin<Box<dyn Future<Output = Result<(), watch::error::RecvError>> + Send>>;
+
 /// One independent cursor into an [`AssetFlight`].
 ///
 /// The count is tied to the value's lifetime rather than a normal EOF, so an
@@ -110,7 +115,7 @@ pub(crate) struct SubscriberStream {
     flight: Arc<AssetFlight>,
     cursor: usize,
     version: watch::Receiver<u64>,
-    changed: Option<Pin<Box<dyn Future<Output = Result<(), watch::error::RecvError>> + Send>>>,
+    changed: Option<ChangedFuture>,
     terminated: bool,
 }
 
@@ -313,7 +318,7 @@ fn avif_signature(prefix: &[u8], eof: bool) -> MagicStatus {
     }
 
     let box_len = u32::from_be_bytes(prefix[..4].try_into().expect("four-byte prefix")) as usize;
-    if !(16..=256).contains(&box_len) || box_len % 4 != 0 {
+    if !(16..=256).contains(&box_len) || !box_len.is_multiple_of(4) {
         return MagicStatus::Invalid;
     }
     if prefix.len() < 8 {
@@ -336,7 +341,9 @@ fn avif_signature(prefix: &[u8], eof: bool) -> MagicStatus {
 
     let major_is_avif = &prefix[8..12] == b"avif";
     let compatible_is_avif = prefix[16..box_len]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|brand| brand == b"avif");
     if major_is_avif || compatible_is_avif {
         MagicStatus::Valid
