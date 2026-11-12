@@ -43,6 +43,8 @@ pub enum OAuthError {
     InvalidScope,
     #[error("invalid_token")]
     InvalidToken,
+    #[error("account_banned")]
+    AccountBanned,
     #[error("unauthorized_client")]
     UnauthorizedClient,
     #[error("login_required")]
@@ -1057,15 +1059,15 @@ impl OAuthService {
         let user_id = Uuid::parse_str(&claims.sub)
             .map(UserId)
             .map_err(|_| OAuthError::InvalidToken)?;
-        if self
+        let user = self
             .storage
             .users()
             .get(&user_id)
             .await
             .map_err(map_repo)?
-            .is_none()
-        {
-            return Err(OAuthError::InvalidToken);
+            .ok_or(OAuthError::InvalidToken)?;
+        if user.status == UserStatus::Banned {
+            return Err(OAuthError::AccountBanned);
         }
         let client_id = Uuid::parse_str(&claims.client_id)
             .map(ClientId)

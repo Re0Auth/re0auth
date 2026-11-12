@@ -297,6 +297,11 @@ pub(crate) fn oauth_error(error: OAuthError, shape: Shape) -> ApiError {
             );
             error
         }
+        OAuthError::AccountBanned => shape.response(
+            StatusCode::FORBIDDEN,
+            "account_banned",
+            "this account is banned",
+        ),
         OAuthError::UnauthorizedClient => shape.response(
             StatusCode::BAD_REQUEST,
             "unauthorized_client",

@@ -797,6 +797,31 @@ async fn catalog_and_schema_reject_over_quota_callers_before_token_verification(
 }
 
 #[tokio::test]
+async fn banned_users_cannot_read_catalog_or_schema() {
+    let fixture = fixture().await;
+    let token = access_token(&fixture, SCOPE);
+    let now = SystemClock.now();
+    fixture
+        .store
+        .users()
+        .set_status(
+            &fixture.user,
+            re0auth_api::ports::UserStatus::Banned,
+            &SecurityFact::new(AuditAction::UserBanned, now, "user"),
+            now,
+        )
+        .await
+        .expect("ban user");
+
+    for uri in ["/api/v1/upstreams", "/api/v1/upstreams/probe/scores/schema"] {
+        let (status, body) = get(&fixture, uri, Some(&token)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("problem");
+        assert_eq!(body["code"], "account_banned");
+    }
+}
+
+#[tokio::test]
 async fn s14_gateway_responses_disable_sniffing() {
     let fixture = fixture().await;
     fixture.connector.set_response(
