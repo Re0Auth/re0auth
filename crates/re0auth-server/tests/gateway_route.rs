@@ -788,6 +788,15 @@ async fn s12_over_quota_callers_are_rejected_before_token_verification() {
 }
 
 #[tokio::test]
+async fn catalog_and_schema_reject_over_quota_callers_before_token_verification() {
+    let fixture = fixture_with_rate(Arc::new(DenyAll)).await;
+    for uri in ["/api/v1/upstreams", "/api/v1/upstreams/probe/scores/schema"] {
+        let (status, _) = get(&fixture, uri, Some("not-a-real-token")).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    }
+}
+
+#[tokio::test]
 async fn s14_gateway_responses_disable_sniffing() {
     let fixture = fixture().await;
     fixture.connector.set_response(

@@ -1915,6 +1915,28 @@ async fn advancing_the_clock_reopens_the_unauthenticated_lane() {
 }
 
 #[tokio::test]
+async fn authorization_endpoints_charge_the_anonymous_lane() {
+    let app = app_with_strict_limits(1).await;
+    let uri = format!("/oauth/authorize?client_id={}", app.client_id.0);
+    let (first, _, _) = get(&app, &uri).await;
+    assert_eq!(first, StatusCode::BAD_REQUEST);
+    let (limited, _, _) = get(&app, &uri).await;
+    assert_eq!(limited, StatusCode::TOO_MANY_REQUESTS);
+
+    let app = app_with_strict_limits(1).await;
+    let body = form(&[("client_id", &app.client_id.0.to_string())]);
+    let (first, _, _) = post(&app, "/oauth/authorize", body.clone()).await;
+    assert_eq!(first, StatusCode::BAD_REQUEST);
+    let (limited, body, _) = post(&app, "/oauth/authorize", body).await;
+    assert_api(
+        limited,
+        &body,
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limited",
+    );
+}
+
+#[tokio::test]
 async fn the_token_endpoint_is_limited_too() {
     // The token endpoint is the most expensive anonymous call, so it must be on
     // the same lane rather than relying on device-authorization's budget.

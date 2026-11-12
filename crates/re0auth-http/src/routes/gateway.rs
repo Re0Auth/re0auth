@@ -23,7 +23,12 @@ use crate::{
     oauth_error,
 };
 
-async fn require_catalog_token(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+async fn require_catalog_token(
+    state: &AppState,
+    addr: SocketAddr,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    charge_unauthenticated(state, &state.client_address(addr, headers), Shape::Problem)?;
     let token = bearer_token(headers)
         .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Problem))?;
     let (_, _, client_id) = state
@@ -48,9 +53,10 @@ async fn require_catalog_token(state: &AppState, headers: &HeaderMap) -> Result<
 )]
 pub(crate) async fn list_upstreams(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Json<Catalog>, ApiError> {
-    require_catalog_token(&state, &headers).await?;
+    require_catalog_token(&state, addr, &headers).await?;
     Ok(Json(state.catalog.as_ref().clone()))
 }
 
@@ -72,10 +78,11 @@ pub(crate) async fn list_upstreams(
 )]
 pub(crate) async fn resource_schema(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path((connector, resource)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    require_catalog_token(&state, &headers).await?;
+    require_catalog_token(&state, addr, &headers).await?;
     if !state.catalog.contains(&connector, &resource) {
         return Err(error_response(
             StatusCode::NOT_FOUND,

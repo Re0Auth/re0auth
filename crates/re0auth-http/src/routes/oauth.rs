@@ -171,10 +171,16 @@ pub(crate) struct AuthorizeQuery {
 )]
 pub(crate) async fn authorize(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(query): Query<AuthorizeQuery>,
     OriginalUri(original): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Rfc6749,
+    )?;
     authorize_inner(state, query, original, headers).await
 }
 
@@ -191,10 +197,16 @@ pub(crate) async fn authorize(
 )]
 pub(crate) async fn authorize_post(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     OriginalUri(original): OriginalUri,
     headers: HeaderMap,
     Form(query): Form<AuthorizeQuery>,
 ) -> Result<Response, ApiError> {
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Rfc6749,
+    )?;
     // A POST has no query string, so the login redirect must carry the form
     // parameters explicitly or the user would return to an empty authorize.
     let original = return_uri_with_query(&original, &query);
