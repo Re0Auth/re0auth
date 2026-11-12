@@ -42,6 +42,7 @@ impl AssetFlight {
         SubscriberStream {
             flight: Arc::clone(self),
             cursor: 0,
+            position: 0,
             version: self.version.subscribe(),
             changed: None,
             terminated: false,
@@ -73,6 +74,9 @@ impl AssetFlight {
         {
             let mut inner = self.inner.write();
             debug_assert!(inner.outcome.is_none(), "outcome is published once");
+            if outcome.is_ok() {
+                inner.chunks.clear();
+            }
             inner.outcome = Some(outcome);
         }
         self.notify();
@@ -114,6 +118,7 @@ type ChangedFuture = Pin<Box<dyn Future<Output = Result<(), watch::error::RecvEr
 pub(crate) struct SubscriberStream {
     flight: Arc<AssetFlight>,
     cursor: usize,
+    position: usize,
     version: watch::Receiver<u64>,
     changed: Option<ChangedFuture>,
     terminated: bool,
@@ -162,7 +167,13 @@ impl Stream for SubscriberStream {
                 match &inner.content_type {
                     Some(Err(error)) => Next::Error(error.clone()),
                     Some(Ok(_)) => {
-                        if self.cursor < inner.chunks.len() {
+                        if let Some(Ok(body)) = &inner.outcome {
+                            if self.position == body.len() {
+                                Next::End
+                            } else {
+                                Next::Chunk(body.slice(self.position..))
+                            }
+                        } else if self.cursor < inner.chunks.len() {
                             Next::Chunk(inner.chunks[self.cursor].clone())
                         } else {
                             match &inner.outcome {
@@ -182,6 +193,7 @@ impl Stream for SubscriberStream {
             match next {
                 Next::Chunk(chunk) => {
                     self.cursor += 1;
+                    self.position += chunk.len();
                     return Poll::Ready(Some(Ok(chunk)));
                 }
                 Next::End => {
@@ -473,6 +485,7 @@ mod tests {
         let outcome = flight.outcome().expect("outcome").expect("success");
         assert_eq!(outcome.as_ptr(), cached.body_bytes().as_ptr());
         assert_eq!(outcome, Bytes::from_static(b"abcde"));
+        assert!(flight.inner.read().chunks.is_empty());
         drop(slow);
     }
 
