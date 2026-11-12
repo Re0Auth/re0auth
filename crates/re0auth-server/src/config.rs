@@ -177,6 +177,12 @@ pub struct LimitsConfig {
     pub upstream_response_bytes: u64,
     pub upstream_inflight_bytes: u64,
     pub inbound_body_bytes: u64,
+    #[serde(default = "default_detached_fill_concurrency")]
+    pub detached_fill_concurrency: usize,
+    #[serde(default = "default_max_active_asset_loaders")]
+    pub max_active_asset_loaders: usize,
+    #[serde(default = "default_detached_deadline_secs")]
+    pub detached_deadline_secs: u64,
 }
 
 /// Prometheus exposition settings.
@@ -202,6 +208,10 @@ pub struct CacheConfig {
     /// Upper bound on stored bytes, evicted by `moka`.
     #[serde(default = "default_cache_max_bytes")]
     pub max_bytes: u64,
+    #[serde(default = "default_asset_max_bytes")]
+    pub asset_max_bytes: u64,
+    #[serde(default = "default_asset_negative_ttl_secs")]
+    pub asset_negative_ttl_secs: u64,
 }
 
 impl Default for CacheConfig {
@@ -210,6 +220,8 @@ impl Default for CacheConfig {
             enabled: false,
             ttl_secs: default_cache_ttl_secs(),
             max_bytes: default_cache_max_bytes(),
+            asset_max_bytes: default_asset_max_bytes(),
+            asset_negative_ttl_secs: default_asset_negative_ttl_secs(),
         }
     }
 }
@@ -287,6 +299,26 @@ fn default_revoked_binding_anonymize_days() -> u64 {
 fn default_cache_max_bytes() -> u64 {
     // Matches the raw-cache budget in DATA-MODEL.md §220.
     8 * 1024 * 1024
+}
+
+fn default_asset_max_bytes() -> u64 {
+    512 * 1024 * 1024
+}
+
+fn default_asset_negative_ttl_secs() -> u64 {
+    5
+}
+
+fn default_detached_fill_concurrency() -> usize {
+    4
+}
+
+fn default_max_active_asset_loaders() -> usize {
+    32
+}
+
+fn default_detached_deadline_secs() -> u64 {
+    45
 }
 
 /// Per-lane budgets (INV-RATE-01).
@@ -746,6 +778,15 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
     if cfg.limits.inbound_body_bytes == 0 {
         anyhow::bail!("limits.inbound_body_bytes must be > 0");
     }
+    if cfg.limits.max_active_asset_loaders == 0 {
+        anyhow::bail!("limits.max_active_asset_loaders must be > 0");
+    }
+    if cfg.cache.asset_negative_ttl_secs > 60 {
+        anyhow::bail!("cache.asset_negative_ttl_secs must be between 0 and 60");
+    }
+    if cfg.cache.enabled && cfg.cache.asset_max_bytes == 0 {
+        anyhow::bail!("cache.asset_max_bytes must be > 0 when the cache is enabled");
+    }
     // A zero-capacity cache evicts everything immediately, which looks like a
     // broken cache rather than a misconfiguration.
     if cfg.cache.enabled && cfg.cache.max_bytes == 0 {
@@ -894,9 +935,19 @@ fn validate(cfg: &Config) -> anyhow::Result<()> {
             );
         }
         for resource in &connector.resources {
-            resource
+            let spec = resource
                 .to_spec()
                 .map_err(|error| anyhow::anyhow!("connector {}: {error}", connector.id))?;
+            if let Some(max_bytes) = spec.max_bytes
+                && (max_bytes == 0 || max_bytes > cfg.limits.upstream_response_bytes)
+            {
+                anyhow::bail!(
+                    "connector {} resource {}: max_bytes must be between 1 and limits.upstream_response_bytes ({})",
+                    connector.id,
+                    spec.name,
+                    cfg.limits.upstream_response_bytes
+                );
+            }
         }
         if let Some(oauth) = &connector.oauth {
             validate_connector_oauth(connector, oauth)?;

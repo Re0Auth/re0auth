@@ -26,7 +26,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::BindingId;
-use crate::connector::ValidatedParamValue;
+use crate::connector::{UpstreamError, ValidatedParamValue};
 
 /// A cached upstream response.
 ///
@@ -49,16 +49,16 @@ pub struct CachedResponse {
 #[derive(Debug, Eq, PartialEq)]
 struct CachedData {
     content_type: String,
-    body: Vec<u8>,
+    body: bytes::Bytes,
 }
 
 impl CachedResponse {
     #[must_use]
-    pub fn new(content_type: impl Into<String>, body: Vec<u8>) -> Self {
+    pub fn new(content_type: impl Into<String>, body: impl Into<bytes::Bytes>) -> Self {
         Self {
             data: std::sync::Arc::new(CachedData {
                 content_type: content_type.into(),
-                body,
+                body: body.into(),
             }),
             stale: false,
         }
@@ -72,6 +72,11 @@ impl CachedResponse {
     #[must_use]
     pub fn body(&self) -> &[u8] {
         &self.data.body
+    }
+
+    #[must_use]
+    pub fn body_bytes(&self) -> bytes::Bytes {
+        self.data.body.clone()
     }
 
     #[must_use]
@@ -116,7 +121,19 @@ pub fn key_with_params(
     resource: &str,
     params: &BTreeMap<String, ValidatedParamValue>,
 ) -> String {
-    let mut key = key(binding, connector, resource);
+    append_params(key(binding, connector, resource), params)
+}
+
+#[must_use]
+pub fn key_shared(
+    connector: &str,
+    resource: &str,
+    params: &BTreeMap<String, ValidatedParamValue>,
+) -> String {
+    append_params(format!("shared:{connector}:{resource}"), params)
+}
+
+fn append_params(mut key: String, params: &BTreeMap<String, ValidatedParamValue>) -> String {
     for (name, value) in params {
         let (kind, value) = match value {
             ValidatedParamValue::String(value) => ("s", value.clone()),
@@ -154,6 +171,11 @@ pub fn key_with_params(
 #[must_use]
 pub fn binding_prefix(binding: &BindingId) -> String {
     format!("binding:{}:", binding.0)
+}
+
+pub trait FailureCache: Send + Sync {
+    fn get(&self, key: &str) -> Option<UpstreamError>;
+    fn put(&self, key: String, error: UpstreamError, ttl: Duration);
 }
 
 /// Response cache.
@@ -216,6 +238,7 @@ mod tests {
             std::ptr::eq(copy.body().as_ptr(), original.body().as_ptr()),
             "a cache hit must not copy the body"
         );
+        assert_eq!(original.body_bytes().as_ptr(), original.body().as_ptr());
     }
 
     #[test]
@@ -306,6 +329,46 @@ mod tests {
                 "phigros",
                 "scores",
                 &BTreeMap::from([("limit".to_string(), ValidatedParamValue::Integer(10))])
+            )
+        );
+    }
+
+    #[test]
+    fn different_path_values_produce_different_private_keys() {
+        let binding = BindingId::new();
+        let key = |song: &str| {
+            key_with_params(
+                &binding,
+                "phigros",
+                "song",
+                &BTreeMap::from([(
+                    "song".to_string(),
+                    ValidatedParamValue::String(song.to_string()),
+                )]),
+            )
+        };
+        assert_ne!(key("IN/OUT"), key("other"));
+    }
+
+    #[test]
+    fn shared_keys_canonicalize_params_without_naming_a_binding() {
+        let params = BTreeMap::from([(
+            "song".to_string(),
+            ValidatedParamValue::String("IN/OUT".to_string()),
+        )]);
+        let shared = key_shared("phigros", "jacket", &params);
+        assert!(shared.starts_with("shared:phigros:jacket:"), "{shared}");
+        assert!(!shared.starts_with("binding:"));
+        assert_eq!(shared, key_shared("phigros", "jacket", &params));
+        assert_ne!(
+            shared,
+            key_shared(
+                "phigros",
+                "jacket",
+                &BTreeMap::from([(
+                    "song".to_string(),
+                    ValidatedParamValue::String("other".to_string()),
+                )])
             )
         );
     }

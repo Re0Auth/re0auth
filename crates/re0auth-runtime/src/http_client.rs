@@ -31,6 +31,11 @@ pub struct RawResponse {
     pub body: Vec<u8>,
 }
 
+pub struct RawAssetStream {
+    pub content_type: String,
+    pub body: futures_util::stream::BoxStream<'static, Result<bytes::Bytes, anyhow::Error>>,
+}
+
 /// Upper bound from §6.9; keeps a hostile upstream from exhausting memory.
 // INV-RES-01: one upstream response is capped at 4 MiB, raw included.
 const DEFAULT_MAX_BODY: usize = 4 * 1024 * 1024;
@@ -283,7 +288,7 @@ impl GuardedClient {
     pub async fn get_with_bearer(
         &self,
         url: &str,
-        token: &str,
+        token: Option<&str>,
         max_body: usize,
     ) -> anyhow::Result<RawResponse> {
         let (url, pinned) = self
@@ -291,12 +296,13 @@ impl GuardedClient {
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
         let client = self.client_for(&url, &pinned)?;
-        let response = client
+        let mut request = client
             .get(url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .bearer_auth(token)
-            .send()
-            .await?;
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -314,6 +320,55 @@ impl GuardedClient {
         let body = read_limited(response, limit).await?;
 
         Ok(RawResponse { content_type, body })
+    }
+
+    pub async fn get_stream_with_bearer(
+        &self,
+        url: &str,
+        token: Option<&str>,
+        accept: &str,
+        max_body: usize,
+    ) -> anyhow::Result<RawAssetStream> {
+        use futures_util::StreamExt;
+
+        let (url, pinned) = self
+            .vet(url)
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let client = self.client_for(&url, &pinned)?;
+        let mut request = client.get(url).header(reqwest::header::ACCEPT, accept);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(status_error(&response).into());
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<mime::Mime>().ok())
+            .map(|value| value.essence_str().to_string())
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let limit = max_body.min(self.max_body);
+        let mut total = 0usize;
+        let body = response
+            .bytes_stream()
+            .map(move |chunk| match chunk {
+                Ok(bytes) => {
+                    total = total.saturating_add(bytes.len());
+                    if total > limit {
+                        Err(anyhow::Error::new(UpstreamTooLarge { limit }))
+                    } else {
+                        Ok(bytes)
+                    }
+                }
+                Err(error) => Err(anyhow::Error::new(error)),
+            })
+            .boxed();
+        Ok(RawAssetStream { content_type, body })
     }
 
     /// POSTs a JSON body, optionally bearer-authenticated, preserving the

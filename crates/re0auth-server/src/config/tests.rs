@@ -2,6 +2,9 @@ use super::connector::{ParamConfig, ResourceConfig, ViewConfig};
 use super::*;
 use re0auth_adapters::storage::SqliteSynchronous;
 use re0auth_api::view::ViewOutput;
+use resource_body::binary_resource;
+
+mod resource_body;
 
 fn example_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.example.toml")
@@ -11,7 +14,7 @@ fn docker_path() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.docker.toml")
 }
 
-fn example() -> Config {
+pub(super) fn example() -> Config {
     load_config(&example_path()).expect("config.example.toml is valid")
 }
 
@@ -103,6 +106,27 @@ fn timeout_defaults_are_conservative() {
     let cfg = example();
     assert_eq!(cfg.timeouts.request_secs, 30);
     assert_eq!(cfg.timeouts.upstream_secs, 10);
+}
+
+#[test]
+fn asset_runtime_defaults_are_bounded() {
+    let cfg = example();
+    assert_eq!(cfg.limits.detached_fill_concurrency, 4);
+    assert_eq!(cfg.limits.max_active_asset_loaders, 32);
+    assert_eq!(cfg.limits.detached_deadline_secs, 45);
+    assert_eq!(cfg.cache.asset_max_bytes, 512 * 1024 * 1024);
+    assert_eq!(cfg.cache.asset_negative_ttl_secs, 5);
+}
+
+#[test]
+fn asset_runtime_settings_reject_unbounded_or_invalid_values() {
+    let mut cfg = example();
+    cfg.limits.max_active_asset_loaders = 0;
+    assert!(validate(&cfg).is_err());
+
+    let mut cfg = example();
+    cfg.cache.asset_negative_ttl_secs = 61;
+    assert!(validate(&cfg).is_err());
 }
 
 #[test]
@@ -801,7 +825,7 @@ fn provider_display_name_defaults_to_its_selector_name() {
     assert_eq!(provider.effective_display_name(), "GitHub");
 }
 
-fn resource_with_view(view: Option<ViewConfig>) -> ResourceConfig {
+pub(super) fn resource_with_view(view: Option<ViewConfig>) -> ResourceConfig {
     ResourceConfig {
         name: "scores".to_string(),
         path: "/v1/scores/{subject}".to_string(),
@@ -809,8 +833,13 @@ fn resource_with_view(view: Option<ViewConfig>) -> ResourceConfig {
         method: None,
         idempotent: None,
         body: None,
+        body_json: None,
         view,
         params: Vec::new(),
+        response: None,
+        content_types: Vec::new(),
+        max_bytes: None,
+        shared: false,
     }
 }
 
@@ -852,7 +881,7 @@ fn an_invalid_view_path_is_rejected_at_load() {
     assert!(error.to_string().contains("invalid view path"), "{error}");
 }
 
-fn phihub_resource(name: &str, path: &str, fields: &[(&str, &str)]) -> ResourceConfig {
+pub(super) fn phihub_resource(name: &str, path: &str, fields: &[(&str, &str)]) -> ResourceConfig {
     ResourceConfig {
         name: name.to_string(),
         path: path.to_string(),
@@ -861,8 +890,9 @@ fn phihub_resource(name: &str, path: &str, fields: &[(&str, &str)]) -> ResourceC
         idempotent: Some(true),
         body: Some(std::collections::BTreeMap::from([(
             "delegation_token".to_string(),
-            "{credential}".to_string(),
+            serde_json::json!("{credential}"),
         )])),
+        body_json: None,
         params: Vec::new(),
         view: Some(ViewConfig {
             data_path: Some("$.data".to_string()),
@@ -874,6 +904,10 @@ fn phihub_resource(name: &str, path: &str, fields: &[(&str, &str)]) -> ResourceC
                     .collect(),
             ),
         }),
+        response: None,
+        content_types: Vec::new(),
+        max_bytes: None,
+        shared: false,
     }
 }
 
@@ -1086,7 +1120,7 @@ fn s26_inflight_budget_must_cover_one_response() {
 fn resource_with_params(params: Vec<ParamConfig>, method: &str) -> ResourceConfig {
     let body = std::collections::BTreeMap::from([(
         "delegation_token".to_string(),
-        "{credential}".to_string(),
+        serde_json::json!("{credential}"),
     )]);
     ResourceConfig {
         name: "scores".to_string(),
@@ -1095,12 +1129,17 @@ fn resource_with_params(params: Vec<ParamConfig>, method: &str) -> ResourceConfi
         method: Some(method.to_string()),
         idempotent: None,
         body: Some(body),
+        body_json: None,
         view: None,
         params,
+        response: None,
+        content_types: Vec::new(),
+        max_bytes: None,
+        shared: false,
     }
 }
 
-fn string_param(name: &str, location: &str) -> ParamConfig {
+pub(super) fn string_param(name: &str, location: &str) -> ParamConfig {
     ParamConfig {
         name: name.to_string(),
         location: Some(location.to_string()),
@@ -1115,6 +1154,49 @@ fn string_param(name: &str, location: &str) -> ParamConfig {
         array: false,
         max_items: None,
     }
+}
+
+#[test]
+fn path_params_are_checked_and_template_order_is_canonical() {
+    let mut resource = binary_resource();
+    resource.path = "/v1/{user}/songs/{song}".to_string();
+    resource.shared = true;
+    resource.params = vec![string_param("song", "path"), string_param("user", "path")];
+    let spec = resource.to_spec().expect("multiple path params");
+    assert_eq!(spec.path_param_names(), ["user", "song"]);
+
+    for invalid in [
+        {
+            let mut param = string_param("user", "path");
+            param.required = false;
+            param
+        },
+        {
+            let mut param = string_param("user", "path");
+            param.array = true;
+            param
+        },
+        {
+            let mut param = string_param("user", "path");
+            param.kind = Some("integer".to_string());
+            param
+        },
+    ] {
+        let mut candidate = binary_resource();
+        candidate.path = "/v1/{user}".to_string();
+        candidate.params = vec![invalid];
+        assert!(candidate.to_spec().is_err());
+    }
+
+    let mut mismatch = binary_resource();
+    mismatch.path = "/v1/{user}".to_string();
+    mismatch.params = vec![string_param("other", "path")];
+    assert!(mismatch.to_spec().is_err());
+
+    let mut duplicate = binary_resource();
+    duplicate.path = "/v1/{user}/{user}".to_string();
+    duplicate.params = vec![string_param("user", "path")];
+    assert!(duplicate.to_spec().is_err());
 }
 
 #[test]

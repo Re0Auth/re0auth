@@ -33,6 +33,16 @@ pub async fn connector_contract<S: Storage>(store: &S) {
                         value: BodyValue::Subject,
                     },
                     BodyField {
+                        name: "payload".to_string(),
+                        value: BodyValue::Literal(serde_json::json!({
+                            "auth": { "token": "Bearer {credential}" },
+                            "enabled": false,
+                            "history": null,
+                            "labels": ["a", "b"],
+                            "limit": 30
+                        })),
+                    },
+                    BodyField {
                         name: "token".to_string(),
                         value: BodyValue::Credential,
                     },
@@ -40,6 +50,20 @@ pub async fn connector_contract<S: Storage>(store: &S) {
                 false,
             )
             .expect("transport"),
+        ResourceSpec::new("empty_post", "/v1/empty")
+            .expect("spec")
+            .with_transport_declared(ResourceMethod::Post, Vec::new(), false, true)
+            .expect("explicit empty body"),
+        ResourceSpec::new("sync_read", "/v1/sync")
+            .expect("spec")
+            .with_transport_declared(ResourceMethod::Post, Vec::new(), false, true)
+            .expect("raw body transport")
+            .with_raw_body(serde_json::json!({
+                "auth": { "token": "Bearer {credential}" },
+                "history": null,
+                "nested": [1, true, { "enabled": false }]
+            }))
+            .expect("raw body"),
     ];
 
     store
@@ -65,19 +89,12 @@ pub async fn connector_contract<S: Storage>(store: &S) {
 
     let mut stored = store.connectors().resources(&id).await.expect("resources");
     stored.sort_by(|left, right| left.name.cmp(&right.name));
-    assert_eq!(stored.len(), 3);
-    assert_eq!(stored[0].name, "me");
-    assert_eq!(stored[1].name, "read_scores");
-    assert_eq!(stored[2].path_template, "/v1/scores/{subject}");
-    // The transport must survive the mirror, not just the path and scope.
-    assert_eq!(stored[1].method, ResourceMethod::Post);
-    assert!(
-        !stored[1].idempotent,
-        "a POST is not retried unless declared"
+    let mut expected = resources.clone();
+    expected.sort_by(|left, right| left.name.cmp(&right.name));
+    assert_eq!(
+        stored, expected,
+        "the entire resource specification must survive the mirror"
     );
-    assert_eq!(stored[1].body.len(), 2);
-    assert_eq!(stored[1].body[0].value, BodyValue::Subject);
-    assert_eq!(stored[1].body[1].value, BodyValue::Credential);
 
     // A second upsert replaces the resource set rather than merging it: a
     // template removed from the config must stop being reachable.

@@ -17,9 +17,9 @@ use secrecy::ExposeSecret;
 use url::Url;
 
 use re0auth_api::connector::{
-    BodyValue, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, EgressPolicy, InflightBudget,
-    ParamLocation, ResourceMethod, ResourceRequest, ResourceSpec, UnlimitedInflight, UpstreamError,
-    UpstreamPayload, ValidatedParamValue,
+    AssetStream, BodyValue, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, EgressPolicy,
+    InflightBudget, ParamLocation, ResourceMethod, ResourceRequest, ResourceSpec, ResponseKind,
+    UnlimitedInflight, UpstreamError, UpstreamPayload, ValidatedParamValue,
 };
 use re0auth_api::{ConnectorId, Re0Error, Re0Result, SecretString};
 
@@ -108,6 +108,24 @@ fn runtime_policy(egress: EgressPolicy) -> (OutboundPolicy, bool) {
     }
 }
 
+fn mapped_params(
+    spec: &ResourceSpec,
+    resource: &ResourceRequest,
+    location: ParamLocation,
+) -> BTreeMap<String, ValidatedParamValue> {
+    spec.params
+        .iter()
+        .filter(|param| param.location == location)
+        .filter_map(|param| {
+            resource
+                .params
+                .get(&param.name)
+                .cloned()
+                .map(|value| (param.upstream.clone(), value))
+        })
+        .collect()
+}
+
 /// Fetches a registered resource over the connector's guarded client.
 pub struct HttpBroker {
     clients: ConnectorClients,
@@ -161,10 +179,12 @@ impl ConnectorBroker for HttpBroker {
                     .map(|value| (param.upstream.clone(), value))
             })
             .collect::<BTreeMap<_, _>>();
+        let path_params = mapped_params(spec, resource, ParamLocation::Path);
         let url = build_url(
             &endpoint.base_url,
             &spec.path_template,
             &resource.subject,
+            &path_params,
             &query_params,
         )
         .map_err(|_| UpstreamError::Rejected)?;
@@ -180,8 +200,12 @@ impl ConnectorBroker for HttpBroker {
         let http = self.clients.get(endpoint)?;
         let response = match spec.method {
             ResourceMethod::Get => {
-                http.get_with_bearer(&url, sub_token.expose_secret(), self.max_body)
-                    .await
+                http.get_with_bearer(
+                    &url,
+                    (!spec.shared).then(|| sub_token.expose_secret()),
+                    self.max_body,
+                )
+                .await
             }
             ResourceMethod::Post => {
                 let (body, credential_in_body) = build_body(
@@ -189,11 +213,11 @@ impl ConnectorBroker for HttpBroker {
                     &resource.subject,
                     sub_token.expose_secret(),
                     &resource.params,
-                );
+                )?;
                 // The credential goes in the body when the template says so, and
                 // then it must not also travel in the header: sending the same
                 // secret twice doubles where it can leak and buys nothing.
-                let bearer = if credential_in_body {
+                let bearer = if credential_in_body || spec.shared {
                     None
                 } else {
                     Some(sub_token.expose_secret())
@@ -208,27 +232,88 @@ impl ConnectorBroker for HttpBroker {
             body: response.body,
         })
     }
+
+    async fn fetch_asset_stream(
+        &self,
+        endpoint: &ConnectorEndpoint,
+        sub_token: &SecretString,
+        resource: &ResourceRequest,
+        accept: &str,
+        max_body: usize,
+    ) -> Result<AssetStream, UpstreamError> {
+        use futures_util::StreamExt;
+
+        let spec = endpoint
+            .resource(&resource.resource)
+            .filter(|spec| spec.response == ResponseKind::Binary)
+            .ok_or(UpstreamError::NotFound)?;
+        if spec.method != ResourceMethod::Get {
+            return Err(UpstreamError::Rejected);
+        }
+        let query_params = spec
+            .params
+            .iter()
+            .filter(|param| param.location == ParamLocation::Query)
+            .filter_map(|param| {
+                resource
+                    .params
+                    .get(&param.name)
+                    .cloned()
+                    .map(|value| (param.upstream.clone(), value))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let path_params = mapped_params(spec, resource, ParamLocation::Path);
+        let url = build_url(
+            &endpoint.base_url,
+            &spec.path_template,
+            &resource.subject,
+            &path_params,
+            &query_params,
+        )
+        .map_err(|_| UpstreamError::Rejected)?;
+        let reservation = self
+            .inflight
+            .reserve(&endpoint.id, max_body as u64)
+            .ok_or(UpstreamError::Overloaded)?;
+        let http = self.clients.get(endpoint)?;
+        let bearer = (!spec.shared).then(|| sub_token.expose_secret());
+        let response = http
+            .get_stream_with_bearer(&url, bearer, accept, max_body)
+            .await
+            .map_err(|error| map_transport_error(&error))?;
+        let body = response
+            .body
+            .map(move |chunk| {
+                let _ = &reservation;
+                chunk.map_err(|error| map_transport_error(&error))
+            })
+            .boxed();
+        Ok(AssetStream {
+            content_type: response.content_type,
+            body,
+        })
+    }
 }
 
-/// Builds the request body from the registry's template.
-///
-/// Only the registry (constants) and the binding (`subject`, `credential`) can
-/// contribute a value, and each is inserted as a JSON **string**: a subject
-/// containing `"` or `},` can never change the document's shape, because
-/// `serde_json` encodes it rather than interpolating it (ADR-0046).
-///
-/// Returns the body and whether the credential was placed in it.
 fn build_body(
     spec: &ResourceSpec,
     subject: &str,
     credential: &str,
     params: &BTreeMap<String, ValidatedParamValue>,
-) -> (serde_json::Value, bool) {
-    let mut map = serde_json::Map::new();
+) -> Result<(serde_json::Value, bool), UpstreamError> {
     let mut credential_in_body = false;
+    let mut map = match &spec.raw_body {
+        Some(raw) => interpolate_tracked(raw, subject, credential, &mut credential_in_body)?
+            .as_object()
+            .cloned()
+            .ok_or(UpstreamError::Rejected)?,
+        None => serde_json::Map::new(),
+    };
     for field in &spec.body {
         let value = match &field.value {
-            BodyValue::Constant(value) => serde_json::Value::String(value.clone()),
+            BodyValue::Literal(value) => {
+                interpolate_tracked(value, subject, credential, &mut credential_in_body)?
+            }
             BodyValue::Subject => serde_json::Value::String(subject.to_string()),
             BodyValue::Credential => {
                 credential_in_body = true;
@@ -246,7 +331,120 @@ fn build_body(
             map.insert(param.upstream.clone(), param_value_json(value));
         }
     }
-    (serde_json::Value::Object(map), credential_in_body)
+    Ok((serde_json::Value::Object(map), credential_in_body))
+}
+
+fn interpolate_tracked(
+    value: &serde_json::Value,
+    subject: &str,
+    credential: &str,
+    credential_in_body: &mut bool,
+) -> Result<serde_json::Value, UpstreamError> {
+    match value {
+        serde_json::Value::String(input) => {
+            interpolate_string(input, subject, credential, credential_in_body)
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| interpolate_tracked(item, subject, credential, credential_in_body))
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+        serde_json::Value::Object(object) => object
+            .iter()
+            .map(|(key, value)| {
+                interpolate_tracked(value, subject, credential, credential_in_body)
+                    .map(|value| (key.clone(), value))
+            })
+            .collect::<Result<serde_json::Map<_, _>, _>>()
+            .map(serde_json::Value::Object),
+        scalar => Ok(scalar.clone()),
+    }
+}
+
+fn interpolate_string(
+    input: &str,
+    subject: &str,
+    credential: &str,
+    credential_in_body: &mut bool,
+) -> Result<serde_json::Value, UpstreamError> {
+    if let Some(kind) = input
+        .strip_prefix('{')
+        .and_then(|value| value.strip_suffix('}'))
+        .filter(|_| !input.starts_with("{{") && !input.ends_with("}}"))
+    {
+        let scalar = match kind {
+            "subject:int" => Some(
+                subject
+                    .parse::<i64>()
+                    .map(serde_json::Value::from)
+                    .map_err(|_| UpstreamError::Rejected)?,
+            ),
+            "subject:uint" => Some(
+                subject
+                    .parse::<u64>()
+                    .map(serde_json::Value::from)
+                    .map_err(|_| UpstreamError::Rejected)?,
+            ),
+            "subject:number" => {
+                let number = subject
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite())
+                    .and_then(serde_json::Number::from_f64)
+                    .ok_or(UpstreamError::Rejected)?;
+                Some(serde_json::Value::Number(number))
+            }
+            "subject:bool" => Some(serde_json::Value::Bool(match subject {
+                "true" | "1" => true,
+                "false" | "0" => false,
+                _ => return Err(UpstreamError::Rejected),
+            })),
+            _ => None,
+        };
+        if let Some(scalar) = scalar {
+            return Ok(scalar);
+        }
+    }
+
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+    while cursor < input.len() {
+        let rest = &input[cursor..];
+        if rest.starts_with("{{") {
+            output.push('{');
+            cursor += 2;
+            continue;
+        }
+        if rest.starts_with("}}") {
+            output.push('}');
+            cursor += 2;
+            continue;
+        }
+        if rest.starts_with('{') {
+            if let Some(end) = rest.find('}') {
+                let token = &rest[1..end];
+                match token {
+                    "subject" => output.push_str(subject),
+                    "credential" => {
+                        *credential_in_body = true;
+                        output.push_str(credential);
+                    }
+                    "subject:int" | "subject:uint" | "subject:number" | "subject:bool" => {
+                        return Err(UpstreamError::Rejected);
+                    }
+                    _ => {
+                        output.push_str(&rest[..=end]);
+                    }
+                }
+                cursor += end + 1;
+                continue;
+            }
+        }
+        let character = rest.chars().next().expect("nonempty remainder");
+        output.push(character);
+        cursor += character.len_utf8();
+    }
+    Ok(serde_json::Value::String(output))
 }
 
 fn param_value_json(value: &ValidatedParamValue) -> serde_json::Value {
@@ -269,10 +467,19 @@ pub fn build_url(
     base_url: &str,
     path_template: &str,
     subject: &str,
+    path_params: &BTreeMap<String, ValidatedParamValue>,
     query_params: &BTreeMap<String, ValidatedParamValue>,
 ) -> Result<String, &'static str> {
-    re0auth_api::connector::validate_path_template(path_template)
+    let allowed = path_params
+        .keys()
+        .cloned()
+        .chain(std::iter::once("subject".to_string()))
+        .collect();
+    let placeholders = re0auth_api::connector::validate_path_placeholders(path_template, &allowed)
         .map_err(|_| "invalid template")?;
+    if path_params.keys().any(|name| !placeholders.contains(name)) {
+        return Err("path parameter has no placeholder");
+    }
 
     let mut base = Url::parse(base_url).map_err(|_| "invalid base url")?;
     if base.scheme() != "https" && base.scheme() != "http" {
@@ -286,7 +493,20 @@ pub fn build_url(
     // Treat the base as a directory, or `Url::join` would drop its last segment.
     base.set_path(&format!("{base_path}/"));
 
-    let filled = path_template.replace("{subject}", &percent_encode(subject));
+    let mut filled = path_template.replace("{subject}", &percent_encode(subject));
+    for name in placeholders
+        .iter()
+        .filter(|name| name.as_str() != "subject")
+    {
+        let value = path_params.get(name).ok_or("missing path parameter")?;
+        filled = filled.replace(
+            &format!("{{{name}}}"),
+            &percent_encode(&value.as_query_string()),
+        );
+    }
+    if filled.contains('{') || filled.contains('}') {
+        return Err("unresolved path placeholder");
+    }
     // Templates are relative to the base path, so a leading slash is stripped
     // before joining; otherwise `Url::join` would replace the whole path.
     let relative = filled.trim_start_matches('/');
@@ -387,6 +607,14 @@ mod tests {
     use re0auth_api::connector::ResourceSpec;
     use re0auth_api::connector::{ParamKind, ParamLocation, ParamSpec};
 
+    fn interpolate(
+        value: &serde_json::Value,
+        subject: &str,
+        credential: &str,
+    ) -> Result<serde_json::Value, UpstreamError> {
+        interpolate_tracked(value, subject, credential, &mut false)
+    }
+
     fn endpoint() -> ConnectorEndpoint {
         ConnectorEndpoint {
             id: ConnectorId::new(),
@@ -424,6 +652,7 @@ mod tests {
             "/v1/scores/{subject}",
             "ab12cd34",
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )
         .expect("url");
         assert_eq!(url, "https://api.example.com/v1/scores/ab12cd34");
@@ -435,6 +664,7 @@ mod tests {
             "https://api.example.com",
             "/v1/scores/{subject}",
             "a/b",
+            &BTreeMap::new(),
             &BTreeMap::new(),
         )
         .expect("url");
@@ -448,6 +678,7 @@ mod tests {
             "/v1/scores/{subject}",
             "../etc",
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )
         .expect("url");
         assert_eq!(url, "https://api.example.com/v1/scores/..%2Fetc");
@@ -460,6 +691,7 @@ mod tests {
                 "https://api.example.com",
                 "//evil.example/x",
                 "s",
+                &BTreeMap::new(),
                 &BTreeMap::new()
             )
             .is_err()
@@ -469,6 +701,7 @@ mod tests {
                 "https://api.example.com",
                 "/v1/../../x",
                 "s",
+                &BTreeMap::new(),
                 &BTreeMap::new()
             )
             .is_err()
@@ -478,6 +711,7 @@ mod tests {
                 "https://api.example.com",
                 "v1/scores",
                 "s",
+                &BTreeMap::new(),
                 &BTreeMap::new()
             )
             .is_err()
@@ -491,6 +725,7 @@ mod tests {
             "/v1/me",
             "s",
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )
         .expect("url");
         assert_eq!(url, "https://api.example.com/api/v1/me");
@@ -502,6 +737,7 @@ mod tests {
             "https://seekend.xtower.site",
             "/api/v1/save?calculate_rks=true",
             "s",
+            &BTreeMap::new(),
             &BTreeMap::new(),
         )
         .expect("url");
@@ -518,6 +754,7 @@ mod tests {
                 "https://api.example.com?x=1",
                 "/v1/me",
                 "s",
+                &BTreeMap::new(),
                 &BTreeMap::new()
             )
             .is_err()
@@ -527,6 +764,7 @@ mod tests {
                 "https://api.example.com#frag",
                 "/v1/me",
                 "s",
+                &BTreeMap::new(),
                 &BTreeMap::new()
             )
             .is_err()
@@ -823,7 +1061,8 @@ mod tests {
                 value: BodyValue::Credential,
             },
         ]);
-        let (body, credential_in_body) = build_body(&spec, "a\"b,}", "secret", &BTreeMap::new());
+        let (body, credential_in_body) =
+            build_body(&spec, "a\"b,}", "secret", &BTreeMap::new()).expect("body");
         assert!(credential_in_body, "the credential is a body field");
         assert_eq!(body["api_user_id"], serde_json::Value::from("a\"b,}"));
         assert_eq!(
@@ -839,7 +1078,8 @@ mod tests {
             name: "api_user_id".to_string(),
             value: BodyValue::Subject,
         }]);
-        let (body, credential_in_body) = build_body(&spec, "player", "secret", &BTreeMap::new());
+        let (body, credential_in_body) =
+            build_body(&spec, "player", "secret", &BTreeMap::new()).expect("body");
         assert!(!credential_in_body);
         assert_eq!(body["api_user_id"], serde_json::Value::from("player"));
         assert!(body.get("secret").is_none());
@@ -849,14 +1089,16 @@ mod tests {
     fn a_constant_is_a_literal_and_a_get_resource_has_no_body() {
         let spec = post_spec(vec![BodyField {
             name: "scope".to_string(),
-            value: BodyValue::Constant("read".to_string()),
+            value: BodyValue::Literal(serde_json::Value::String("read".to_string())),
         }]);
-        let (body, credential_in_body) = build_body(&spec, "player", "secret", &BTreeMap::new());
+        let (body, credential_in_body) =
+            build_body(&spec, "player", "secret", &BTreeMap::new()).expect("body");
         assert!(!credential_in_body);
         assert_eq!(body["scope"], serde_json::Value::from("read"));
 
         let get = ResourceSpec::new("me", "/v1/me").expect("spec");
-        let (body, credential_in_body) = build_body(&get, "player", "secret", &BTreeMap::new());
+        let (body, credential_in_body) =
+            build_body(&get, "player", "secret", &BTreeMap::new()).expect("body");
         assert!(!credential_in_body);
         assert!(body.as_object().expect("object").is_empty());
     }
@@ -878,6 +1120,7 @@ mod tests {
             "https://api.example.com",
             &spec.path_template,
             "player",
+            &BTreeMap::new(),
             &params,
         )
         .expect("url");
@@ -907,6 +1150,7 @@ mod tests {
             "https://api.example.com",
             &spec.path_template,
             "player",
+            &BTreeMap::new(),
             &params,
         )
         .expect("url");
@@ -929,7 +1173,8 @@ mod tests {
                 ValidatedParamValue::String("rks".to_string()),
             ]),
         )]);
-        let (body, credential_in_body) = build_body(&spec, "player", "secret", &params);
+        let (body, credential_in_body) =
+            build_body(&spec, "player", "secret", &params).expect("body");
         assert!(credential_in_body);
         assert_eq!(body["request"], serde_json::json!(["data", "rks"]));
     }
@@ -943,9 +1188,93 @@ mod tests {
                 ValidatedParamValue::String("b".to_string()),
             ]),
         )]);
-        let url =
-            build_url("https://api.example.com", "/v1/scores", "player", &params).expect("url");
+        let url = build_url(
+            "https://api.example.com",
+            "/v1/scores",
+            "player",
+            &BTreeMap::new(),
+            &params,
+        )
+        .expect("url");
         assert_eq!(url, "https://api.example.com/v1/scores?tag=a&tag=b");
+    }
+
+    #[test]
+    fn dynamic_path_segments_reencode_values_without_query_interpolation() {
+        let path = BTreeMap::from([
+            (
+                "song".to_string(),
+                ValidatedParamValue::String("IN/OUT".to_string()),
+            ),
+            (
+                "user".to_string(),
+                ValidatedParamValue::String("C#".to_string()),
+            ),
+        ]);
+        let query = BTreeMap::from([(
+            "fixed".to_string(),
+            ValidatedParamValue::String("{credential}".to_string()),
+        )]);
+        let url = build_url(
+            "https://api.example.com",
+            "/v1/{user}/songs/{song}",
+            "player",
+            &path,
+            &query,
+        )
+        .expect("url");
+        assert_eq!(
+            url,
+            "https://api.example.com/v1/C%23/songs/IN%2FOUT?fixed=%7Bcredential%7D"
+        );
+
+        assert!(
+            build_url(
+                "https://api.example.com",
+                "/v1/{user}/{song}",
+                "player",
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            )
+            .is_err()
+        );
+        assert!(
+            build_url(
+                "https://api.example.com",
+                "/v1/{user}",
+                "player",
+                &path,
+                &BTreeMap::new(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn path_segment_encoding_covers_reserved_separators() {
+        for (raw, encoded) in [
+            ("Ain Soph Aur", "Ain%20Soph%20Aur"),
+            ("IN+", "IN%2B"),
+            ("Re:End", "Re%3AEnd"),
+            ("te.st@example", "te.st%40example"),
+            ("What?", "What%3F"),
+            ("A&B", "A%26B"),
+            ("A%B", "A%25B"),
+        ] {
+            let path = BTreeMap::from([(
+                "song".to_string(),
+                ValidatedParamValue::String(raw.to_string()),
+            )]);
+            let url = build_url(
+                "https://api.example.com",
+                "/v1/{song}",
+                "",
+                &path,
+                &BTreeMap::new(),
+            )
+            .expect("url");
+            assert_eq!(url, format!("https://api.example.com/v1/{encoded}"));
+        }
     }
 
     #[test]
@@ -999,7 +1328,8 @@ mod tests {
                 },
             ),
         ]);
-        let (body, credential_in_body) = build_body(&spec, "player-1", "secret", &params);
+        let (body, credential_in_body) =
+            build_body(&spec, "player-1", "secret", &params).expect("body");
         assert!(credential_in_body, "the credential stays in the body");
         assert_eq!(body["delegation_token"], serde_json::Value::from("secret"));
         assert_eq!(body["api_user_id"], serde_json::Value::from("player-1"));
@@ -1008,5 +1338,115 @@ mod tests {
         assert_eq!(body["limit"], serde_json::Value::from(30));
         assert_eq!(body["is_full_combo"], serde_json::Value::from(true));
         assert_eq!(body["ratio"], serde_json::Value::from(1.5));
+    }
+
+    fn raw_post_spec(raw: serde_json::Value) -> ResourceSpec {
+        ResourceSpec::new("sync", "/v1/sync")
+            .expect("spec")
+            .with_transport_declared(ResourceMethod::Post, Vec::new(), false, true)
+            .expect("transport")
+            .with_raw_body(raw)
+            .expect("raw body")
+    }
+
+    #[test]
+    fn raw_body_is_exact_json() {
+        let spec = raw_post_spec(serde_json::json!({"history": null}));
+        let (body, credential_in_body) =
+            build_body(&spec, "player", "secret", &BTreeMap::new()).expect("body");
+        assert_eq!(body, serde_json::json!({"history": null}));
+        assert!(!credential_in_body);
+    }
+
+    #[test]
+    fn nested_raw_body_interpolates_prefixes_and_escapes() {
+        let spec = raw_post_spec(serde_json::json!({
+            "auth": {"token": "Bearer {credential}"},
+            "filter": null,
+            "literal": ["{{subject}}", "{{credential}}", "prefix-{subject}"]
+        }));
+        let (body, credential_in_body) =
+            build_body(&spec, "player", "secret", &BTreeMap::new()).expect("body");
+        assert_eq!(body["auth"]["token"], "Bearer secret");
+        assert_eq!(body["filter"], serde_json::Value::Null);
+        assert_eq!(
+            body["literal"],
+            serde_json::json!(["{subject}", "{credential}", "prefix-player"])
+        );
+        assert!(credential_in_body);
+    }
+
+    #[test]
+    fn typed_subject_placeholders_emit_json_scalars() {
+        assert_eq!(
+            interpolate(&serde_json::json!("{subject:int}"), "238124", "secret").expect("int"),
+            serde_json::json!(238124)
+        );
+        assert_eq!(
+            interpolate(&serde_json::json!("{subject:int}"), "001234", "secret").expect("int"),
+            serde_json::json!(1234)
+        );
+        assert_eq!(
+            interpolate(
+                &serde_json::json!("{subject:uint}"),
+                "18446744073709551615",
+                "secret"
+            )
+            .expect("uint"),
+            serde_json::json!(u64::MAX)
+        );
+        assert_eq!(
+            interpolate(&serde_json::json!("{subject:bool}"), "true", "secret").expect("bool"),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            interpolate(&serde_json::json!("{subject:number}"), "1.25", "secret").expect("number"),
+            serde_json::json!(1.25)
+        );
+    }
+
+    #[test]
+    fn invalid_and_embedded_typed_placeholders_are_rejected() {
+        for (template, subject) in [
+            ("{subject:int}", "18446744073709551615"),
+            ("{subject:uint}", "-1"),
+            ("{subject:number}", "NaN"),
+            ("{subject:bool}", "yes"),
+            ("id-{subject:int}", "12"),
+            ("{subject:int}-id", "12"),
+        ] {
+            assert_eq!(
+                interpolate(&serde_json::json!(template), subject, "secret"),
+                Err(UpstreamError::Rejected),
+                "{template} with {subject}"
+            );
+        }
+    }
+
+    #[test]
+    fn literal_body_values_preserve_json_types() {
+        let spec = post_spec(vec![
+            BodyField {
+                name: "enabled".to_string(),
+                value: BodyValue::Literal(serde_json::json!(false)),
+            },
+            BodyField {
+                name: "limit".to_string(),
+                value: BodyValue::Literal(serde_json::json!(30)),
+            },
+            BodyField {
+                name: "labels".to_string(),
+                value: BodyValue::Literal(serde_json::json!(["a", "b"])),
+            },
+            BodyField {
+                name: "nested".to_string(),
+                value: BodyValue::Literal(serde_json::json!({"mode": "x"})),
+            },
+        ]);
+        let (body, _) = build_body(&spec, "player", "secret", &BTreeMap::new()).expect("body");
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["limit"], 30);
+        assert_eq!(body["labels"], serde_json::json!(["a", "b"]));
+        assert_eq!(body["nested"], serde_json::json!({"mode": "x"}));
     }
 }

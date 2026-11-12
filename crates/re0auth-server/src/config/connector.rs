@@ -107,10 +107,12 @@ pub struct ResourceConfig {
     /// Whether a retry is safe (F-4). Defaults to `true` for `get`, `false` for `post`.
     #[serde(default)]
     pub idempotent: Option<bool>,
-    /// Server-generated body: field name → value. Value syntax: a literal, or the
-    /// placeholders `{subject}` / `{credential}`. Only valid with `method = "post"`.
+    /// Server-generated typed body fields. Only valid with `method = "post"`.
     #[serde(default)]
-    pub body: Option<std::collections::BTreeMap<String, String>>,
+    pub body: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Authoritative raw JSON object; `body` remains the legacy rollout mirror.
+    #[serde(default)]
+    pub body_json: Option<String>,
     /// Declarative view for the normalized endpoint (ADR-0049). Absent means the
     /// envelope carries the upstream JSON unchanged.
     #[serde(default)]
@@ -118,6 +120,14 @@ pub struct ResourceConfig {
     /// Declared downstream query parameters, validated and mapped upstream.
     #[serde(default)]
     pub params: Vec<ParamConfig>,
+    #[serde(default)]
+    pub response: Option<String>,
+    #[serde(default)]
+    pub content_types: Vec<String>,
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+    #[serde(default)]
+    pub shared: bool,
 }
 
 /// One `[[connectors.resources.params]]` entry.
@@ -222,28 +232,71 @@ impl ResourceConfig {
                 )
             })?,
         };
-        let body: Vec<BodyField> = self
+        let raw_body = self
+            .body_json
+            .as_deref()
+            .map(|raw| {
+                let value: serde_json::Value = serde_json::from_str(raw).map_err(|error| {
+                    anyhow::anyhow!("resource {}: invalid body_json: {error}", self.name)
+                })?;
+                if !value.is_object() {
+                    anyhow::bail!("resource {}: body_json must be a JSON object", self.name);
+                }
+                validate_body_placeholders(&self.name, &value)?;
+                Ok::<_, anyhow::Error>(value)
+            })
+            .transpose()?;
+        if let Some(body) = &self.body {
+            for value in body.values() {
+                validate_body_placeholders(&self.name, value)?;
+            }
+        }
+        let legacy_body: Vec<BodyField> = self
             .body
             .as_ref()
             .map(|map| {
                 map.iter()
                     .map(|(name, raw)| BodyField {
                         name: name.clone(),
-                        value: body_value(raw),
+                        value: re0auth_api::connector::BodyValue::Literal(raw.clone()),
                     })
                     .collect()
             })
             .unwrap_or_default();
         // A read is safe to retry; a write is not until its author says so.
         let idempotent = self.idempotent.unwrap_or(method == ResourceMethod::Get);
-        let body_names: Vec<String> = body.iter().map(|field| field.name.clone()).collect();
+        let body_names: Vec<String> = match (&raw_body, &self.body) {
+            (Some(raw), _) => raw
+                .as_object()
+                .expect("checked object")
+                .keys()
+                .cloned()
+                .collect(),
+            (None, _) => legacy_body.iter().map(|field| field.name.clone()).collect(),
+        };
         let params = self.params_to_spec(method, &body_names)?;
 
         let spec = ResourceSpec::new(self.name.clone(), self.path.clone())
             .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?;
+        let body = if raw_body.is_some() {
+            Vec::new()
+        } else {
+            legacy_body
+        };
         let spec = spec
-            .with_transport_declared(method, body, idempotent, self.body.is_some())
+            .with_transport_declared(
+                method,
+                body,
+                idempotent,
+                self.body.is_some() || raw_body.is_some(),
+            )
             .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?;
+        let spec = match raw_body {
+            Some(raw) => spec
+                .with_raw_body(raw)
+                .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?,
+            None => spec,
+        };
         let spec = match &self.view {
             Some(view) => spec.with_view(view.to_spec(&self.name)?),
             None => spec,
@@ -254,7 +307,47 @@ impl ResourceConfig {
                 .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?,
             None => spec,
         };
-        Ok(spec.with_params(params))
+        let response =
+            re0auth_api::connector::ResponseKind::parse(self.response.as_deref().unwrap_or("json"))
+                .ok_or_else(|| anyhow::anyhow!("resource {}: unknown response kind", self.name))?;
+        match response {
+            re0auth_api::connector::ResponseKind::Binary => {
+                if self.content_types.is_empty()
+                    || self.content_types.iter().any(|value| {
+                        !matches!(
+                            value.as_str(),
+                            "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/avif"
+                        )
+                    })
+                {
+                    anyhow::bail!(
+                        "resource {}: binary response requires concrete configured image types",
+                        self.name
+                    );
+                }
+                if self.view.is_some() {
+                    anyhow::bail!(
+                        "resource {}: binary resources cannot declare a view",
+                        self.name
+                    );
+                }
+            }
+            re0auth_api::connector::ResponseKind::Json => {
+                if !self.content_types.is_empty() || self.max_bytes.is_some() {
+                    anyhow::bail!(
+                        "resource {}: content_types and max_bytes require response = binary",
+                        self.name
+                    );
+                }
+            }
+        }
+        let mut spec = spec.with_response(response, self.content_types.clone(), self.max_bytes);
+        spec.shared = self.shared;
+        validate_shared_resource(self, &spec)?;
+        let spec = spec
+            .with_params(params)
+            .map_err(|error| anyhow::anyhow!("resource {}: {error}", self.name))?;
+        Ok(spec)
     }
 
     fn params_to_spec(
@@ -299,6 +392,7 @@ impl ResourceConfig {
             let location = match param.location.as_deref().unwrap_or("query") {
                 "query" => ParamLocation::Query,
                 "body" => ParamLocation::Body,
+                "path" => ParamLocation::Path,
                 other => anyhow::bail!(
                     "resource {} parameter {}: unknown location {:?}",
                     self.name,
@@ -345,6 +439,17 @@ impl ResourceConfig {
                     other
                 ),
             };
+            if location == ParamLocation::Path
+                && (!param.required
+                    || param.array
+                    || !matches!(kind, ParamKind::String | ParamKind::Enum))
+            {
+                anyhow::bail!(
+                    "resource {} parameter {}: path parameters require required = true, array = false, and string or enum kind",
+                    self.name,
+                    param.name
+                );
+            }
             if !param.values.is_empty() && kind != ParamKind::Enum {
                 anyhow::bail!(
                     "resource {} parameter {}: values are only allowed for enum",
@@ -507,11 +612,182 @@ fn valid_upstream_name(value: &str, location: re0auth_api::connector::ParamLocat
             re0auth_api::connector::ParamLocation::Query => {
                 byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte == b'.'
             }
+            re0auth_api::connector::ParamLocation::Path => {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+            }
         })
 }
 
-fn body_value(raw: &str) -> re0auth_api::connector::BodyValue {
-    re0auth_api::connector::BodyValue::parse(raw)
+fn validate_shared_resource(
+    config: &ResourceConfig,
+    spec: &re0auth_api::connector::ResourceSpec,
+) -> anyhow::Result<()> {
+    if !spec.shared {
+        return Ok(());
+    }
+    if spec.path_template.contains("{subject}") {
+        anyhow::bail!(
+            "resource {}: shared resource path contains {{subject}}",
+            config.name
+        );
+    }
+    for field in &spec.body {
+        match &field.value {
+            re0auth_api::connector::BodyValue::Subject => {
+                anyhow::bail!("resource {}: shared body contains {{subject}}", config.name);
+            }
+            re0auth_api::connector::BodyValue::Credential => {
+                anyhow::bail!(
+                    "resource {}: shared body contains {{credential}}",
+                    config.name
+                );
+            }
+            re0auth_api::connector::BodyValue::Literal(value) => {
+                validate_shared_json(&config.name, value)?;
+            }
+        }
+    }
+    if let Some(raw) = &spec.raw_body {
+        validate_shared_json(&config.name, raw)?;
+    }
+    if let Some(body) = &config.body {
+        for value in body.values() {
+            validate_shared_json(&config.name, value)?;
+        }
+    }
+    for param in &config.params {
+        for value in std::iter::once(&param.name)
+            .chain(param.upstream.iter())
+            .chain(param.values.iter())
+        {
+            for placeholder in ["{subject}", "{credential}"] {
+                if value.contains(placeholder) {
+                    anyhow::bail!(
+                        "resource {} parameter {}: shared parameter contains {placeholder}",
+                        config.name,
+                        param.name
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_shared_json(resource: &str, value: &serde_json::Value) -> anyhow::Result<()> {
+    match value {
+        serde_json::Value::String(input) => {
+            if let Some(token) = binding_placeholder(input) {
+                anyhow::bail!("resource {resource}: shared body contains {{{token}}}");
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                validate_shared_json(resource, item)?;
+            }
+        }
+        serde_json::Value::Object(object) => {
+            for value in object.values() {
+                validate_shared_json(resource, value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn binding_placeholder(input: &str) -> Option<String> {
+    let mut cursor = 0;
+    while cursor < input.len() {
+        let rest = &input[cursor..];
+        if rest.starts_with("{{") || rest.starts_with("}}") {
+            cursor += 2;
+            continue;
+        }
+        if rest.starts_with('{') {
+            let end = rest.find('}')?;
+            let token = &rest[1..end];
+            if matches!(
+                token,
+                "subject"
+                    | "credential"
+                    | "subject:int"
+                    | "subject:uint"
+                    | "subject:number"
+                    | "subject:bool"
+            ) {
+                return Some(token.to_string());
+            }
+            cursor += end + 1;
+            continue;
+        }
+        cursor += rest.chars().next().expect("nonempty remainder").len_utf8();
+    }
+    None
+}
+
+fn validate_body_placeholders(resource: &str, value: &serde_json::Value) -> anyhow::Result<()> {
+    match value {
+        serde_json::Value::String(input) => validate_placeholder_string(resource, input),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                validate_body_placeholders(resource, item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(object) => {
+            for value in object.values() {
+                validate_body_placeholders(resource, value)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_placeholder_string(resource: &str, input: &str) -> anyhow::Result<()> {
+    let mut cursor = 0;
+    while cursor < input.len() {
+        let rest = &input[cursor..];
+        if rest.starts_with("{{") || rest.starts_with("}}") {
+            cursor += 2;
+            continue;
+        }
+        if rest.starts_with('{') {
+            let end = rest.find('}').ok_or_else(|| {
+                anyhow::anyhow!("resource {resource}: unmatched '{{' in body string {input:?}")
+            })?;
+            let token = &rest[1..end];
+            let typed = matches!(
+                token,
+                "subject:int" | "subject:uint" | "subject:number" | "subject:bool"
+            );
+            if typed && (cursor != 0 || end + 1 != input.len()) {
+                anyhow::bail!(
+                    "resource {resource}: typed placeholder {{{token}}} must occupy the entire string"
+                );
+            }
+            if !matches!(
+                token,
+                "subject"
+                    | "credential"
+                    | "subject:int"
+                    | "subject:uint"
+                    | "subject:number"
+                    | "subject:bool"
+            ) {
+                anyhow::bail!("resource {resource}: unknown body placeholder {{{token}}}");
+            }
+            cursor += end + 1;
+            continue;
+        }
+        if rest.starts_with('}') {
+            anyhow::bail!("resource {resource}: unmatched '}}' in body string {input:?}");
+        }
+        let character = rest.chars().next().expect("nonempty remainder");
+        cursor += character.len_utf8();
+    }
+    Ok(())
 }
 
 fn default_true() -> bool {

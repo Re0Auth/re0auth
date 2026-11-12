@@ -10,6 +10,7 @@ aes-gcm.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
+futures-util.workspace = true
 hkdf.workspace = true
 percent-encoding.workspace = true
 re0auth-api = { version = "0.18.0", path = "../re0auth-api" }

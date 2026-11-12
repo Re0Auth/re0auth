@@ -29,6 +29,13 @@ pub mod outbound;
 pub mod telemetry;
 pub mod tls;
 
+pub fn spawn_detached<F>(future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    drop(tokio::spawn(future));
+}
+
 use std::sync::Arc;
 use std::time::Duration;
 

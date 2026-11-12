@@ -34,6 +34,7 @@ re0auth-http = { version = "0.1.0", path = "../re0auth-http" }
 
 [dev-dependencies]
 base64.workspace = true
+bytes.workspace = true
 secrecy.workspace = true
 jsonwebtoken.workspace = true
 aws-lc-rs.workspace = true

@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use secrecy::ExposeSecret;
 
 use re0auth_api::connector::{
-    ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, ConnectorSecretStore, EgressPolicy,
-    FaultClass, ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
+    AssetStream, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, ConnectorSecretStore,
+    EgressPolicy, FaultClass, ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
 };
 use re0auth_api::secret::{SealedSecret, SecretSealer};
 use re0auth_api::{BindingId, ConnectorId, Re0Error, Re0Result, SecretString};
@@ -23,10 +23,17 @@ pub trait ConnectorFixture: ConnectorRegistry + ConnectorBroker {
     fn calls(&self) -> Vec<ResourceRequest>;
 }
 
+#[derive(Clone)]
+struct MockAsset {
+    content_type: String,
+    chunks: Vec<Result<bytes::Bytes, UpstreamError>>,
+}
+
 #[derive(Default)]
 struct MockState {
     endpoints: HashMap<ConnectorId, ConnectorEndpoint>,
     responses: HashMap<String, Result<UpstreamPayload, UpstreamError>>,
+    assets: HashMap<String, Result<MockAsset, UpstreamError>>,
     calls: Vec<ResourceRequest>,
 }
 
@@ -39,6 +46,32 @@ impl MockConnector {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Configures the chunks returned for an asset resource. Plain byte chunks
+    /// are successful items; `Result` chunks can inject a mid-stream failure.
+    pub fn set_asset_stream<C>(&self, resource: &str, content_type: impl Into<String>, chunks: C)
+    where
+        C: IntoIterator<Item = bytes::Bytes>,
+    {
+        self.set_asset_results(resource, content_type, chunks.into_iter().map(Ok));
+    }
+
+    pub fn set_asset_results<C>(&self, resource: &str, content_type: impl Into<String>, chunks: C)
+    where
+        C: IntoIterator<Item = Result<bytes::Bytes, UpstreamError>>,
+    {
+        self.lock().assets.insert(
+            resource.to_string(),
+            Ok(MockAsset {
+                content_type: content_type.into(),
+                chunks: chunks.into_iter().collect(),
+            }),
+        );
+    }
+
+    pub fn set_asset_error(&self, resource: &str, error: UpstreamError) {
+        self.lock().assets.insert(resource.to_string(), Err(error));
     }
 
     fn lock(&self) -> MutexGuard<'_, MockState> {
@@ -67,7 +100,7 @@ impl ConnectorBroker for MockConnector {
         _sub_token: &SecretString,
         resource: &ResourceRequest,
     ) -> Result<UpstreamPayload, UpstreamError> {
-        if !safe(&resource.resource) || !safe(&resource.subject) {
+        if !safe(&resource.resource) || (!resource.subject.is_empty() && !safe(&resource.subject)) {
             return Err(UpstreamError::Rejected);
         }
         let mut state = self.lock();
@@ -77,6 +110,41 @@ impl ConnectorBroker for MockConnector {
             .get(&resource.resource)
             .cloned()
             .unwrap_or(Err(UpstreamError::NotFound))
+    }
+
+    async fn fetch_asset_stream(
+        &self,
+        _endpoint: &ConnectorEndpoint,
+        _sub_token: &SecretString,
+        resource: &ResourceRequest,
+        _accept: &str,
+        _max_body: usize,
+    ) -> Result<AssetStream, UpstreamError> {
+        if !safe(&resource.resource) || (!resource.subject.is_empty() && !safe(&resource.subject)) {
+            return Err(UpstreamError::Rejected);
+        }
+        let (asset, response) = {
+            let mut state = self.lock();
+            state.calls.push(resource.clone());
+            (
+                state.assets.get(&resource.resource).cloned(),
+                state.responses.get(&resource.resource).cloned(),
+            )
+        };
+        let asset = match asset {
+            Some(result) => result?,
+            None => {
+                let payload = response.unwrap_or(Err(UpstreamError::NotFound))?;
+                MockAsset {
+                    content_type: payload.content_type,
+                    chunks: vec![Ok(bytes::Bytes::from(payload.body))],
+                }
+            }
+        };
+        Ok(AssetStream {
+            content_type: asset.content_type,
+            body: Box::pin(futures_util::stream::iter(asset.chunks)),
+        })
     }
 }
 

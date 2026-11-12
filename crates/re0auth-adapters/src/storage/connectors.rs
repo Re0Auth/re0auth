@@ -25,6 +25,29 @@ fn body_json(resource: &ResourceSpec) -> RepoResult<String> {
         .map_err(|error| RepoError::Backend(format!("stored resource body: {error}")))
 }
 
+fn typed_body_json(resource: &ResourceSpec) -> RepoResult<Option<String>> {
+    if resource.raw_body.is_some() || resource.method != ResourceMethod::Post {
+        return Ok(None);
+    }
+    let map: std::collections::BTreeMap<&str, &BodyValue> = resource
+        .body
+        .iter()
+        .map(|field| (field.name.as_str(), &field.value))
+        .collect();
+    serde_json::to_string(&map)
+        .map(Some)
+        .map_err(|error| RepoError::Backend(format!("stored typed resource body: {error}")))
+}
+
+fn raw_body_json(resource: &ResourceSpec) -> RepoResult<Option<String>> {
+    resource
+        .raw_body
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| RepoError::Backend(format!("stored raw resource body: {error}")))
+}
+
 fn parse_body(raw: &str) -> RepoResult<Vec<BodyField>> {
     let map: std::collections::BTreeMap<String, String> = serde_json::from_str(raw)
         .map_err(|error| RepoError::Backend(format!("stored resource body: {error}")))?;
@@ -35,6 +58,20 @@ fn parse_body(raw: &str) -> RepoResult<Vec<BodyField>> {
             value: BodyValue::parse(&value),
         })
         .collect())
+}
+
+fn parse_typed_body(raw: &str) -> RepoResult<Vec<BodyField>> {
+    let map: std::collections::BTreeMap<String, BodyValue> = serde_json::from_str(raw)
+        .map_err(|error| RepoError::Backend(format!("stored typed resource body: {error}")))?;
+    Ok(map
+        .into_iter()
+        .map(|(name, value)| BodyField { name, value })
+        .collect())
+}
+
+fn parse_raw_body(raw: &str) -> RepoResult<serde_json::Value> {
+    serde_json::from_str(raw)
+        .map_err(|error| RepoError::Backend(format!("stored raw resource body: {error}")))
 }
 
 fn row_to_connector(row: &SqliteRow) -> RepoResult<ConnectorRecord> {
@@ -102,10 +139,13 @@ impl ConnectorRepo for SqliteStore {
             .map_err(db_error)?;
         for resource in resources {
             let body = body_json(resource)?;
+            let typed_body = typed_body_json(resource)?;
+            let raw_body = raw_body_json(resource)?;
             sqlx::query(
                 "INSERT INTO connector_resources \
-                 (connector_id, name, path_template, required_scope, method, idempotent, body_json) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (connector_id, name, path_template, required_scope, method, idempotent, \
+                  body_json, body_typed_json, raw_body_json) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(connector.id.0.to_string())
             .bind(&resource.name)
@@ -114,6 +154,8 @@ impl ConnectorRepo for SqliteStore {
             .bind(resource.method.as_str())
             .bind(i64::from(resource.idempotent))
             .bind(body)
+            .bind(typed_body)
+            .bind(raw_body)
             .execute(&mut *tx)
             .await
             .map_err(db_error)?;
@@ -160,7 +202,8 @@ impl ConnectorRepo for SqliteStore {
 
     async fn resources(&self, id: &ConnectorId) -> RepoResult<Vec<ResourceSpec>> {
         let rows = sqlx::query(
-            "SELECT name, path_template, required_scope, method, idempotent, body_json \
+            "SELECT name, path_template, required_scope, method, idempotent, \
+             body_json, body_typed_json, raw_body_json \
              FROM connector_resources WHERE connector_id = ? ORDER BY name",
         )
         .bind(id.0.to_string())
@@ -178,13 +221,31 @@ impl ConnectorRepo for SqliteStore {
                 })?;
                 let idempotent: i64 = row.try_get("idempotent").map_err(db_error)?;
                 let body_raw: String = row.try_get("body_json").map_err(db_error)?;
-                let body = parse_body(&body_raw)?;
+                let typed_body_raw: Option<String> =
+                    row.try_get("body_typed_json").map_err(db_error)?;
+                let raw_body_raw: Option<String> =
+                    row.try_get("raw_body_json").map_err(db_error)?;
                 // Rebuild through the constructor so a hand-edited row cannot
                 // smuggle in a template or body the gateway would otherwise accept.
-                ResourceSpec::new(name, path_template)
-                    .and_then(|spec| spec.with_transport(method, body, idempotent != 0))
-                    .and_then(|spec| spec.with_scope(required_scope))
-                    .map_err(|error| RepoError::Backend(format!("stored resource: {error}")))
+                let spec = ResourceSpec::new(name, path_template)
+                    .map_err(|error| RepoError::Backend(format!("stored resource: {error}")))?;
+                let spec = if let Some(raw) = raw_body_raw {
+                    let raw_body = parse_raw_body(&raw)?;
+                    spec.with_transport_declared(method, Vec::new(), idempotent != 0, true)
+                        .and_then(|spec| spec.with_raw_body(raw_body))
+                } else if let Some(raw) = typed_body_raw {
+                    let body = parse_typed_body(&raw)?;
+                    spec.with_transport_declared(method, body, idempotent != 0, true)
+                } else {
+                    let body = parse_body(&body_raw)?;
+                    // Old rows have no declaration bit. For POST, `{}` is the
+                    // only possible legacy spelling of an explicit empty body.
+                    let body_declared = method == ResourceMethod::Post || !body.is_empty();
+                    spec.with_transport_declared(method, body, idempotent != 0, body_declared)
+                }
+                .and_then(|spec| spec.with_scope(required_scope))
+                .map_err(|error| RepoError::Backend(format!("stored resource: {error}")))?;
+                Ok(spec)
             })
             .collect()
     }
@@ -272,5 +333,127 @@ impl ConnectorRepo for SqliteStore {
             .await
             .map_err(db_error)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn recursive_body_rows_prefer_raw_then_typed_then_legacy() {
+        let store = SqliteStore::connect("sqlite::memory:")
+            .await
+            .expect("SQLite store with migrations");
+        let now = 1_000;
+        let id = ConnectorId::new();
+        let record = ConnectorRecord {
+            id,
+            name: "recursive-body-storage".to_string(),
+            display_name: "Recursive body storage".to_string(),
+            base_url: "https://upstream.example".to_string(),
+            allow_private_net: false,
+            allow_link_local_metadata: false,
+            created_at: now,
+            updated_at: now,
+        };
+        let raw_resource = ResourceSpec::new("choice", "/v1/choice")
+            .expect("spec")
+            .with_transport_declared(ResourceMethod::Post, Vec::new(), false, true)
+            .expect("raw body transport")
+            .with_raw_body(serde_json::json!({
+                "source": "raw",
+                "nested": { "history": null, "enabled": false }
+            }))
+            .expect("raw body");
+        store
+            .upsert(&record, &[raw_resource.clone()], now)
+            .await
+            .expect("upsert raw resource");
+
+        // The old column remains readable by old binaries even for a raw body.
+        let row = sqlx::query(
+            "SELECT body_json FROM connector_resources WHERE connector_id = ? AND name = 'choice'",
+        )
+        .bind(id.0.to_string())
+        .fetch_one(&store.pool)
+        .await
+        .expect("legacy body column");
+        assert_eq!(row.get::<String, _>("body_json"), "{}");
+
+        sqlx::query(
+            "UPDATE connector_resources SET body_json = ?, body_typed_json = ? \
+             WHERE connector_id = ? AND name = 'choice'",
+        )
+        .bind(r#"{"source":"legacy"}"#)
+        .bind(r#"{"source":{"json":{"enabled":false,"history":null}}}"#)
+        .bind(id.0.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("install competing representations");
+
+        let stored = store.resources(&id).await.expect("raw resource");
+        assert_eq!(stored, vec![raw_resource], "raw JSON takes precedence");
+
+        sqlx::query(
+            "UPDATE connector_resources SET raw_body_json = NULL \
+             WHERE connector_id = ? AND name = 'choice'",
+        )
+        .bind(id.0.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("remove raw representation");
+        let stored = store.resources(&id).await.expect("typed resource");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].raw_body, None);
+        assert_eq!(
+            stored[0].body,
+            vec![BodyField {
+                name: "source".to_string(),
+                value: BodyValue::Literal(serde_json::json!({
+                    "enabled": false,
+                    "history": null
+                })),
+            }],
+            "typed JSON takes precedence over the legacy map"
+        );
+
+        sqlx::query(
+            "UPDATE connector_resources SET body_typed_json = NULL \
+             WHERE connector_id = ? AND name = 'choice'",
+        )
+        .bind(id.0.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("remove typed representation");
+        let stored = store.resources(&id).await.expect("legacy resource");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].body,
+            vec![BodyField {
+                name: "source".to_string(),
+                value: BodyValue::Literal(serde_json::Value::String("legacy".to_string())),
+            }],
+            "legacy rows remain readable"
+        );
+
+        // A pre-migration empty POST body has no declaration bit; `{}` is its
+        // legacy representation and must not turn into an absent declaration.
+        sqlx::query(
+            "UPDATE connector_resources SET body_json = '{}' \
+             WHERE connector_id = ? AND name = 'choice'",
+        )
+        .bind(id.0.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("write legacy empty body");
+        let stored = store
+            .resources(&id)
+            .await
+            .expect("legacy explicitly empty resource");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].method, ResourceMethod::Post);
+        assert!(stored[0].body.is_empty());
+        assert_eq!(stored[0].raw_body, None);
     }
 }

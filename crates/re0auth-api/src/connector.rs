@@ -23,11 +23,10 @@ pub struct ResourceSpec {
     pub required_scope: String,
     /// How the broker reaches this resource (ADR-0046). `Get` is the default.
     pub method: ResourceMethod,
-    /// Server-generated request body, empty for `Get`.
-    ///
-    /// Values come only from the registry and the binding; a caller can never
-    /// add, rename, or override a field.
+    /// Server-generated request body fields, empty for `Get`.
     pub body: Vec<BodyField>,
+    /// Server-generated JSON document interpolated recursively at build time.
+    pub raw_body: Option<serde_json::Value>,
     /// Whether the broker may retry this resource once retries exist (F-4).
     ///
     /// Reads are idempotent; a `Post` that changes state must leave this
@@ -39,6 +38,35 @@ pub struct ResourceSpec {
     pub view: Option<ViewSpec>,
     /// Declared downstream query parameters and their upstream mapping.
     pub params: Vec<ParamSpec>,
+    pub response: ResponseKind,
+    pub content_types: Vec<String>,
+    pub max_bytes: Option<u64>,
+    pub shared: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResponseKind {
+    Json,
+    Binary,
+}
+
+impl ResponseKind {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "json" => Some(Self::Json),
+            "binary" => Some(Self::Binary),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Binary => "binary",
+        }
+    }
 }
 
 /// Where a declared downstream parameter is injected upstream.
@@ -46,6 +74,7 @@ pub struct ResourceSpec {
 pub enum ParamLocation {
     Query,
     Body,
+    Path,
 }
 
 /// The validated wire kind of one declared downstream parameter.
@@ -162,34 +191,62 @@ pub struct BodyField {
 /// Where one body field's value comes from.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BodyValue {
-    /// A literal the registry author wrote.
-    Constant(String),
-    /// The binding's upstream subject (`bindings.upstream_user_id`).
+    Literal(serde_json::Value),
     Subject,
-    /// The binding's stored credential.
     Credential,
 }
 
 impl BodyValue {
-    /// The stable string form used by config and the connector mirror: the two
-    /// placeholder tokens, otherwise the literal itself.
     #[must_use]
     pub fn as_token(&self) -> String {
         match self {
-            Self::Constant(value) => value.clone(),
+            Self::Literal(serde_json::Value::String(value)) => value.clone(),
+            Self::Literal(value) => value.to_string(),
             Self::Subject => "{subject}".to_string(),
             Self::Credential => "{credential}".to_string(),
         }
     }
 
-    /// Inverse of [`Self::as_token`]. Anything that is not a placeholder is a
-    /// literal, which is how one spelling is shared by config and storage.
     #[must_use]
     pub fn parse(raw: &str) -> Self {
         match raw {
             "{subject}" => Self::Subject,
             "{credential}" => Self::Credential,
-            other => Self::Constant(other.to_string()),
+            other => Self::Literal(serde_json::Value::String(other.to_string())),
+        }
+    }
+}
+
+impl serde::Serialize for BodyValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Subject => serializer.serialize_str("{subject}"),
+            Self::Credential => serializer.serialize_str("{credential}"),
+            Self::Literal(serde_json::Value::String(value)) => serializer.serialize_str(value),
+            Self::Literal(value) => serde_json::json!({ "json": value }).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BodyValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(value) => Ok(Self::parse(&value)),
+            serde_json::Value::Object(mut object)
+                if object.len() == 1 && object.contains_key("json") =>
+            {
+                Ok(Self::Literal(object.remove("json").expect("checked key")))
+            }
+            _ => Err(serde::de::Error::custom(
+                "body value must be a string or an object containing only json",
+            )),
         }
     }
 }
@@ -215,9 +272,14 @@ impl ResourceSpec {
             path_template,
             method: ResourceMethod::Get,
             body: Vec::new(),
+            raw_body: None,
             idempotent: true,
             view: None,
             params: Vec::new(),
+            response: ResponseKind::Json,
+            content_types: Vec::new(),
+            max_bytes: None,
+            shared: false,
         })
     }
 
@@ -228,10 +290,48 @@ impl ResourceSpec {
         self
     }
 
-    /// Attaches the already validated parameter declarations.
-    #[must_use]
-    pub fn with_params(mut self, params: Vec<ParamSpec>) -> Self {
+    /// Attaches parameter declarations after matching path placeholders.
+    pub fn with_params(mut self, params: Vec<ParamSpec>) -> Re0Result<Self> {
+        let allowed = params
+            .iter()
+            .filter(|param| param.location == ParamLocation::Path)
+            .map(|param| param.upstream.clone())
+            .chain(std::iter::once("subject".to_string()))
+            .collect();
+        let placeholders = validate_path_placeholders(&self.path_template, &allowed)
+            .map_err(crate::Re0Error::Internal)?;
+        for param in params
+            .iter()
+            .filter(|param| param.location == ParamLocation::Path)
+        {
+            if !placeholders.contains(&param.upstream) {
+                return Err(crate::Re0Error::Internal(format!(
+                    "path parameter {} has no placeholder in the template",
+                    param.upstream
+                )));
+            }
+        }
         self.params = params;
+        Ok(self)
+    }
+
+    #[must_use]
+    pub fn path_param_names(&self) -> Vec<String> {
+        template_placeholders(&self.path_template)
+            .map(|names| names.into_iter().filter(|name| name != "subject").collect())
+            .unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn with_response(
+        mut self,
+        response: ResponseKind,
+        content_types: Vec<String>,
+        max_bytes: Option<u64>,
+    ) -> Self {
+        self.response = response;
+        self.content_types = content_types;
+        self.max_bytes = max_bytes;
         self
     }
 
@@ -276,12 +376,20 @@ impl ResourceSpec {
         idempotent: bool,
         body_declared: bool,
     ) -> Re0Result<Self> {
-        validate_transport(method, &body, body_declared).map_err(|reason| {
+        validate_transport(method, &body, body_declared, &self.raw_body).map_err(|reason| {
             crate::Re0Error::Internal(format!("resource {}: {reason}", self.name))
         })?;
         self.method = method;
         self.body = body;
         self.idempotent = idempotent;
+        Ok(self)
+    }
+
+    pub fn with_raw_body(mut self, raw_body: serde_json::Value) -> Re0Result<Self> {
+        validate_transport(self.method, &self.body, true, &Some(raw_body.clone())).map_err(
+            |reason| crate::Re0Error::Internal(format!("resource {}: {reason}", self.name)),
+        )?;
+        self.raw_body = Some(raw_body);
         Ok(self)
     }
 }
@@ -298,17 +406,21 @@ fn validate_transport(
     method: ResourceMethod,
     body: &[BodyField],
     body_declared: bool,
+    raw_body: &Option<serde_json::Value>,
 ) -> Result<(), String> {
     match method {
-        ResourceMethod::Get if !body.is_empty() => {
+        ResourceMethod::Get if !body.is_empty() || raw_body.is_some() => {
             return Err("a GET resource must not declare a body".to_string());
         }
-        ResourceMethod::Post if !body_declared => {
+        ResourceMethod::Post if !body_declared && raw_body.is_none() => {
             return Err(
                 "a POST resource must declare a body (write `body = {}` when the \
                  upstream takes none)"
                     .to_string(),
             );
+        }
+        ResourceMethod::Post if raw_body.is_some() && !body.is_empty() => {
+            return Err("raw_body and body fields are mutually exclusive".to_string());
         }
         _ => {}
     }
@@ -319,14 +431,6 @@ fn validate_transport(
         }
         if !seen.insert(field.name.as_str()) {
             return Err(format!("duplicate body field {:?}", field.name));
-        }
-        if let BodyValue::Constant(value) = &field.value
-            && (value.contains('{') || value.contains('}'))
-        {
-            return Err(format!(
-                "body field {:?} constant contains braces",
-                field.name
-            ));
         }
     }
     Ok(())
@@ -374,8 +478,8 @@ pub fn validate_path_template(template: &str) -> Result<(), String> {
     if !template.starts_with('/') {
         return Err("path template must start with '/'".to_string());
     }
-    if template.starts_with("//") {
-        return Err("path template must not start with '//'".to_string());
+    if template.contains("//") {
+        return Err("path template must not contain '//'".to_string());
     }
     if template.contains("..") {
         return Err("path template must not contain '..'".to_string());
@@ -386,22 +490,57 @@ pub fn validate_path_template(template: &str) -> Result<(), String> {
     if template.contains('#') {
         return Err("path template must not contain a fragment".to_string());
     }
-    if template.matches('{').count() != template.matches('}').count() {
-        return Err("unbalanced braces in path template".to_string());
-    }
-    // Only `{subject}` is a permitted placeholder.
-    let mut rest = template;
-    while let Some(start) = rest.find('{') {
-        let end = rest[start..]
-            .find('}')
-            .ok_or_else(|| "unbalanced braces in path template".to_string())?;
-        let placeholder = &rest[start + 1..start + end];
-        if placeholder != "subject" {
-            return Err(format!("unknown placeholder {{{placeholder}}}"));
+    template_placeholders(template).map(|_| ())
+}
+
+pub fn validate_path_placeholders(
+    template: &str,
+    allowed: &std::collections::BTreeSet<String>,
+) -> Result<Vec<String>, String> {
+    validate_path_template(template)?;
+    let placeholders = template_placeholders(template)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for name in &placeholders {
+        if !allowed.contains(name) {
+            return Err(format!("unknown placeholder {{{name}}}"));
         }
-        rest = &rest[start + end + 1..];
+        if !seen.insert(name.as_str()) {
+            return Err(format!("duplicate placeholder {{{name}}}"));
+        }
     }
-    Ok(())
+    Ok(placeholders)
+}
+
+fn template_placeholders(template: &str) -> Result<Vec<String>, String> {
+    let mut names = Vec::new();
+    let mut rest = template;
+    while let Some(start) = rest.find(['{', '}']) {
+        if rest.as_bytes()[start] == b'}' {
+            return Err("unbalanced braces in path template".to_string());
+        }
+        let end = rest[start + 1..]
+            .find('}')
+            .map(|end| start + 1 + end)
+            .ok_or_else(|| "unbalanced braces in path template".to_string())?;
+        let name = &rest[start + 1..end];
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(format!("invalid placeholder {{{name}}}"));
+        }
+        if rest[end + 1..].contains('{') && rest[end + 1..].contains('}') {
+            let next_open = rest[end + 1..].find('{');
+            let next_close = rest[end + 1..].find('}');
+            if next_close.is_some_and(|close| next_open.is_none_or(|open| close < open)) {
+                return Err("unbalanced braces in path template".to_string());
+            }
+        }
+        names.push(name.to_string());
+        rest = &rest[end + 1..];
+    }
+    Ok(names)
 }
 
 /// How far one connector may reach on the network.
@@ -482,6 +621,34 @@ pub struct UpstreamPayload {
     pub body: Vec<u8>,
 }
 
+pub struct AssetStream {
+    pub content_type: String,
+    pub body: futures_util::stream::BoxStream<'static, Result<bytes::Bytes, UpstreamError>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetPayload {
+    pub content_type: String,
+    pub body: bytes::Bytes,
+}
+
+pub enum AssetResponse {
+    Buffered(AssetPayload),
+    Streaming(AssetStream),
+}
+
+impl std::fmt::Debug for AssetResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Buffered(payload) => formatter.debug_tuple("Buffered").field(payload).finish(),
+            Self::Streaming(stream) => formatter
+                .debug_struct("Streaming")
+                .field("content_type", &stream.content_type)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 /// Only internal failures feed circuit breakers (INV-GW-03).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -510,6 +677,8 @@ pub enum UpstreamError {
     RateLimited { retry_after_secs: Option<u64> },
     #[error("upstream unavailable")]
     Unavailable,
+    #[error("upstream response contract changed")]
+    ContractChanged,
     #[error("upstream response truncated")]
     Truncated,
     #[error("upstream rejected the request")]
@@ -536,9 +705,11 @@ impl UpstreamError {
             | Self::NotFound
             | Self::Rejected
             | Self::Overloaded => FaultClass::Business,
-            Self::RateLimited { .. } | Self::Unavailable | Self::Truncated | Self::Internal => {
-                FaultClass::Internal
-            }
+            Self::RateLimited { .. }
+            | Self::Unavailable
+            | Self::ContractChanged
+            | Self::Truncated
+            | Self::Internal => FaultClass::Internal,
         }
     }
 
@@ -617,6 +788,15 @@ pub trait ConnectorBroker: Send + Sync {
         sub_token: &SecretString,
         resource: &ResourceRequest,
     ) -> Result<UpstreamPayload, UpstreamError>;
+
+    async fn fetch_asset_stream(
+        &self,
+        endpoint: &ConnectorEndpoint,
+        sub_token: &SecretString,
+        resource: &ResourceRequest,
+        accept: &str,
+        max_body: usize,
+    ) -> Result<AssetStream, UpstreamError>;
 }
 
 /// What an authorization-code exchange yields: the credential, and whose it is.
@@ -845,18 +1025,19 @@ mod tests {
     }
 
     #[test]
-    fn constant_values_may_not_smuggle_a_placeholder() {
-        let result = ResourceSpec::new("scores", "/v1/scores/{subject}")
+    fn raw_body_requires_post_and_replaces_nonempty_fields() {
+        let spec = ResourceSpec::new("sync", "/v1/sync")
             .expect("spec")
-            .with_transport(
-                ResourceMethod::Post,
-                vec![BodyField {
-                    name: "scope".to_string(),
-                    value: BodyValue::Constant("{subject}".to_string()),
-                }],
-                true,
-            );
-        assert!(result.is_err(), "constants are literals, not templates");
+            .with_transport_declared(ResourceMethod::Post, Vec::new(), false, true)
+            .expect("raw body is attached next")
+            .with_raw_body(serde_json::json!({"history": null}))
+            .expect("raw body");
+        assert_eq!(spec.raw_body, Some(serde_json::json!({"history": null})));
+
+        let get = ResourceSpec::new("sync", "/v1/sync")
+            .expect("spec")
+            .with_raw_body(serde_json::json!({}));
+        assert!(get.is_err());
     }
 
     #[test]
@@ -864,5 +1045,54 @@ mod tests {
         assert_eq!(ResourceMethod::parse("get"), Some(ResourceMethod::Get));
         assert_eq!(ResourceMethod::parse(" POST "), Some(ResourceMethod::Post));
         assert_eq!(ResourceMethod::parse("postt"), None);
+    }
+
+    fn path_parameter(name: &str) -> ParamSpec {
+        ParamSpec {
+            name: name.to_string(),
+            upstream: name.to_string(),
+            location: ParamLocation::Path,
+            kind: ParamKind::String,
+            required: true,
+            min_len: Some(1),
+            max_len: Some(64),
+            min: None,
+            max: None,
+            values: Vec::new(),
+            array: false,
+            max_items: None,
+        }
+    }
+
+    #[test]
+    fn dynamic_path_placeholders_follow_template_order() {
+        let allowed = ["subject", "user", "song"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            validate_path_placeholders("/v1/{user}/songs/{song}/{subject}", &allowed)
+                .expect("placeholders"),
+            ["user", "song", "subject"]
+        );
+        assert!(validate_path_placeholders("/v1/{missing}", &allowed).is_err());
+        assert!(validate_path_placeholders("/v1/{user}/{user}", &allowed).is_err());
+        assert!(validate_path_template("/v1//{user}").is_err());
+        assert!(validate_path_template("/v1/{User}").is_err());
+        assert!(validate_path_template("/v1/{user").is_err());
+    }
+
+    #[test]
+    fn resource_params_match_declared_placeholders() {
+        let spec = ResourceSpec::new("jacket", "/v1/{user}/songs/{song}")
+            .expect("spec")
+            .with_params(vec![path_parameter("song"), path_parameter("user")])
+            .expect("matching path params");
+        assert_eq!(spec.path_param_names(), ["user", "song"]);
+
+        let missing = ResourceSpec::new("jacket", "/v1/{song}")
+            .expect("spec")
+            .with_params(vec![path_parameter("other")]);
+        assert!(missing.is_err());
     }
 }
