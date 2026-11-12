@@ -14,7 +14,7 @@ use re0auth_api::BindingId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use re0auth_app::auth::AuthError;
+use re0auth_app::auth::{AuthError, BindingRevocationSummary};
 use re0auth_app::binding::BindingError;
 
 use crate::{
@@ -221,9 +221,10 @@ pub(crate) async fn bindings(
         ("X-CSRF-Token" = String, Header, description = "CSRF token from GET /api/me.")
     ),
     responses(
-        (status = 204, description = "The binding is gone. The upstream is told afterwards, best effort."),
+        (status = 200, body = re0auth_app::auth::BindingRevocationSummary, description = "What was revoked; a binding the upstream refused to confirm stays in place and is listed in `failed`."),
         (status = 400, body = crate::ProblemBody, content_type = "application/problem+json"),
-        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json")
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json")
     )
 )]
 pub(crate) async fn revoke_binding(
@@ -236,27 +237,31 @@ pub(crate) async fn revoke_binding(
     let binding_id = Uuid::parse_str(&id)
         .map(BindingId)
         .map_err(|_| auth_error(AuthError::InvalidRequest("invalid binding id")))?;
-    // Capture first: the local revoke deletes the credential in the same
-    // transaction, so anything read afterwards is already gone.
-    let pending = match state.binding.as_ref() {
-        Some(binding) => {
-            binding
-                .prepare_revocation(context.user.id, Some(binding_id))
+    // F-6 for one row: ask the upstream first and keep the local row when it
+    // will not confirm. Deleting first would destroy the only copy of a
+    // credential that is still alive upstream, with no way to retry.
+    let summary = match state.binding.as_ref() {
+        Some(binding) => binding
+            .cascade_revoke_one(
+                context.user.id,
+                binding_id,
+                context.user.id,
+                request_id::of(&headers),
+            )
+            .await
+            .map_err(auth_error)?,
+        // No binding service means no connector to notify; the local revoke is
+        // the whole operation and cannot partially succeed.
+        None => BindingRevocationSummary {
+            revoked: state
+                .auth
+                .revoke_binding(context.user.id, binding_id, request_id::of(&headers))
                 .await
-        }
-        None => Vec::new(),
+                .map_err(auth_error)?,
+            failed: Vec::new(),
+        },
     };
-    state
-        .auth
-        .revoke_binding(context.user.id, binding_id, request_id::of(&headers))
-        .await
-        .map_err(auth_error)?;
-    // After the commit: the user's request already succeeded, and an upstream
-    // that is down must not turn it into a failure.
-    if let Some(binding) = state.binding.as_ref() {
-        binding.notify_upstreams(pending).await;
-    }
-    Ok(StatusCode::NO_CONTENT.into_response())
+    Ok(no_store(Json(summary).into_response()))
 }
 
 /// The binding killswitch: every binding the caller owns, in one transaction.

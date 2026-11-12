@@ -899,8 +899,15 @@
           }
         ],
         "responses": {
-          "204": {
-            "description": "The binding is gone. The upstream is told afterwards, best effort."
+          "200": {
+            "description": "What was revoked; a binding the upstream refused to confirm stays in place and is listed in `failed`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BindingRevocationSummary"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -912,6 +919,15 @@
             }
           },
           "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
             "content": {
               "application/problem+json": {
                 "schema": {

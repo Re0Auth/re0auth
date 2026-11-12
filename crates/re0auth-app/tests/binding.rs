@@ -21,6 +21,7 @@ use re0auth_api::{
 use re0auth_contract::{ClockedCache, MemoryCache, MemoryStore};
 use secrecy::ExposeSecret;
 
+use re0auth_app::auth::AuthError;
 use re0auth_app::binding::{BindingError, BindingService};
 use re0auth_app::return_to::{self, FALLBACK};
 
@@ -738,6 +739,110 @@ async fn a_cascade_revokes_locally_once_the_upstream_confirms() {
 
     let bindings = store.bindings().list_by_user(&user).await.expect("list");
     assert_eq!(bindings[0].status, BindingStatus::Revoked);
+}
+
+/// 单条解绑与批量同一语义：上游不确认就保留绑定与凭据。
+#[tokio::test]
+async fn a_single_cascade_keeps_the_binding_when_the_upstream_refuses() {
+    let (store, service, user) = setup(RecordingAuth::failing_revocation()).await;
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    let done = service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let summary = service
+        .cascade_revoke_one(user, done.binding.id, user, None)
+        .await
+        .expect("single cascade");
+    assert_eq!(summary.revoked, 0);
+    assert_eq!(summary.failed.len(), 1);
+    assert_eq!(summary.failed[0].upstream, "phigros");
+    assert_eq!(summary.failed[0].reason, "upstream_unavailable");
+
+    let bindings = store.bindings().list_by_user(&user).await.expect("list");
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(
+        bindings[0].status,
+        BindingStatus::Active,
+        "the row and its credential must survive for a retry"
+    );
+    assert_eq!(
+        service.prepare_revocation(user, None).await.len(),
+        1,
+        "the credential is the only way to retry the upstream"
+    );
+}
+
+#[tokio::test]
+async fn a_single_cascade_revokes_locally_once_the_upstream_confirms() {
+    let (store, service, user) = setup(RecordingAuth::ok()).await;
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    let done = service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let summary = service
+        .cascade_revoke_one(user, done.binding.id, user, None)
+        .await
+        .expect("single cascade");
+    assert_eq!(summary.revoked, 1);
+    assert!(summary.failed.is_empty());
+    let bindings = store.bindings().list_by_user(&user).await.expect("list");
+    assert_eq!(bindings[0].status, BindingStatus::Revoked);
+
+    // A retried request is not an error: the cascade skips revoked rows.
+    let again = service
+        .cascade_revoke_one(user, done.binding.id, user, None)
+        .await
+        .expect("second single cascade");
+    assert_eq!(again.revoked, 0);
+    assert!(again.failed.is_empty());
+}
+
+#[tokio::test]
+async fn a_single_cascade_refuses_a_binding_the_user_does_not_own() {
+    let (store, service, user) = setup(RecordingAuth::ok()).await;
+    let started = service
+        .start(user, "phigros", "/account")
+        .await
+        .expect("start");
+    let done = service
+        .complete(user, &started.state, "code")
+        .await
+        .expect("complete");
+
+    let stranger = UserId::new();
+    store
+        .users()
+        .create(&User {
+            id: stranger,
+            display_name: "stranger".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            created_at: NOW,
+            updated_at: NOW,
+        })
+        .await
+        .expect("stranger");
+    let error = service
+        .cascade_revoke_one(stranger, done.binding.id, stranger, None)
+        .await
+        .expect_err("another user's binding");
+    assert!(matches!(error, AuthError::NotFound));
+
+    let error = service
+        .cascade_revoke_one(user, BindingId::new(), user, None)
+        .await
+        .expect_err("unknown binding id");
+    assert!(matches!(error, AuthError::NotFound));
 }
 
 #[tokio::test]

@@ -1732,11 +1732,43 @@ async fn revoking_a_binding_requires_csrf_and_ownership() {
             .unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let summary: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(summary["revoked"], 1);
+    assert!(
+        summary["failed"]
+            .as_array()
+            .expect("failed array")
+            .is_empty(),
+        "no upstream is configured here, so nothing can be reported failed"
+    );
 
     let (_, body, _) = get_with_cookie(&app, "/api/me/bindings", &cookie).await;
     let payload: Value = serde_json::from_str(&body).expect("json");
     assert!(payload.as_array().expect("array").is_empty());
+
+    // A retried request is idempotent: the row is already revoked, so nothing
+    // moves and nothing fails.
+    let (status, body, _) = send(
+        &app,
+        Request::builder()
+            .method("DELETE")
+            .uri(&uri)
+            .header(header::COOKIE, &cookie)
+            .header("x-csrf-token", &csrf)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let summary: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(summary["revoked"], 0);
+    assert!(
+        summary["failed"]
+            .as_array()
+            .expect("failed array")
+            .is_empty()
+    );
 
     // The row survives as revoked: the audit trail must still resolve what the
     // binding was, and a re-bind must not resurrect the old credential.
@@ -2563,7 +2595,9 @@ async fn the_request_id_reaches_the_audit_row() {
             .unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let summary: Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(summary["revoked"], 1);
 
     let audits = app.store.audits().recent(100).await.expect("audit rows");
     let revoked = audits

@@ -899,23 +899,27 @@ impl AuthService {
     /// Ownership is enforced by the query, not by a read-then-write check: a
     /// caller passing someone else's binding id must get `NotFound` rather than
     /// a race window.
+    ///
+    /// Returns `1` when a live binding moved and `0` when it was already
+    /// revoked, so a retried request reports nothing to do instead of failing.
     pub async fn revoke_binding(
         &self,
         user_id: UserId,
         binding_id: BindingId,
         correlation_id: Option<&str>,
-    ) -> AuthResult<()> {
+    ) -> AuthResult<u64> {
         let now = self.clock.now();
-        let owned = self
+        let existing = self
             .storage
             .bindings()
             .list_by_user(&user_id)
             .await?
             .into_iter()
-            .any(|binding| binding.id == binding_id);
-        if !owned {
+            .find(|binding| binding.id == binding_id);
+        let Some(existing) = existing else {
             return Err(AuthError::NotFound);
-        }
+        };
+        let was_active = existing.status != BindingStatus::Revoked;
         let fact = SecurityFact::new(
             AuditAction::BindingRevoked,
             now,
@@ -937,7 +941,7 @@ impl AuthService {
                 self.cache
                     .invalidate(&re0auth_api::cache::binding_prefix(&binding_id))
                     .await;
-                Ok(())
+                Ok(u64::from(was_active))
             }
             Err(RepoError::NotFound) => Err(AuthError::NotFound),
             Err(error) => Err(AuthError::Repo(error)),

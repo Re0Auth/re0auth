@@ -435,6 +435,31 @@ impl BindingService {
             .await
     }
 
+    /// 单条级联撤销：与批量同一语义，上游不确认就保留本地行（F-6）。
+    ///
+    /// 复用同一个循环而不是另写一份：单条与全量的区别只在取哪些行。
+    pub async fn cascade_revoke_one(
+        &self,
+        user: UserId,
+        binding_id: BindingId,
+        actor: UserId,
+        correlation_id: Option<&str>,
+    ) -> Result<BindingRevocationSummary, AuthError> {
+        let binding = self
+            .storage
+            .bindings()
+            .list_by_user(&user)
+            .await
+            .map_err(AuthError::Repo)?
+            .into_iter()
+            .find(|binding| binding.id == binding_id);
+        let Some(binding) = binding else {
+            return Err(AuthError::NotFound);
+        };
+        self.cascade_revoke_bindings(vec![binding], actor, correlation_id)
+            .await
+    }
+
     /// Admin-initiated cascade for one user's bindings (B16).
     ///
     /// The audit fact names the admin as actor while the rows belong to the

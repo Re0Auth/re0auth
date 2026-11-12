@@ -104,8 +104,16 @@
 		unbinding = id;
 		error = '';
 		try {
-			await apiDelete(`/api/me/bindings/${encodeURIComponent(id)}`);
-			bindings = bindings.filter((item) => item.id !== id);
+			// F-6: same contract as the killswitch. The upstream is asked first,
+			// so a refused revocation keeps the row and must stay on screen.
+			const summary = await apiDeleteJson(
+				`/api/me/bindings/${encodeURIComponent(id)}`,
+				bindingRevocationSchema
+			);
+			bindings = await apiGet('/api/me/bindings', bindingsSchema);
+			if (summary.failed.length > 0) {
+				error = copy.account.cascadePartial(summary.failed.length);
+			}
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
 				openLogin(currentLocation());
