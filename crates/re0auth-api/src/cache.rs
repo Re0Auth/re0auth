@@ -125,6 +125,19 @@ pub fn key_with_params(
 }
 
 #[must_use]
+pub fn key_asset(
+    binding: &BindingId,
+    subject: &str,
+    connector: &str,
+    resource: &str,
+    params: &BTreeMap<String, ValidatedParamValue>,
+) -> String {
+    let mut key = key_with_params(binding, connector, resource, params);
+    let _ = write!(key, ":subject:{}:{subject}", subject.len());
+    key
+}
+
+#[must_use]
 pub fn key_shared(
     connector: &str,
     resource: &str,

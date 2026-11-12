@@ -691,12 +691,22 @@ impl GatewayService {
             BindingStatus::Pending => return Err(GatewayError::BindingInactive),
         }
         let subject = GatewayRequest::subject_for(&binding)?.to_string();
-        let cache_key = re0auth_api::cache::key_with_params(
-            &binding.id,
-            &endpoint.name,
-            request.resource,
-            &params,
-        );
+        let cache_key = if spec.response == re0auth_api::connector::ResponseKind::Binary {
+            re0auth_api::cache::key_asset(
+                &binding.id,
+                &subject,
+                &endpoint.name,
+                request.resource,
+                &params,
+            )
+        } else {
+            re0auth_api::cache::key_with_params(
+                &binding.id,
+                &endpoint.name,
+                request.resource,
+                &params,
+            )
+        };
         Ok(AuthorizedFetch {
             endpoint,
             spec,

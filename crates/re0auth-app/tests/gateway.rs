@@ -2320,14 +2320,76 @@ async fn private_asset_cache_is_isolated_by_binding() {
 
     assert_eq!(app.harness.connector.calls().len(), 2);
     assert_eq!(app.cache.len(), 2);
-    let first_key = re0auth_api::cache::key(
+    let first_key = re0auth_api::cache::key_asset(
         &app.harness.binding.id,
+        &app.harness.binding.upstream_user_id,
         &app.harness.endpoint.name,
         "jacket",
+        &BTreeMap::new(),
     );
-    let second_key = re0auth_api::cache::key(&other_binding, &app.harness.endpoint.name, "jacket");
+    let second_key = re0auth_api::cache::key_asset(
+        &other_binding,
+        "other-player",
+        &app.harness.endpoint.name,
+        "jacket",
+        &BTreeMap::new(),
+    );
     assert!(app.cache.get(&first_key).await.is_some());
     assert!(app.cache.get(&second_key).await.is_some());
+}
+
+#[tokio::test]
+async fn private_asset_cache_is_isolated_by_upstream_subject() {
+    let app = asset_harness(false).await;
+    app.harness.connector.set_asset_stream(
+        "jacket",
+        "image/png",
+        [bytes::Bytes::from_static(png())],
+    );
+    let granted = scopes();
+    let first = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("first private asset");
+    assert_eq!(read_asset(first).await, png());
+
+    let rebound = Binding {
+        upstream_user_id: "different-upstream-account".to_string(),
+        ..app.harness.binding.clone()
+    };
+    app.harness
+        .store
+        .bindings()
+        .upsert(&rebound, &fact_binding())
+        .await
+        .expect("rebind upstream account");
+    let second = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("rebound private asset");
+    assert_eq!(read_asset(second).await, png());
+    assert_eq!(app.harness.connector.calls().len(), 2);
+    assert_eq!(app.cache.len(), 2);
 }
 
 #[tokio::test]
