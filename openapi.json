@@ -5432,6 +5432,127 @@
           }
         }
       },
+      "PhihubAccAvg": {
+        "type": "object",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "accAvg": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PhihubAliasItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "alias",
+          "songId",
+          "status",
+          "createdAt",
+          "updatedAt",
+          "votesUp",
+          "votesDown",
+          "voteScore"
+        ],
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "reviewNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "songId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "voteScore": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "votesDown": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "votesUp": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PhihubAliasPage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhihubAliasItem"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PhihubAllAccAvgData": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/components/schemas/PhihubAccAvg"
+          },
+          "propertyNames": {
+            "type": "string"
+          }
+        },
+        "propertyNames": {
+          "type": "string"
+        }
+      },
+      "PhihubAllAccAvgDualData": {
+        "type": "object",
+        "required": [
+          "all",
+          "b30"
+        ],
+        "properties": {
+          "all": {
+            "$ref": "#/components/schemas/PhihubAllAccAvgData"
+          },
+          "b30": {
+            "$ref": "#/components/schemas/PhihubAllAccAvgData"
+          }
+        }
+      },
       "PhihubChallengeRankPoint": {
         "type": "object",
         "description": "One v3 history point whose value is the challenge-mode rank.",
@@ -5518,6 +5639,83 @@
               "minimum": 0
             }
           }
+        }
+      },
+      "PhihubComment": {
+        "type": "object",
+        "required": [
+          "id",
+          "songId",
+          "rank",
+          "apiUserId",
+          "rks",
+          "score",
+          "acc",
+          "fc",
+          "challenge",
+          "comment",
+          "time",
+          "PlayerId",
+          "avatar"
+        ],
+        "properties": {
+          "PlayerId": {
+            "type": "string"
+          },
+          "acc": {
+            "type": "number",
+            "format": "double"
+          },
+          "apiUserId": {
+            "type": "string"
+          },
+          "avatar": {
+            "type": "string"
+          },
+          "challenge": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "fc": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rank": {
+            "type": "string"
+          },
+          "rks": {
+            "type": "number",
+            "format": "double"
+          },
+          "score": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "songId": {
+            "type": "string"
+          },
+          "spInfo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time": {
+            "type": "string"
+          }
+        }
+      },
+      "PhihubCommentsData": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/PhihubComment"
         }
       },
       "PhihubGameUser": {
@@ -5791,6 +5989,9 @@
           }
         }
       },
+      "PhihubRankStatsData": {
+        "type": "object"
+      },
       "PhihubRankSummary": {
         "type": "object",
         "required": [
@@ -6008,6 +6209,23 @@
           }
         }
       },
+      "PhihubRksRankData": {
+        "type": "object",
+        "required": [
+          "total",
+          "rks_rank"
+        ],
+        "properties": {
+          "rks_rank": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "PhihubSaveData": {
         "type": "object",
         "required": [
@@ -6104,6 +6322,23 @@
           }
         }
       },
+      "PhihubSongAccAvgData": {
+        "type": "object",
+        "required": [
+          "acc_avg",
+          "count"
+        ],
+        "properties": {
+          "acc_avg": {
+            "type": "number",
+            "format": "double"
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "PhihubSongData": {
         "oneOf": [
           {
@@ -6125,10 +6360,84 @@
         ],
         "description": "`POST /get/cloud/song`: every difficulty of one song, or one difficulty.\n\nUpstream returns a four-slot array (missing difficulties are `null`) when\n`difficulty` is absent, and a single record when it is present."
       },
+      "PhihubTagCountsData": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "propertyNames": {
+          "type": "string"
+        }
+      },
       "PhihubTagNamesData": {
         "type": "array",
         "items": {
           "type": "string"
+        }
+      },
+      "PhihubTagNode": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "parentIds",
+          "description",
+          "sortOrder",
+          "status",
+          "children"
+        ],
+        "properties": {
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhihubTagNode"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "icon": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "parentIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "sortOrder": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PhihubTagTreeData": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/PhihubTagNode"
         }
       },
       "ProblemBody": {
@@ -6441,6 +6750,33 @@
           },
           {
             "$ref": "#/components/schemas/PhihubRankSummaryData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubRksRankData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubRankStatsData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubSongAccAvgData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubAllAccAvgData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubAllAccAvgDualData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubTagCountsData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubCommentsData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubTagTreeData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubAliasPage"
           },
           {
             "$ref": "#/components/schemas/PhihubTagNamesData"

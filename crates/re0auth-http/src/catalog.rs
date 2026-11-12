@@ -102,7 +102,19 @@ pub fn schema_name(connector: &str, resource: &str) -> Option<&'static str> {
         ("phihub", "info_file_version") => Some("PhihubInfoFileVersionData"),
         ("phihub", "player_ids") => Some("PhihubPlayerIdsData"),
         ("phihub", "rank_by_rank") => Some("PhihubRankData"),
+        ("phihub", "rank_by_rks") => Some("PhihubRksRankData"),
+        ("phihub", "rank_stats") => Some("PhihubRankStatsData"),
         ("phihub", "rank_summary") => Some("PhihubRankSummaryData"),
+        ("phihub", "song_acc_avg") => Some("PhihubSongAccAvgData"),
+        ("phihub", "all_acc_avg") => Some("PhihubAllAccAvgData"),
+        ("phihub", "all_acc_avg_dual") => Some("PhihubAllAccAvgDualData"),
+        ("phihub", "all_acc_avg_b30") => Some("PhihubAllAccAvgData"),
+        ("phihub", "tags_by_song_rank") => Some("PhihubTagCountsData"),
+        ("phihub", "comments_by_song") => Some("PhihubCommentsData"),
+        ("phihub", "tag_tree") => Some("PhihubTagTreeData"),
+        ("phihub", "aliases") => Some("PhihubAliasPage"),
+        ("phihub", "aliases_resolve") => Some("PhihubAliasPage"),
+        ("phihub", "aliases_list") => Some("PhihubAliasPage"),
         ("phihub", "tag_names") => Some("PhihubTagNamesData"),
         ("phigros-query", "verify_public_key") => Some("PhigrosVerifyPublicKeyData"),
         ("phigros-query", "stats_summary") => Some("PhigrosStatsSummaryData"),
@@ -140,6 +152,25 @@ pub fn schema_json(connector: &str, resource: &str) -> Option<Value> {
             schema_value::<re0auth_app::upstream_models::PhihubPlayerIdsData>()
         }
         "PhihubRankData" => schema_value::<re0auth_app::upstream_models::PhihubRankData>(),
+        "PhihubRksRankData" => schema_value::<re0auth_app::upstream_models::PhihubRksRankData>(),
+        "PhihubRankStatsData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubRankStatsData>()
+        }
+        "PhihubSongAccAvgData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubSongAccAvgData>()
+        }
+        "PhihubAllAccAvgData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubAllAccAvgData>()
+        }
+        "PhihubAllAccAvgDualData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubAllAccAvgDualData>()
+        }
+        "PhihubTagCountsData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubTagCountsData>()
+        }
+        "PhihubCommentsData" => schema_value::<re0auth_app::upstream_models::PhihubCommentsData>(),
+        "PhihubTagTreeData" => schema_value::<re0auth_app::upstream_models::PhihubTagTreeData>(),
+        "PhihubAliasPage" => schema_value::<re0auth_app::upstream_models::PhihubAliasPage>(),
         "PhihubRankSummaryData" => {
             schema_value::<re0auth_app::upstream_models::PhihubRankSummaryData>()
         }
@@ -205,6 +236,18 @@ mod tests {
             ("phihub", "info_file_version"),
             ("phihub", "player_ids"),
             ("phihub", "rank_by_rank"),
+            ("phihub", "rank_by_rks"),
+            ("phihub", "rank_stats"),
+            ("phihub", "song_acc_avg"),
+            ("phihub", "all_acc_avg"),
+            ("phihub", "all_acc_avg_dual"),
+            ("phihub", "all_acc_avg_b30"),
+            ("phihub", "tags_by_song_rank"),
+            ("phihub", "comments_by_song"),
+            ("phihub", "tag_tree"),
+            ("phihub", "aliases"),
+            ("phihub", "aliases_resolve"),
+            ("phihub", "aliases_list"),
             ("phihub", "rank_summary"),
             ("phihub", "tag_names"),
             ("phigros-query", "verify_public_key"),

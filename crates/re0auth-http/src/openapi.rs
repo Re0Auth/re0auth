@@ -165,6 +165,19 @@ use crate::{AppState, admin, binding_routes};
         re0auth_app::upstream_models::PhihubPlayerId,
         re0auth_app::upstream_models::PhihubRankData,
         re0auth_app::upstream_models::PhihubRankSummaryData,
+        re0auth_app::upstream_models::PhihubRksRankData,
+        re0auth_app::upstream_models::PhihubRankStatsData,
+        re0auth_app::upstream_models::PhihubSongAccAvgData,
+        re0auth_app::upstream_models::PhihubAllAccAvgData,
+        re0auth_app::upstream_models::PhihubAllAccAvgDualData,
+        re0auth_app::upstream_models::PhihubTagCountsData,
+        re0auth_app::upstream_models::PhihubAccAvg,
+        re0auth_app::upstream_models::PhihubCommentsData,
+        re0auth_app::upstream_models::PhihubComment,
+        re0auth_app::upstream_models::PhihubTagTreeData,
+        re0auth_app::upstream_models::PhihubTagNode,
+        re0auth_app::upstream_models::PhihubAliasPage,
+        re0auth_app::upstream_models::PhihubAliasItem,
         re0auth_app::upstream_models::PhihubTagNamesData,
         re0auth_app::upstream_models::PhihubRankUser,
         re0auth_app::upstream_models::PhihubRankGameUser,
@@ -468,6 +481,15 @@ mod tests {
             "PhihubPlayerIdsData",
             "PhihubRankData",
             "PhihubRankSummaryData",
+            "PhihubRksRankData",
+            "PhihubRankStatsData",
+            "PhihubSongAccAvgData",
+            "PhihubAllAccAvgData",
+            "PhihubAllAccAvgDualData",
+            "PhihubTagCountsData",
+            "PhihubCommentsData",
+            "PhihubTagTreeData",
+            "PhihubAliasPage",
             "PhihubTagNamesData",
             "PhigrosVerifyPublicKeyData",
             "PhigrosStatsSummaryData",
@@ -478,8 +500,8 @@ mod tests {
         let union = &json["components"]["schemas"]["UpstreamData"]["oneOf"];
         assert_eq!(
             union.as_array().map(Vec::len),
-            Some(19),
-            "the union carries eighteen resource models plus PageBody"
+            Some(28),
+            "the union carries twenty-seven resource models plus PageBody"
         );
     }
 
