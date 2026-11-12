@@ -294,7 +294,8 @@ impl GatewayService {
             return Err(UpstreamError::ContractChanged);
         }
         let content_type = upstream.content_type;
-        let mut prefix = bytes::BytesMut::new();
+        const PUBLISH_CHUNK_BYTES: usize = 64 * 1024;
+        let mut buffered = bytes::BytesMut::new();
         let mut published = false;
         let mut total = 0usize;
         while let Some(chunk) = upstream.body.next().await {
@@ -303,32 +304,38 @@ impl GatewayService {
                 .checked_add(chunk.len())
                 .filter(|total| *total <= max_body)
                 .ok_or(UpstreamError::Truncated)?;
+            if chunk.is_empty() {
+                continue;
+            }
             if !published {
-                prefix.extend_from_slice(&chunk);
-                if prefix.len() < 12 {
+                buffered.extend_from_slice(&chunk);
+                if buffered.len() < 12 {
                     continue;
                 }
-                match validate_magic_prefix(&content_type, &prefix, false) {
+                match validate_magic_prefix(&content_type, &buffered, false) {
                     MagicStatus::Incomplete => continue,
                     MagicStatus::Invalid => return Err(UpstreamError::ContractChanged),
                     MagicStatus::Valid => {}
                 }
                 flight.publish_content_type(Ok(content_type.clone()));
-                self.ensure_asset_reader_permit(&flight, guard)?;
-                flight.append(prefix.split().freeze());
                 published = true;
             } else {
-                self.ensure_asset_reader_permit(&flight, guard)?;
-                flight.append(chunk);
+                buffered.extend_from_slice(&chunk);
+            }
+            self.ensure_asset_reader_permit(&flight, guard)?;
+            if buffered.len() >= PUBLISH_CHUNK_BYTES {
+                flight.append(buffered.split().freeze());
             }
         }
         if !published {
-            if validate_magic_prefix(&content_type, &prefix, true) != MagicStatus::Valid {
+            if validate_magic_prefix(&content_type, &buffered, true) != MagicStatus::Valid {
                 return Err(UpstreamError::ContractChanged);
             }
             flight.publish_content_type(Ok(content_type.clone()));
+        }
+        if !buffered.is_empty() {
             self.ensure_asset_reader_permit(&flight, guard)?;
-            flight.append(prefix.freeze());
+            flight.append(buffered.freeze());
         }
         Ok((content_type, flight.assemble()))
     }
