@@ -910,6 +910,28 @@ impl ConsentRepo for MemoryStore {
         Ok(consents)
     }
 
+    async fn list_with_client_names(
+        &self,
+        user: &UserId,
+    ) -> RepoResult<Vec<re0auth_api::ports::ConsentClient>> {
+        let inner = self.lock();
+        let mut consents = inner
+            .consents
+            .values()
+            .filter(|consent| consent.user_id == *user && consent.revoked_at.is_none())
+            .filter_map(|consent| {
+                inner.clients.get(&consent.client_id).map(|client| {
+                    re0auth_api::ports::ConsentClient {
+                        consent: consent.clone(),
+                        client_name: client.name.clone(),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        consents.sort_by_key(|row| std::cmp::Reverse(row.consent.updated_at));
+        Ok(consents)
+    }
+
     async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<Consent> {
         let mut inner = self.lock();
         if !inner.users.contains_key(&consent.user_id)

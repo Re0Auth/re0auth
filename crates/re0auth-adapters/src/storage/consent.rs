@@ -4,7 +4,8 @@ use sqlx::{Row, sqlite::SqliteRow};
 use re0auth_api::audit::SecurityFact;
 use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
-    Consent, ConsentRepo, PendingAuthorization, PendingAuthorizationRepo, RepoError, RepoResult,
+    Consent, ConsentClient, ConsentRepo, PendingAuthorization, PendingAuthorizationRepo, RepoError,
+    RepoResult,
 };
 use re0auth_api::{ClientId, ConsentId, PendingAuthorizationId, SessionId, Unix, UserId};
 
@@ -113,6 +114,27 @@ impl ConsentRepo for SqliteStore {
         .map_err(db_error)?
         .iter()
         .map(row_to_consent)
+        .collect()
+    }
+
+    async fn list_with_client_names(&self, user: &UserId) -> RepoResult<Vec<ConsentClient>> {
+        sqlx::query(
+            "SELECT consents.*, clients.name AS client_name \
+             FROM consents JOIN clients ON clients.id = consents.client_id \
+             WHERE consents.user_id = ? AND consents.revoked_at IS NULL \
+             ORDER BY consents.updated_at DESC",
+        )
+        .bind(user.0.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_error)?
+        .iter()
+        .map(|row| {
+            Ok(ConsentClient {
+                consent: row_to_consent(row)?,
+                client_name: row.try_get("client_name").map_err(db_error)?,
+            })
+        })
         .collect()
     }
 

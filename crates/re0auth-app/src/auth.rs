@@ -773,21 +773,20 @@ impl AuthService {
     }
 
     pub async fn list_authorizations(&self, user_id: UserId) -> AuthResult<Vec<AuthorizationView>> {
-        let consents = self.storage.consents().list_by_user(&user_id).await?;
-        let mut views = Vec::with_capacity(consents.len());
-        for consent in consents {
-            let Some(client) = self.storage.clients().get(&consent.client_id).await? else {
-                continue;
-            };
-            views.push(AuthorizationView {
-                client_id: consent.client_id.0.to_string(),
-                client_name: client.name,
-                scopes: consent.scopes,
-                created_at: consent.created_at,
-                updated_at: consent.updated_at,
-            });
-        }
-        Ok(views)
+        Ok(self
+            .storage
+            .consents()
+            .list_with_client_names(&user_id)
+            .await?
+            .into_iter()
+            .map(|row| AuthorizationView {
+                client_id: row.consent.client_id.0.to_string(),
+                client_name: row.client_name,
+                scopes: row.consent.scopes,
+                created_at: row.consent.created_at,
+                updated_at: row.consent.updated_at,
+            })
+            .collect())
     }
 
     pub async fn revoke_authorization(

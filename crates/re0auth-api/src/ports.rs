@@ -445,6 +445,12 @@ pub struct Consent {
     pub version: ConsentVersion,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsentClient {
+    pub consent: Consent,
+    pub client_name: String,
+}
+
 /// INV-NOLOG-01: `nonce` and `state` are secrets.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PendingAuthorization {
@@ -825,6 +831,7 @@ pub trait ApprovalTicketRepo: Send + Sync {
 pub trait ConsentRepo: Send + Sync {
     async fn find(&self, user: &UserId, client: &ClientId) -> RepoResult<Option<Consent>>;
     async fn list_by_user(&self, user: &UserId) -> RepoResult<Vec<Consent>>;
+    async fn list_with_client_names(&self, user: &UserId) -> RepoResult<Vec<ConsentClient>>;
     /// Inserts or replaces the consent record for `(user, client)` and records
     /// the grant in the same transaction (INV-AUDIT-01). The returned row is the
     /// stored one; its `version` is what newly issued access tokens must carry.

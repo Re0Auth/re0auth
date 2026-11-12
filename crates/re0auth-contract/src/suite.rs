@@ -733,6 +733,17 @@ pub async fn consent_contract<S: Storage>(store: &S) {
             .expect("list"),
         vec![granted.clone()]
     );
+    assert_eq!(
+        store
+            .consents()
+            .list_with_client_names(&owner.id)
+            .await
+            .expect("list with client name"),
+        vec![re0auth_api::ports::ConsentClient {
+            consent: granted.clone(),
+            client_name: client.name.clone(),
+        }]
+    );
 
     let expanded = Consent {
         scopes: vec!["openid".to_string(), "phigros.stats.read".to_string()],
