@@ -158,7 +158,7 @@ fn form_decode(value: &str) -> Result<String, ApiError> {
 }
 
 /// True when a `%` is not followed by exactly two hex digits.
-fn has_malformed_escape(value: &str) -> bool {
+pub(crate) fn has_malformed_escape(value: &str) -> bool {
     let bytes = value.as_bytes();
     let mut index = 0;
     while index < bytes.len() {

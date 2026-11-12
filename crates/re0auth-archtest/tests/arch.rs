@@ -115,6 +115,7 @@ const COMPOSITION_ROOT_MODULES: &[&str] = &[
     "crates/re0auth-server/src/config.rs",
     // Unit tests for private config parsing; no routing or policy lives here.
     "crates/re0auth-server/src/config/tests.rs",
+    "crates/re0auth-server/src/config/tests/resource_body.rs",
     // 连接器配置域与校验；无路由与策略。
     "crates/re0auth-server/src/config/connector.rs",
     "crates/re0auth-server/src/config_env.rs",
@@ -786,23 +787,34 @@ fn the_cache_is_read_only_after_authorization() {
     let body_end = body.find("\n    /// INV-RAW-01").unwrap_or(body.len());
     let body = &body[..body_end];
 
-    let scope_gate = body
+    let authorize_call = body.find("self.authorize");
+    let authorization = if authorize_call.is_some() {
+        let authorize_start = text
+            .find("    async fn authorize(")
+            .expect("authorize helper");
+        &text[authorize_start..fetch_start]
+    } else {
+        body
+    };
+    let scope_gate = authorization
         .find("scope_allows")
-        .expect("the scope gate must exist in fetch");
-    let binding_lookup = body
+        .expect("the scope gate must exist in fetch or its authorize helper");
+    let binding_lookup = authorization
         .find(".bindings()\n            .find")
-        .expect("the binding lookup must exist in fetch");
+        .expect("the binding lookup must exist in fetch or its authorize helper");
     let cache_read = body
         .find("self.cache.get")
         .expect("the cache read must exist");
+    let scope_order = authorize_call.unwrap_or(scope_gate);
+    let binding_order = authorize_call.unwrap_or(binding_lookup);
 
     assert!(
-        scope_gate < cache_read,
+        scope_order < cache_read,
         "INV-CACHE-01 violated: the cache is read before the scope gate, so a \
          caller without the scope can receive a cached payload"
     );
     assert!(
-        binding_lookup < cache_read,
+        binding_order < cache_read,
         "INV-CACHE-01 violated: the cache is read before the binding lookup, so \
          a revoked binding can still be served"
     );
@@ -2382,10 +2394,11 @@ fn request_path_logs_are_absent_and_would_be_redacted() {
         }
     }
 
-    // Two sites, both logging an opaque binding id and a coarse error kind:
-    // admin_service.rs (single revoke) and binding.rs (cascade batch).
+    // Two sites log an opaque binding id and a coarse error kind:
+    // admin_service.rs (single revoke) and binding.rs (cascade batch). The asset
+    // loader's third site logs only a panic message, with no request path or credential.
     assert_eq!(
-        call_sites, 2,
+        call_sites, 3,
         "the request path now has {call_sites} `tracing::*!` call site(s); this guard was \
          written when there were none. Re-read each site for token or secret \
          interpolation, then update the expected count here."

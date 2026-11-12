@@ -16,7 +16,7 @@ use config::{IdentityProviderKind, oauth2_kind};
 use re0auth_adapters::client_secret::HmacClientSecretHasher;
 use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::crypto::RsaTokenSigner;
-use re0auth_adapters::moka_cache::MokaCache;
+use re0auth_adapters::moka_cache::{MokaCache, MokaFailureCache};
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::sealer::AesGcmSealer;
 use re0auth_adapters::storage::SqliteStore;
@@ -149,6 +149,7 @@ fn build_catalog(cfg: &config::Config) -> anyhow::Result<re0auth_http::catalog::
                     location: match param.location {
                         re0auth_api::connector::ParamLocation::Query => "query",
                         re0auth_api::connector::ParamLocation::Body => "body",
+                        re0auth_api::connector::ParamLocation::Path => "path",
                     }
                     .to_string(),
                     upstream: param.upstream.clone(),
@@ -170,21 +171,43 @@ fn build_catalog(cfg: &config::Config) -> anyhow::Result<re0auth_http::catalog::
                     max_items: param.max_items,
                 })
                 .collect();
+            let binary = spec.response == re0auth_api::connector::ResponseKind::Binary;
             resources.push(re0auth_http::catalog::CatalogResource {
                 name: spec.name.clone(),
                 method: "get".to_string(),
                 upstream_method: spec.method.as_str().to_string(),
                 scope: spec.required_scope.clone(),
-                path: format!("/api/v1/upstreams/{}/{}", connector.id, spec.name),
-                raw_path: format!("/api/v1/raw/{}/{}", connector.id, spec.name),
-                data_schema: schema.map(str::to_string),
-                schema_url: schema
-                    .map(|_| format!("/api/v1/upstreams/{}/{}/schema", connector.id, spec.name)),
+                path: if binary {
+                    format!("/api/v1/assets/{}/{}", connector.id, spec.name)
+                } else {
+                    format!("/api/v1/upstreams/{}/{}", connector.id, spec.name)
+                },
+                raw_path: if binary {
+                    String::new()
+                } else {
+                    format!("/api/v1/raw/{}/{}", connector.id, spec.name)
+                },
+                data_schema: if binary {
+                    None
+                } else {
+                    schema.map(str::to_string)
+                },
+                schema_url: if binary {
+                    None
+                } else {
+                    schema
+                        .map(|_| format!("/api/v1/upstreams/{}/{}/schema", connector.id, spec.name))
+                },
+                response: spec.response.as_str().to_string(),
+                content_types: spec.content_types.clone(),
+                max_bytes: spec.max_bytes,
+                shared: spec.shared,
                 params,
-                paginated: spec
-                    .view
-                    .as_ref()
-                    .is_some_and(|view| view.items_path.is_some()),
+                paginated: !binary
+                    && spec
+                        .view
+                        .as_ref()
+                        .is_some_and(|view| view.items_path.is_some()),
             });
         }
         connectors.push(re0auth_http::catalog::CatalogConnector {
@@ -376,6 +399,15 @@ async fn build_data_plane(
     // The gateway seals with the same current/retired key set as the CLI; using
     // the legacy single-key constructor here would ignore `master_key_version`.
     let sealer = Arc::new(open_sealer(cfg)?);
+    let asset_cache: Arc<dyn re0auth_api::cache::Cache> = if cfg.cache.enabled {
+        Arc::new(MokaCache::new_asset(
+            cfg.cache.asset_max_bytes,
+            clock.clone(),
+        ))
+    } else {
+        Arc::new(re0auth_api::cache::NoCache)
+    };
+    let failure_cache = Arc::new(MokaFailureCache::new(clock.clone()));
 
     // Binding is opt-in per connector: a connector without endpoints can still
     // serve data for bindings issued elsewhere, but the routes stay 404 rather
@@ -407,6 +439,17 @@ async fn build_data_plane(
     // INV-CACHE-01..03. The same instance is handed to `AuthService`, which
     // sweeps it on revoke; sharing is what makes INV-CACHE-02 hold.
     .with_cache(cache, std::time::Duration::from_secs(cfg.cache.ttl_secs))
+    .with_asset_support(
+        asset_cache,
+        failure_cache,
+        std::time::Duration::from_secs(cfg.cache.asset_negative_ttl_secs),
+        cfg.limits.detached_fill_concurrency,
+        cfg.limits.max_active_asset_loaders,
+        std::time::Duration::from_secs(cfg.limits.detached_deadline_secs),
+        std::time::Duration::from_secs(cfg.timeouts.request_secs),
+        std::time::Duration::from_secs(cfg.timeouts.upstream_secs),
+    )
+    .with_asset_spawner(Arc::new(|future| re0auth_runtime::spawn_detached(future)))
     .with_observer(observer)
     .with_telemetry(telemetry);
     let gateway = match refresh_auth {

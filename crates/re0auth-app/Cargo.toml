@@ -8,7 +8,10 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 base64.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
 hex.workspace = true
+parking_lot.workspace = true
 re0auth-api = { version = "0.18.0", path = "../re0auth-api" }
 re0auth-domain = { version = "0.1.0", path = "../re0auth-domain" }
 secrecy.workspace = true
@@ -26,4 +29,4 @@ uuid.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 re0auth-contract = { version = "0.1.0", path = "../re0auth-contract" }
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

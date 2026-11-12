@@ -67,6 +67,7 @@ use crate::{AppState, admin, binding_routes};
         gateway::list_upstreams,
         gateway::resource_schema,
         gateway::fetch_upstream,
+        gateway::fetch_asset,
         gateway::fetch_raw,
         admin::stats,
         admin::list_clients,
@@ -220,6 +221,7 @@ pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
     };
     paths.remove("/api/v1/upstreams/{connector}/{resource}");
     paths.remove("/api/v1/raw/{connector}/{resource}");
+    paths.remove("/api/v1/assets/{connector}/{resource}");
 
     for connector in &catalog.connectors {
         if !connector.openapi_public {
@@ -234,6 +236,13 @@ pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
                     "required": param.required,
                     "schema": param_schema(param),
                 });
+                if param.location == "path" {
+                    entry["required"] = json!(true);
+                    entry["description"] = json!(
+                        "Substituted into the upstream path as one percent-encoded segment; supplied here as a query parameter."
+                    );
+                    entry["schema"]["type"] = json!("string");
+                }
                 if param.array {
                     // Repeated keys are the HTML form spelling: form + explode.
                     entry["style"] = json!("form");
@@ -249,7 +258,7 @@ pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
                 }
                 parameters.push(entry);
             }
-            if resource.paginated {
+            if resource.paginated && resource.response != "binary" {
                 parameters.push(json!({
                     "name": "limit", "in": "query", "required": false,
                     "schema": {"type": "integer", "format": "int32", "minimum": 1, "maximum": 100}
@@ -259,6 +268,21 @@ pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
                     "schema": {"type": "string"}
                 }));
             }
+            let success = if resource.response == "binary" {
+                let content = resource
+                    .content_types
+                    .iter()
+                    .map(|content_type| {
+                        (
+                            content_type.clone(),
+                            json!({"schema": {"type": "string", "format": "binary"}}),
+                        )
+                    })
+                    .collect::<Map<String, Value>>();
+                json!({"description": "The binary asset.", "content": content})
+            } else {
+                json!({"description": "The normalized envelope.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}})
+            };
             let mut operation = json!({
                 "tags": ["gateway"],
                 "summary": format!("Fetch {}/{}", connector.id, resource.name),
@@ -270,7 +294,7 @@ pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
                 "security": [{"bearer": []}],
                 "parameters": parameters,
                 "responses": {
-                    "200": {"description": "The normalized envelope.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}}},
+                    "200": success,
                     "400": {"description": "Invalid request."},
                     "401": {"description": "Invalid or missing token."},
                     "403": {"description": "Insufficient scope or raw access."},
@@ -278,14 +302,16 @@ pub(crate) fn augment_document(mut base: Value, catalog: &Catalog) -> Value {
                     "502": {"description": "Upstream contract changed or unavailable."}
                 }
             });
-            if let Some(schema) = &resource.data_schema {
-                operation
-                    .as_object_mut()
-                    .expect("operation is an object")
-                    .insert(
-                        "x-re0auth-data-schema".to_string(),
-                        Value::String(format!("#/components/schemas/{schema}")),
-                    );
+            if resource.response != "binary" {
+                if let Some(schema) = &resource.data_schema {
+                    operation
+                        .as_object_mut()
+                        .expect("operation is an object")
+                        .insert(
+                            "x-re0auth-data-schema".to_string(),
+                            Value::String(format!("#/components/schemas/{schema}")),
+                        );
+                }
             }
             paths.insert(resource.path.clone(), json!({"get": operation}));
         }
@@ -524,47 +550,83 @@ mod tests {
                 display_name: "Phigros Query".to_string(),
                 bindable: true,
                 openapi_public: true,
-                resources: vec![CatalogResource {
-                    name: "save".to_string(),
-                    method: "get".to_string(),
-                    upstream_method: "post".to_string(),
-                    scope: "phigros.save.read".to_string(),
-                    path: "/api/v1/upstreams/phigros/save".to_string(),
-                    raw_path: "/api/v1/raw/phigros/save".to_string(),
-                    data_schema: Some("PhigrosQuerySaveData".to_string()),
-                    schema_url: Some("/api/v1/upstreams/phigros/save/schema".to_string()),
-                    params: vec![
-                        CatalogParam {
-                            name: "song_id".to_string(),
-                            location: "query".to_string(),
-                            upstream: "song_id".to_string(),
-                            kind: "string".to_string(),
-                            required: true,
-                            min_len: Some(1),
-                            max_len: Some(64),
-                            min: None,
-                            max: None,
-                            values: Vec::new(),
-                            array: false,
-                            max_items: None,
-                        },
-                        CatalogParam {
-                            name: "request".to_string(),
-                            location: "query".to_string(),
-                            upstream: "request".to_string(),
-                            kind: "enum".to_string(),
-                            required: false,
-                            min_len: None,
-                            max_len: None,
-                            min: None,
-                            max: None,
-                            values: vec!["data".to_string(), "rks".to_string()],
-                            array: true,
-                            max_items: Some(8),
-                        },
-                    ],
-                    paginated: true,
-                }],
+                resources: vec![
+                    CatalogResource {
+                        name: "save".to_string(),
+                        method: "get".to_string(),
+                        upstream_method: "post".to_string(),
+                        scope: "phigros.save.read".to_string(),
+                        path: "/api/v1/upstreams/phigros/save".to_string(),
+                        raw_path: "/api/v1/raw/phigros/save".to_string(),
+                        data_schema: Some("PhigrosQuerySaveData".to_string()),
+                        schema_url: Some("/api/v1/upstreams/phigros/save/schema".to_string()),
+                        response: "json".to_string(),
+                        content_types: Vec::new(),
+                        max_bytes: None,
+                        shared: false,
+                        params: vec![
+                            CatalogParam {
+                                name: "song_id".to_string(),
+                                location: "query".to_string(),
+                                upstream: "song_id".to_string(),
+                                kind: "string".to_string(),
+                                required: true,
+                                min_len: Some(1),
+                                max_len: Some(64),
+                                min: None,
+                                max: None,
+                                values: Vec::new(),
+                                array: false,
+                                max_items: None,
+                            },
+                            CatalogParam {
+                                name: "request".to_string(),
+                                location: "query".to_string(),
+                                upstream: "request".to_string(),
+                                kind: "enum".to_string(),
+                                required: false,
+                                min_len: None,
+                                max_len: None,
+                                min: None,
+                                max: None,
+                                values: vec!["data".to_string(), "rks".to_string()],
+                                array: true,
+                                max_items: Some(8),
+                            },
+                            CatalogParam {
+                                name: "song".to_string(),
+                                location: "path".to_string(),
+                                upstream: "song".to_string(),
+                                kind: "string".to_string(),
+                                required: true,
+                                min_len: Some(1),
+                                max_len: Some(64),
+                                min: None,
+                                max: None,
+                                values: Vec::new(),
+                                array: false,
+                                max_items: None,
+                            },
+                        ],
+                        paginated: true,
+                    },
+                    CatalogResource {
+                        name: "jacket".to_string(),
+                        method: "get".to_string(),
+                        upstream_method: "get".to_string(),
+                        scope: "phigros.jacket.read".to_string(),
+                        path: "/api/v1/assets/phigros/jacket".to_string(),
+                        raw_path: String::new(),
+                        data_schema: None,
+                        schema_url: None,
+                        response: "binary".to_string(),
+                        content_types: vec!["image/png".to_string(), "image/webp".to_string()],
+                        max_bytes: Some(1_048_576),
+                        shared: true,
+                        params: Vec::new(),
+                        paginated: true,
+                    },
+                ],
             },
             CatalogConnector {
                 id: "private".to_string(),
@@ -581,6 +643,24 @@ mod tests {
         let paths = document["paths"].as_object().expect("paths");
         assert!(!paths.contains_key("/api/v1/upstreams/{connector}/{resource}"));
         assert!(!paths.contains_key("/api/v1/raw/{connector}/{resource}"));
+        assert!(!paths.contains_key("/api/v1/assets/{connector}/{resource}"));
+        let asset = &paths["/api/v1/assets/phigros/jacket"]["get"];
+        let content = asset["responses"]["200"]["content"]
+            .as_object()
+            .expect("asset content");
+        assert_eq!(content.len(), 2);
+        for content_type in ["image/png", "image/webp"] {
+            assert_eq!(
+                content[content_type]["schema"],
+                serde_json::json!({"type": "string", "format": "binary"})
+            );
+        }
+        assert!(!content.contains_key("application/json"));
+        assert!(!content.contains_key("application/octet-stream"));
+        assert!(asset.get("x-re0auth-data-schema").is_none());
+        let asset_parameters = asset["parameters"].as_array().expect("asset parameters");
+        assert!(!asset_parameters.iter().any(|p| p["name"] == "limit"));
+        assert!(!asset_parameters.iter().any(|p| p["name"] == "cursor"));
         let operation = &paths["/api/v1/upstreams/phigros/save"]["get"];
         assert_eq!(
             operation["operationId"],
@@ -605,6 +685,19 @@ mod tests {
         assert_eq!(request["schema"]["maxItems"], 8);
         assert_eq!(request["schema"]["items"]["type"], "string");
         assert_eq!(request["schema"]["items"]["enum"][0], "data");
+        let song = parameters
+            .iter()
+            .find(|parameter| parameter["name"] == "song")
+            .expect("dynamic path parameter");
+        assert_eq!(song["in"], "query");
+        assert_eq!(song["required"], true);
+        assert_eq!(song["schema"]["type"], "string");
+        assert!(
+            song["description"]
+                .as_str()
+                .expect("path parameter description")
+                .contains("upstream path")
+        );
         assert!(!paths.keys().any(|path| path.contains("private")));
     }
 
@@ -622,6 +715,10 @@ mod tests {
                 raw_path: format!("/api/v1/raw/{connector}/{name}"),
                 data_schema: None,
                 schema_url: None,
+                response: "json".to_string(),
+                content_types: Vec::new(),
+                max_bytes: None,
+                shared: false,
                 params: Vec::new(),
                 paginated: false,
             }

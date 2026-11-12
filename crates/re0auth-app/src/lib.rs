@@ -6,11 +6,13 @@ use re0auth_api::{Clock, Unix};
 
 pub mod admin;
 pub mod admin_service;
+pub mod asset_runtime;
 pub mod auth;
 pub mod binding;
 pub mod circuit;
 pub mod credentials;
 pub mod gateway;
+mod gateway_assets;
 pub mod hints;
 pub mod housekeeping;
 pub mod oauth;

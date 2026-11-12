@@ -35,7 +35,7 @@ use re0auth_app::auth::AuthService;
 use re0auth_app::gateway::GatewayService;
 use re0auth_app::oauth::OAuthService;
 use routes::device::{device_approve, device_deny, device_qr, device_start};
-use routes::gateway::{fetch_raw, fetch_upstream, list_upstreams, resource_schema};
+use routes::gateway::{fetch_asset, fetch_raw, fetch_upstream, list_upstreams, resource_schema};
 use routes::oauth::{
     authorize, authorize_post, device_authorization, discovery, introspect, jwks, oauth_consent,
     oauth_pending, revoke, token, userinfo, userinfo_post,
@@ -272,6 +272,10 @@ pub fn router(state: AppState) -> Router {
             StatusCode::REQUEST_TIMEOUT,
             request_timeout,
         ))
+        // Asset streams use the gateway's longer loader deadline. Registering
+        // after the existing timeout leaves them outside that 30-second layer,
+        // while the request-id, copy, and metrics conventions below still apply.
+        .route("/api/v1/assets/{connector}/{resource}", get(fetch_asset))
         .layer(middleware::from_fn_with_state(
             metrics_state,
             metrics::layer,

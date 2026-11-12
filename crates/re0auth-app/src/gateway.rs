@@ -1,9 +1,11 @@
 //! Gateway use case: scope check -> binding lookup -> connector fetch.
 //!
 //! Identity flows do not depend on this module (INV-LOGIN-03).
+mod assets;
+
 use re0auth_api::audit::{AccessSource, AccessTelemetry, AuditAction, SecurityFact};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -12,7 +14,7 @@ use secrecy::ExposeSecret;
 use serde::Serialize;
 use serde_json::Value;
 
-use re0auth_api::cache::Cache;
+use re0auth_api::cache::{Cache, FailureCache};
 use re0auth_api::connector::{
     BindingAction, ConnectorBroker, ConnectorEndpoint, ConnectorRegistry, FaultClass, ParamKind,
     ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload, ValidatedParamValue,
@@ -28,6 +30,7 @@ use uuid::Uuid;
 
 use crate::circuit::{CircuitKey, CircuitState, CircuitTracker, Outcome, Probe};
 use crate::credentials::{CredentialError, CredentialSource};
+use crate::gateway_assets::AssetFlight;
 use crate::upstream_models::UpstreamData;
 
 #[derive(Clone, Debug)]
@@ -57,6 +60,18 @@ pub struct Pagination {
     pub limit: Option<u32>,
     pub cursor: Option<String>,
 }
+
+struct AuthorizedFetch {
+    endpoint: ConnectorEndpoint,
+    spec: ResourceSpec,
+    binding: Option<Binding>,
+    subject: String,
+    params: BTreeMap<String, ValidatedParamValue>,
+    cache_key: String,
+    list_view: bool,
+}
+
+type FlightMap = Arc<parking_lot::Mutex<HashMap<String, Arc<AssetFlight>>>>;
 
 impl GatewayRequest<'_> {
     /// The subject is read from the binding, never from a request parameter:
@@ -102,6 +117,8 @@ pub enum GatewayError {
     /// for another scope, because `raw_access` is an operator decision.
     #[error("client is not allowed the raw view")]
     RawNotAllowed,
+    #[error("asset accept header does not allow a configured content type")]
+    NotAcceptable,
     #[error("circuit open")]
     CircuitOpen { retry_after_secs: i64 },
     #[error("upstream: {0}")]
@@ -269,10 +286,12 @@ impl GatewayError {
             Self::ConnectorNotFound => "unknown_connector",
             Self::UnknownResource => "endpoint_not_found",
             Self::RawNotAllowed => "raw_not_allowed",
+            Self::NotAcceptable => "not_acceptable",
             Self::CircuitOpen { .. } => "upstream_busy",
             Self::Upstream(UpstreamError::CredentialExpired) => "upstream_needs_reauth",
             Self::Upstream(UpstreamError::InsufficientScope) => "insufficient_scope",
             Self::Upstream(UpstreamError::NotFound) => "not_found",
+            Self::Upstream(UpstreamError::ContractChanged) => "upstream_contract_changed",
             Self::Upstream(UpstreamError::RateLimited { .. }) => "upstream_rate_limited",
             Self::Upstream(UpstreamError::Truncated) => "upstream_response_too_large",
             // The upstream refused the parameters we sent. That is a request
@@ -304,6 +323,7 @@ const CONNECTOR_NAMESPACE: Uuid = Uuid::from_bytes([
     0x52, 0x65, 0x30, 0x41, 0x75, 0x74, 0x68, 0x43, 0x6f, 0x6e, 0x6e, 0x65, 0x63, 0x74, 0x6f, 0x72,
 ]);
 
+#[derive(Clone)]
 pub struct GatewayService {
     storage: Arc<dyn Storage>,
     registry: Arc<dyn ConnectorRegistry>,
@@ -327,6 +347,15 @@ pub struct GatewayService {
     credentials: Option<Arc<dyn CredentialSource>>,
     /// Exact hit/miss counters. Optional so embedded uses stay dependency-free.
     observer: Arc<dyn GatewayObserver>,
+    asset_cache: Arc<dyn Cache>,
+    failure_cache: Option<Arc<dyn FailureCache>>,
+    flights: FlightMap,
+    detached_fill: Arc<tokio::sync::Semaphore>,
+    global_loaders: Arc<tokio::sync::Semaphore>,
+    asset_deadline: std::time::Duration,
+    asset_acquire_timeout: std::time::Duration,
+    asset_negative_ttl: std::time::Duration,
+    asset_spawner: Option<crate::asset_runtime::SharedAssetTaskSpawner>,
 }
 
 /// Applies the resource's declarative allow-list to the complete raw query map.
@@ -384,7 +413,7 @@ fn validate_param_value(
     param: &re0auth_api::connector::ParamSpec,
     raw: &str,
 ) -> Result<ValidatedParamValue, GatewayError> {
-    match param.kind {
+    let value = match param.kind {
         ParamKind::String => {
             let length = raw.chars().count();
             let min = param.min_len.unwrap_or(0);
@@ -445,7 +474,21 @@ fn validate_param_value(
             "false" => Ok(ValidatedParamValue::Boolean(false)),
             _ => Err(GatewayError::InvalidRequest("invalid parameter value")),
         },
+    }?;
+    if param.location == re0auth_api::connector::ParamLocation::Path
+        && (raw.is_empty()
+            || raw
+                .chars()
+                .any(|character| character.is_control() || character == '\\')
+            || matches!(raw, "." | "..")
+            || raw.chars().all(|character| character == '/')
+            || raw
+                .split('/')
+                .any(|component| matches!(component, "." | "..")))
+    {
+        return Err(GatewayError::InvalidRequest("invalid path parameter value"));
     }
+    Ok(value)
 }
 
 impl GatewayService {
@@ -472,6 +515,15 @@ impl GatewayService {
             telemetry: Arc::new(NoTelemetry),
             credentials: None,
             observer: Arc::new(re0auth_api::ports::NoGatewayObserver),
+            asset_cache: Arc::new(re0auth_api::cache::NoCache),
+            failure_cache: None,
+            flights: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            detached_fill: Arc::new(tokio::sync::Semaphore::new(4)),
+            global_loaders: Arc::new(tokio::sync::Semaphore::new(32)),
+            asset_deadline: std::time::Duration::from_secs(45),
+            asset_acquire_timeout: std::time::Duration::from_secs(30),
+            asset_negative_ttl: std::time::Duration::from_secs(5),
+            asset_spawner: None,
         }
     }
 
@@ -534,50 +586,66 @@ impl GatewayService {
         self
     }
 
-    pub async fn fetch(
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn with_asset_support(
+        mut self,
+        cache: Arc<dyn Cache>,
+        failure_cache: Arc<dyn FailureCache>,
+        negative_ttl: std::time::Duration,
+        detached_fill_concurrency: usize,
+        max_active_loaders: usize,
+        detached_deadline: std::time::Duration,
+        request_timeout: std::time::Duration,
+        upstream_timeout: std::time::Duration,
+    ) -> Self {
+        self.asset_cache = cache;
+        self.failure_cache = Some(failure_cache);
+        self.asset_negative_ttl = negative_ttl;
+        self.detached_fill = Arc::new(tokio::sync::Semaphore::new(detached_fill_concurrency));
+        self.global_loaders = Arc::new(tokio::sync::Semaphore::new(max_active_loaders));
+        self.asset_deadline = detached_deadline.max(upstream_timeout.saturating_mul(2));
+        self.asset_acquire_timeout = request_timeout;
+        self
+    }
+
+    #[must_use]
+    pub fn with_asset_spawner(
+        mut self,
+        spawner: crate::asset_runtime::SharedAssetTaskSpawner,
+    ) -> Self {
+        self.asset_spawner = Some(spawner);
+        self
+    }
+
+    async fn authorize(
         &self,
-        request: GatewayRequest<'_>,
-    ) -> Result<UpstreamPayload, GatewayError> {
+        request: &GatewayRequest<'_>,
+    ) -> Result<AuthorizedFetch, GatewayError> {
         gateway::validate_resource_name(request.resource)
             .map_err(|error| GatewayError::InvalidResource(error.field(ResourceField::Name)))?;
-
-        // B15: admission is enforced here too, not only at login. A banned
-        // account keeps a valid-looking token until it expires, so a login-only
-        // check would leave the data plane open for minutes.
         match self.storage.users().get(&request.user_id).await {
             Ok(Some(user)) if user.status == UserStatus::Banned => {
                 return Err(GatewayError::AccountBanned);
             }
             Ok(Some(_)) => {}
-            // A token naming a vanished user is an internal inconsistency, not a
-            // client error.
             Ok(None) | Err(_) => return Err(GatewayError::Internal),
         }
-
         let endpoint = match self.registry.resolve(&request.connector_id).await {
             Ok(endpoint) => endpoint,
             Err(Re0Error::Business(_)) => return Err(GatewayError::ConnectorNotFound),
             Err(Re0Error::Internal(_)) => return Err(GatewayError::Internal),
         };
-
-        // Registered resources only: an unlisted name never reaches the broker.
-        // The required scope comes from the registry entry, so a caller cannot
-        // declare its own scope.
-        let Some(spec) = endpoint.resource(request.resource) else {
-            return Err(GatewayError::UnknownResource);
-        };
-        let required_scope = spec.required_scope.clone();
-
-        if !gateway::scope_allows(request.granted_scopes, &required_scope) {
+        let spec = endpoint
+            .resource(request.resource)
+            .cloned()
+            .ok_or(GatewayError::UnknownResource)?;
+        if !gateway::scope_allows(request.granted_scopes, &spec.required_scope) {
             return Err(GatewayError::InsufficientScope);
         }
-
         if request.raw {
-            self.authorize_raw(&request, &endpoint.name).await?;
+            self.authorize_raw(request, &endpoint.name).await?;
         }
-
-        // Pagination belongs to the view, not to the upstream. Checking it here
-        // keeps a malformed page from ever costing an upstream call.
         let list_view = spec
             .view
             .as_ref()
@@ -595,11 +663,20 @@ impl GatewayService {
                 "limit must be between 1 and 100",
             ));
         }
-        let params = validate_params(spec, request.params, list_view)?;
-
-        // `bindings.upstream_id` stores the connector's name, not its derived
-        // id: the name is what the operator configured and what the portal
-        // shows, and it survives a change to the id derivation.
+        let params = validate_params(&spec, request.params, list_view)?;
+        if spec.shared {
+            let cache_key =
+                re0auth_api::cache::key_shared(&endpoint.name, request.resource, &params);
+            return Ok(AuthorizedFetch {
+                endpoint,
+                spec,
+                binding: None,
+                subject: String::new(),
+                params,
+                cache_key,
+                list_view,
+            });
+        }
         let binding = self
             .storage
             .bindings()
@@ -607,51 +684,93 @@ impl GatewayService {
             .await
             .map_err(|_| GatewayError::Internal)?
             .ok_or(GatewayError::BindingRequired)?;
-
         match binding.status {
             BindingStatus::Active => {}
             BindingStatus::NeedsReauth => return Err(GatewayError::BindingNeedsReauth),
             BindingStatus::Revoked => return Err(GatewayError::BindingRevoked),
-            // 生产不创建 pending，保留旧码避免误报
             BindingStatus::Pending => return Err(GatewayError::BindingInactive),
         }
-
-        let subject = GatewayRequest::subject_for(&binding)?;
-
-        // INV-CACHE-01: the cache is consulted HERE and nowhere earlier. By
-        // this line the scope gate, the binding lookup and the binding status
-        // check have all passed. Moving this read above any of them would let a
-        // caller without the scope — or with a revoked binding — receive a
-        // cached payload, which is a privilege escalation rather than a cache
-        // bug.
-        //
-        // Raw requests are never cached (INV-CACHE-03): the raw view exists to
-        // show what the upstream actually returned, so a replayed older body
-        // would misrepresent the current state.
+        let subject = GatewayRequest::subject_for(&binding)?.to_string();
         let cache_key = re0auth_api::cache::key_with_params(
             &binding.id,
             &endpoint.name,
             request.resource,
             &params,
         );
-        // Short-circuit order matters: `request.raw` is checked first, so a raw
-        // request never even touches the cache.
+        Ok(AuthorizedFetch {
+            endpoint,
+            spec,
+            binding: Some(binding),
+            subject,
+            params,
+            cache_key,
+            list_view,
+        })
+    }
+
+    pub async fn fetch(
+        &self,
+        request: GatewayRequest<'_>,
+    ) -> Result<UpstreamPayload, GatewayError> {
+        let AuthorizedFetch {
+            endpoint,
+            spec,
+            binding,
+            subject,
+            params,
+            cache_key,
+            list_view,
+        } = self.authorize(&request).await?;
+        if spec.response == re0auth_api::connector::ResponseKind::Binary {
+            return Err(GatewayError::InvalidRequest(
+                "binary resource requires /api/v1/assets",
+            ));
+        }
         if !request.raw {
             if let Some(cached) = self.cache.get(&cache_key).await {
                 let snapshot = CachedView::decode(cached.body())?;
                 self.observer.cache_hit(&endpoint.name, request.resource);
-                // A cache hit is still a read of this user's data, so it belongs
-                // in the access ledger; `latency_ms = 0` marks that no upstream
-                // call was made.
                 self.record_access(&request, &endpoint, AccessSource::Cache, 0);
                 return self.normalized(&request, &endpoint, list_view, snapshot);
             }
-            // Raw requests bypass the cache entirely, so they are neither hits
-            // nor misses; counting them would inflate the miss denominator.
             self.observer.cache_miss(&endpoint.name, request.resource);
         }
 
         let now = self.clock.now();
+        if binding.is_none() {
+            let sub_token = re0auth_api::SecretString::from(String::new());
+            let mut connector_probe = self
+                .circuit
+                .probe(CircuitKey::Connector(endpoint.id), now)
+                .map_err(|retry_after_secs| GatewayError::CircuitOpen { retry_after_secs })?;
+            let resource = ResourceRequest::new(request.resource, subject).with_params(params);
+            let started = std::time::Instant::now();
+            return match self
+                .fetch_with_retry(&endpoint, &sub_token, &resource, spec.idempotent)
+                .await
+            {
+                Ok(payload) => {
+                    self.finish_fetch(
+                        &request,
+                        &endpoint,
+                        &spec,
+                        list_view,
+                        payload,
+                        started,
+                        &mut connector_probe,
+                        None,
+                        &cache_key,
+                        now,
+                    )
+                    .await
+                }
+                Err(error) => {
+                    connector_probe.settle(Outcome::from_fault_class(error.fault_class()), now);
+                    Err(error.into())
+                }
+            };
+        }
+        let binding = binding.ok_or(GatewayError::Internal)?;
         let sub_token = self
             .access_token(&binding, now, request.correlation_id)
             .await?;
@@ -678,12 +797,12 @@ impl GatewayService {
                 self.finish_fetch(
                     &request,
                     &endpoint,
-                    spec,
+                    &spec,
                     list_view,
                     payload,
                     started,
                     &mut connector_probe,
-                    &mut binding_probe,
+                    Some(&mut binding_probe),
                     &cache_key,
                     now,
                 )
@@ -707,12 +826,12 @@ impl GatewayService {
                                         .finish_fetch(
                                             &request,
                                             &endpoint,
-                                            spec,
+                                            &spec,
                                             list_view,
                                             payload,
                                             started,
                                             &mut connector_probe,
-                                            &mut binding_probe,
+                                            Some(&mut binding_probe),
                                             &cache_key,
                                             now,
                                         )
@@ -845,7 +964,7 @@ impl GatewayService {
         payload: UpstreamPayload,
         started: std::time::Instant,
         connector_probe: &mut Probe,
-        binding_probe: &mut Probe,
+        binding_probe: Option<&mut Probe>,
         cache_key: &str,
         now: re0auth_api::Unix,
     ) -> Result<UpstreamPayload, GatewayError> {
@@ -859,7 +978,9 @@ impl GatewayService {
             return Err(UpstreamError::Truncated.into());
         }
         connector_probe.settle(Outcome::Success, now);
-        binding_probe.settle(Outcome::Success, now);
+        if let Some(binding_probe) = binding_probe {
+            binding_probe.settle(Outcome::Success, now);
+        }
         if request.raw {
             // Recorded only on a served read: a failure is an error, not a read,
             // and inventing a ledger row for it would blur the two.
@@ -1189,6 +1310,33 @@ mod p03_tests {
 
         let unknown = BTreeMap::from([("request".to_string(), vec!["nope".to_string()])]);
         assert!(validate_params(&spec, &unknown, false).is_err());
+    }
+
+    #[test]
+    fn p03_path_params_allow_text_but_reject_traversal_and_controls() {
+        let mut song = param("song", ParamKind::String);
+        song.location = ParamLocation::Path;
+        let spec = resource(vec![song]);
+        for valid in [
+            "IN/OUT",
+            "狂喜蘭舞",
+            "Ain Soph Aur",
+            "v1.2",
+            "IN+",
+            "Re:End",
+            "te.st@example",
+            "{credential}",
+        ] {
+            validate_params(&spec, &supplied(&[("song", valid)]), false).expect("valid path value");
+        }
+        for invalid in [
+            "", "/", "//", "a/../b", "..", ".", "\\", "\0", "a\nb", "a/./b",
+        ] {
+            assert!(
+                validate_params(&spec, &supplied(&[("song", invalid)]), false).is_err(),
+                "{invalid:?}"
+            );
+        }
     }
 
     #[test]

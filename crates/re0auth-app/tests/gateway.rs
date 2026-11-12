@@ -3,11 +3,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
+use futures_util::StreamExt as _;
 use re0auth_api::audit::{AccessSource, AccessTelemetry};
 use re0auth_api::cache::Cache;
 use re0auth_api::connector::{
-    BodyField, BodyValue, ConnectorBroker, ConnectorEndpoint, EgressPolicy, FaultClass,
-    ResourceMethod, ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
+    AssetStream, BodyField, BodyValue, ConnectorBroker, ConnectorEndpoint, EgressPolicy,
+    FaultClass, ResourceMethod, ResourceRequest, ResourceSpec, UpstreamError, UpstreamPayload,
 };
 use re0auth_api::ports::{
     Binding, BindingStatus, GatewayObserver, Storage, TelemetrySink, User, UserRole, UserStatus,
@@ -1117,6 +1118,17 @@ impl ConnectorBroker for FlakyBroker {
         }
         Ok(payload(br#"{"score":1}"#))
     }
+
+    async fn fetch_asset_stream(
+        &self,
+        _endpoint: &ConnectorEndpoint,
+        _token: &SecretString,
+        _resource: &ResourceRequest,
+        _accept: &str,
+        _max_body: usize,
+    ) -> Result<AssetStream, UpstreamError> {
+        Err(UpstreamError::Unavailable)
+    }
 }
 
 fn service_with_broker(app: &Harness, broker: Arc<dyn ConnectorBroker>) -> GatewayService {
@@ -1193,7 +1205,7 @@ async fn a_non_idempotent_resource_is_never_retried() {
                 ResourceMethod::Post,
                 vec![BodyField {
                     name: "probe".to_string(),
-                    value: BodyValue::Constant("1".to_string()),
+                    value: BodyValue::Literal(serde_json::Value::String("1".to_string())),
                 }],
                 false,
             )
@@ -1270,6 +1282,17 @@ impl ConnectorBroker for TokenBroker {
         } else {
             Err(UpstreamError::CredentialExpired)
         }
+    }
+
+    async fn fetch_asset_stream(
+        &self,
+        _endpoint: &ConnectorEndpoint,
+        _sub_token: &SecretString,
+        _resource: &ResourceRequest,
+        _accept: &str,
+        _max_body: usize,
+    ) -> Result<AssetStream, UpstreamError> {
+        Err(UpstreamError::Unavailable)
     }
 }
 
@@ -1459,4 +1482,1241 @@ async fn cache_hits_and_misses_are_reported_to_the_observer() {
         1,
         "the hit never reached upstream"
     );
+}
+
+struct TestFailures {
+    clock: Arc<FixedClock>,
+    entries: std::sync::Mutex<std::collections::HashMap<String, (i64, UpstreamError)>>,
+}
+
+impl re0auth_api::cache::FailureCache for TestFailures {
+    fn get(&self, key: &str) -> Option<UpstreamError> {
+        self.entries
+            .lock()
+            .expect("failures")
+            .get(key)
+            .filter(|(expires, _)| self.clock.now() < *expires)
+            .map(|(_, error)| error.clone())
+    }
+
+    fn put(&self, key: String, error: UpstreamError, ttl: std::time::Duration) {
+        let expires = self.clock.now() + i64::try_from(ttl.as_secs()).expect("TTL");
+        self.entries
+            .lock()
+            .expect("failures")
+            .insert(key, (expires, error));
+    }
+}
+
+struct AssetApp {
+    harness: Harness,
+    cache: Arc<ClockedCache>,
+    failures: Arc<TestFailures>,
+}
+
+async fn asset_harness(shared: bool) -> AssetApp {
+    asset_harness_with_limits(shared, 5, 4, 32, 45, 10).await
+}
+
+async fn asset_harness_with_limits(
+    shared: bool,
+    negative_ttl: u64,
+    detached: usize,
+    loaders: usize,
+    deadline: u64,
+    upstream_timeout: u64,
+) -> AssetApp {
+    use re0auth_api::connector::ResponseKind;
+
+    let mut app = harness().await;
+    let mut spec = ResourceSpec::new("jacket", "/v1/jacket")
+        .expect("asset spec")
+        .with_scope("scores.read")
+        .expect("scope")
+        .with_response(
+            ResponseKind::Binary,
+            vec!["image/png".to_string(), "image/avif".to_string()],
+            None,
+        );
+    spec.shared = shared;
+    app.endpoint.resources.push(spec);
+    app.connector.register(app.endpoint.clone());
+    let cache = Arc::new(ClockedCache::new(
+        MemoryCache::new(),
+        app.clock.clone() as Arc<dyn Clock>,
+    ));
+    let failures = Arc::new(TestFailures {
+        clock: app.clock.clone(),
+        entries: std::sync::Mutex::new(std::collections::HashMap::new()),
+    });
+    app.service = app
+        .service
+        .with_asset_support(
+            cache.clone(),
+            failures.clone(),
+            std::time::Duration::from_secs(negative_ttl),
+            detached,
+            loaders,
+            std::time::Duration::from_secs(deadline),
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(upstream_timeout),
+        )
+        .with_asset_spawner(Arc::new(|future| drop(tokio::spawn(future))));
+    AssetApp {
+        harness: app,
+        cache,
+        failures,
+    }
+}
+
+fn png() -> &'static [u8] {
+    b"\x89PNG\r\n\x1a\nbody"
+}
+
+async fn read_asset(response: re0auth_api::connector::AssetResponse) -> Vec<u8> {
+    use futures_util::StreamExt;
+
+    match response {
+        re0auth_api::connector::AssetResponse::Buffered(payload) => payload.body.to_vec(),
+        re0auth_api::connector::AssetResponse::Streaming(stream) => stream
+            .body
+            .map(|chunk| chunk.expect("asset stream"))
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .flatten()
+            .collect(),
+    }
+}
+
+type ControlledAssetHandler =
+    dyn Fn() -> Result<AssetStream, UpstreamError> + Send + Sync + 'static;
+
+struct ControlledBroker {
+    inner: Arc<MockConnector>,
+    handlers: std::sync::Mutex<std::collections::HashMap<String, Arc<ControlledAssetHandler>>>,
+    calls: AtomicUsize,
+    call_count: tokio::sync::watch::Sender<usize>,
+}
+
+impl ControlledBroker {
+    fn new(inner: Arc<MockConnector>) -> Self {
+        let (call_count, _) = tokio::sync::watch::channel(0);
+        Self {
+            inner,
+            handlers: std::sync::Mutex::new(std::collections::HashMap::new()),
+            calls: AtomicUsize::new(0),
+            call_count,
+        }
+    }
+
+    fn set_asset_handler(
+        &self,
+        resource: &str,
+        handler: impl Fn() -> Result<AssetStream, UpstreamError> + Send + Sync + 'static,
+    ) {
+        self.handlers
+            .lock()
+            .expect("asset handlers")
+            .insert(resource.to_string(), Arc::new(handler));
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+
+    async fn wait_for_calls(&self, expected: usize) {
+        let mut calls = self.call_count.subscribe();
+        while *calls.borrow_and_update() < expected {
+            calls.changed().await.expect("call count sender");
+        }
+    }
+}
+
+#[async_trait]
+impl re0auth_api::connector::ConnectorRegistry for ControlledBroker {
+    async fn resolve(&self, id: &ConnectorId) -> re0auth_api::Re0Result<ConnectorEndpoint> {
+        re0auth_api::connector::ConnectorRegistry::resolve(&*self.inner, id).await
+    }
+}
+
+#[async_trait]
+impl ConnectorBroker for ControlledBroker {
+    async fn fetch_raw_data(
+        &self,
+        endpoint: &ConnectorEndpoint,
+        sub_token: &SecretString,
+        resource: &ResourceRequest,
+    ) -> Result<UpstreamPayload, UpstreamError> {
+        self.inner
+            .fetch_raw_data(endpoint, sub_token, resource)
+            .await
+    }
+
+    async fn fetch_asset_stream(
+        &self,
+        _endpoint: &ConnectorEndpoint,
+        _sub_token: &SecretString,
+        resource: &ResourceRequest,
+        _accept: &str,
+        _max_body: usize,
+    ) -> Result<AssetStream, UpstreamError> {
+        let calls = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        self.call_count.send_replace(calls);
+        let handler = self
+            .handlers
+            .lock()
+            .expect("asset handlers")
+            .get(&resource.resource)
+            .cloned()
+            .ok_or(UpstreamError::NotFound)?;
+        handler()
+    }
+}
+
+async fn controlled_asset_harness(
+    shared: bool,
+    negative_ttl: u64,
+    detached: usize,
+    loaders: usize,
+    deadline: u64,
+    upstream_timeout: u64,
+) -> (AssetApp, Arc<ControlledBroker>) {
+    let mut app = asset_harness_with_limits(
+        shared,
+        negative_ttl,
+        detached,
+        loaders,
+        deadline,
+        upstream_timeout,
+    )
+    .await;
+    let broker = Arc::new(ControlledBroker::new(app.harness.connector.clone()));
+    app.harness.service = GatewayService::new(
+        app.harness.store.clone(),
+        app.harness.connector.clone(),
+        broker.clone(),
+        Arc::new(MockSealer::new()),
+        app.harness.clock.clone(),
+        Arc::new(CircuitTracker::new(CircuitPolicy {
+            failure_threshold: 2,
+            open_for_secs: 60,
+            probe_retry_secs: 1,
+        })),
+        1024,
+    )
+    .with_asset_support(
+        app.cache.clone(),
+        app.failures.clone(),
+        std::time::Duration::from_secs(negative_ttl),
+        detached,
+        loaders,
+        std::time::Duration::from_secs(deadline),
+        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(upstream_timeout),
+    )
+    .with_asset_spawner(Arc::new(|future| drop(tokio::spawn(future))));
+    (app, broker)
+}
+
+async fn try_read_asset(
+    response: re0auth_api::connector::AssetResponse,
+) -> Result<Vec<u8>, UpstreamError> {
+    use futures_util::StreamExt;
+
+    match response {
+        re0auth_api::connector::AssetResponse::Buffered(payload) => Ok(payload.body.to_vec()),
+        re0auth_api::connector::AssetResponse::Streaming(stream) => {
+            let chunks = stream.body.collect::<Vec<_>>().await;
+            let mut body = Vec::new();
+            for chunk in chunks {
+                body.extend_from_slice(&chunk?);
+            }
+            Ok(body)
+        }
+    }
+}
+
+async fn wait_for_asset_cache(cache: &ClockedCache, expected: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while cache.len() != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("asset loader finishes");
+}
+
+async fn wait_for_release(release: &mut tokio::sync::watch::Receiver<bool>) {
+    while !*release.borrow_and_update() {
+        release.changed().await.expect("release sender");
+    }
+}
+
+fn gated_png_stream(release: &tokio::sync::watch::Sender<bool>) -> AssetStream {
+    let mut released = release.subscribe();
+    AssetStream {
+        content_type: "image/png".to_string(),
+        body: Box::pin(
+            futures_util::stream::once(async move { Ok(bytes::Bytes::from_static(png())) }).chain(
+                futures_util::stream::once(async move {
+                    wait_for_release(&mut released).await;
+                    Ok(bytes::Bytes::from_static(b""))
+                }),
+            ),
+        ),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn global_asset_loader_cap_queues_the_third_distinct_key() {
+    let (mut app, broker) = controlled_asset_harness(false, 5, 4, 2, 45, 0).await;
+    for name in ["jacket_two", "jacket_three"] {
+        app.harness.endpoint.resources.push(
+            ResourceSpec::new(name, "/v1/jacket")
+                .expect("asset spec")
+                .with_scope("scores.read")
+                .expect("scope")
+                .with_response(
+                    re0auth_api::connector::ResponseKind::Binary,
+                    vec!["image/png".to_string()],
+                    None,
+                ),
+        );
+        broker.inner.register(app.harness.endpoint.clone());
+    }
+    let (release_tx, _) = tokio::sync::watch::channel(false);
+    for name in ["jacket", "jacket_two", "jacket_three"] {
+        let release = release_tx.clone();
+        broker.set_asset_handler(name, move || Ok(gated_png_stream(&release)));
+    }
+
+    let granted = scopes();
+    let mut tasks = Vec::new();
+    for name in ["jacket", "jacket_two", "jacket_three"] {
+        let service = app.harness.service.clone();
+        let granted = granted.clone();
+        let user = app.harness.user.id;
+        let connector = app.harness.connector_id;
+        tasks.push(tokio::spawn(async move {
+            let response = service
+                .fetch_asset(request(user, connector, &granted, name), Some("image/png"))
+                .await
+                .expect("asset response");
+            read_asset(response).await
+        }));
+    }
+    broker.wait_for_calls(2).await;
+    tokio::task::yield_now().await;
+    assert_eq!(broker.calls(), 2, "only two loaders hold global permits");
+    assert!(!tasks[2].is_finished(), "the third key is still queued");
+
+    release_tx.send(true).expect("release receivers");
+    for task in tasks {
+        assert_eq!(task.await.expect("asset task"), png());
+    }
+    assert_eq!(broker.calls(), 3);
+    assert_eq!(app.cache.len(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn orphan_without_detached_permit_aborts_and_permits_a_fresh_retry() {
+    let (app, broker) = controlled_asset_harness(false, 5, 0, 2, 45, 0).await;
+    let (release_tx, _) = tokio::sync::watch::channel(false);
+    let release = release_tx.clone();
+    broker.set_asset_handler("jacket", move || Ok(gated_png_stream(&release)));
+    let granted = scopes();
+    let response = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("first asset response");
+    drop(response);
+    release_tx.send(true).expect("release receiver");
+    tokio::task::yield_now().await;
+    assert!(app.cache.is_empty(), "an aborted fill caches no prefix");
+
+    broker.set_asset_handler("jacket", || {
+        Ok(AssetStream {
+            content_type: "image/png".to_string(),
+            body: Box::pin(futures_util::stream::once(async {
+                Ok(bytes::Bytes::from_static(png()))
+            })),
+        })
+    });
+    let response = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("fresh flight after orphan abort");
+    assert_eq!(read_asset(response).await, png());
+    assert_eq!(broker.calls(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn orphan_with_detached_permit_finishes_and_populates_cache() {
+    let (app, broker) = controlled_asset_harness(false, 5, 1, 2, 45, 0).await;
+    let (release_tx, _) = tokio::sync::watch::channel(false);
+    let release = release_tx.clone();
+    broker.set_asset_handler("jacket", move || Ok(gated_png_stream(&release)));
+    let granted = scopes();
+    let response = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("first asset response");
+    drop(response);
+    release_tx.send(true).expect("release receiver");
+    wait_for_asset_cache(&app.cache, 1).await;
+
+    let response = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("detached cache hit");
+    assert_eq!(read_asset(response).await, png());
+    assert_eq!(broker.calls(), 1, "the retry never reaches upstream");
+}
+
+#[tokio::test(start_paused = true)]
+async fn asset_deadline_stops_slow_drip_with_attached_subscriber() {
+    let (app, broker) = controlled_asset_harness(false, 5, 1, 2, 1, 0).await;
+    broker.set_asset_handler("jacket", || {
+        Ok(AssetStream {
+            content_type: "image/png".to_string(),
+            body: Box::pin(
+                futures_util::stream::once(async { Ok(bytes::Bytes::from_static(png())) }).chain(
+                    futures_util::stream::once(async {
+                        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                        Ok(bytes::Bytes::from_static(b""))
+                    }),
+                ),
+            ),
+        })
+    });
+    let granted = scopes();
+    let response = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("stream starts before the deadline");
+    let pending = tokio::spawn(try_read_asset(response));
+    tokio::task::yield_now().await;
+    assert!(!pending.is_finished(), "subscriber remains attached");
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    let error = pending
+        .await
+        .expect("subscriber task")
+        .expect_err("deadline rejects the slow drip");
+    assert!(matches!(error, UpstreamError::Unavailable));
+    assert!(app.cache.is_empty());
+    assert!(app.failures.entries.lock().expect("failures").is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn panic_mid_asset_stream_removes_flight_for_fresh_retry() {
+    let (app, broker) = controlled_asset_harness(false, 5, 1, 2, 45, 0).await;
+    broker.set_asset_handler("jacket", || {
+        Ok(AssetStream {
+            content_type: "image/png".to_string(),
+            body: Box::pin(
+                futures_util::stream::once(async { Ok(bytes::Bytes::from_static(png())) }).chain(
+                    futures_util::stream::once(async { panic!("injected asset stream panic") }),
+                ),
+            ),
+        })
+    });
+    let granted = scopes();
+    let response = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("panicking stream starts");
+    let error = try_read_asset(response)
+        .await
+        .expect_err("panic becomes a terminal asset error");
+    assert!(matches!(error, UpstreamError::Internal));
+    assert!(app.cache.is_empty());
+
+    broker.set_asset_handler("jacket", || {
+        Ok(AssetStream {
+            content_type: "image/png".to_string(),
+            body: Box::pin(futures_util::stream::once(async {
+                Ok(bytes::Bytes::from_static(png()))
+            })),
+        })
+    });
+    let response = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect("retry joins a fresh flight");
+    assert_eq!(read_asset(response).await, png());
+    assert_eq!(broker.calls(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn open_asset_circuit_preflights_before_waiting_for_a_loader_permit() {
+    let (mut app, broker) = controlled_asset_harness(false, 0, 1, 1, 45, 0).await;
+    broker.set_asset_handler("jacket", || Err(UpstreamError::Unavailable));
+    let granted = scopes();
+    for _ in 0..2 {
+        let error = app
+            .harness
+            .service
+            .fetch_asset(
+                request(
+                    app.harness.user.id,
+                    app.harness.connector_id,
+                    &granted,
+                    "jacket",
+                ),
+                Some("image/png"),
+            )
+            .await
+            .expect_err("upstream failures open the connector circuit");
+        assert!(matches!(
+            error,
+            GatewayError::Upstream(UpstreamError::Unavailable)
+        ));
+    }
+
+    let healthy = ConnectorId::new();
+    let mut slow_spec = ResourceSpec::new("slow_jacket", "/v1/jacket")
+        .expect("slow asset spec")
+        .with_scope("scores.read")
+        .expect("scope")
+        .with_response(
+            re0auth_api::connector::ResponseKind::Binary,
+            vec!["image/png".to_string()],
+            None,
+        );
+    slow_spec.shared = true;
+    app.harness.connector.register(ConnectorEndpoint {
+        id: healthy,
+        name: "healthy".to_string(),
+        base_url: "https://healthy.example".to_string(),
+        egress: EgressPolicy::Public,
+        resources: vec![slow_spec],
+    });
+    let (release_tx, _) = tokio::sync::watch::channel(false);
+    let release = release_tx.clone();
+    broker.set_asset_handler("slow_jacket", move || Ok(gated_png_stream(&release)));
+    let service = app.harness.service.clone();
+    let slow_granted = granted.clone();
+    let user = app.harness.user.id;
+    let connector = healthy;
+    let slow = tokio::spawn(async move {
+        let response = service
+            .fetch_asset(
+                request(user, connector, &slow_granted, "slow_jacket"),
+                Some("image/png"),
+            )
+            .await
+            .expect("slow loader response");
+        read_asset(response).await
+    });
+    broker.wait_for_calls(3).await;
+
+    let error = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .expect_err("open circuit rejects before permit acquisition");
+    assert!(matches!(error, GatewayError::CircuitOpen { .. }));
+    assert_eq!(broker.calls(), 3, "the open circuit makes no broker call");
+    assert!(!slow.is_finished(), "the other key still owns the loader");
+
+    release_tx.send(true).expect("release receiver");
+    assert_eq!(slow.await.expect("slow loader task"), png());
+}
+
+struct AssetActivity {
+    active: Arc<AtomicUsize>,
+}
+
+impl AssetActivity {
+    fn enter(active: Arc<AtomicUsize>, peak: Arc<AtomicUsize>) -> Self {
+        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+        peak.fetch_max(current, Ordering::SeqCst);
+        Self { active }
+    }
+}
+
+impl Drop for AssetActivity {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn counted_detached_stream(
+    release: &tokio::sync::watch::Sender<bool>,
+    active: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+) -> AssetStream {
+    struct State {
+        release: tokio::sync::watch::Receiver<bool>,
+        first: bool,
+        finished: bool,
+        counted: bool,
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        activity: Option<AssetActivity>,
+    }
+    let state = State {
+        release: release.subscribe(),
+        first: true,
+        finished: false,
+        counted: false,
+        active,
+        peak,
+        activity: None,
+    };
+    AssetStream {
+        content_type: "image/png".to_string(),
+        body: Box::pin(futures_util::stream::unfold(
+            state,
+            |mut state| async move {
+                if state.first {
+                    state.first = false;
+                    return Some((Ok(bytes::Bytes::from_static(png())), state));
+                }
+                if !state.finished {
+                    wait_for_release(&mut state.release).await;
+                    state.finished = true;
+                    return Some((Ok(bytes::Bytes::from_static(b"")), state));
+                }
+                if !state.counted {
+                    state.counted = true;
+                    state.activity = Some(AssetActivity::enter(
+                        state.active.clone(),
+                        state.peak.clone(),
+                    ));
+                    tokio::task::yield_now().await;
+                    return Some((Ok(bytes::Bytes::from_static(b"")), state));
+                }
+                state.activity.take();
+                None
+            },
+        )),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn many_orphaned_asset_keys_obey_the_detached_fill_cap() {
+    const KEYS: usize = 1000;
+    const LOADERS: usize = KEYS;
+    let (mut app, broker) = controlled_asset_harness(false, 5, 2, LOADERS, 45, 0).await;
+    let names = std::iter::once("jacket".to_string())
+        .chain((1..KEYS).map(|index| format!("jacket_{index}")))
+        .collect::<Vec<_>>();
+    for name in &names {
+        app.harness.endpoint.resources.push(
+            ResourceSpec::new(name, "/v1/jacket")
+                .expect("extra asset spec")
+                .with_scope("scores.read")
+                .expect("scope")
+                .with_response(
+                    re0auth_api::connector::ResponseKind::Binary,
+                    vec!["image/png".to_string()],
+                    None,
+                ),
+        );
+        app.harness.connector.register(app.harness.endpoint.clone());
+    }
+    let (release_tx, _) = tokio::sync::watch::channel(false);
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    for name in &names {
+        let release = release_tx.clone();
+        let active = active.clone();
+        let peak = peak.clone();
+        broker.set_asset_handler(name, move || {
+            Ok(counted_detached_stream(
+                &release,
+                active.clone(),
+                peak.clone(),
+            ))
+        });
+    }
+
+    let granted = scopes();
+    let mut tasks = Vec::new();
+    for name in &names {
+        let service = app.harness.service.clone();
+        let granted = granted.clone();
+        let user = app.harness.user.id;
+        let connector = app.harness.connector_id;
+        let name = name.clone();
+        tasks.push(tokio::spawn(async move {
+            let response = service
+                .fetch_asset(request(user, connector, &granted, &name), Some("image/png"))
+                .await
+                .expect("orphan candidate response");
+            drop(response);
+        }));
+    }
+    broker.wait_for_calls(LOADERS).await;
+    for task in tasks {
+        task.await.expect("orphan candidate task");
+    }
+    release_tx.send(true).expect("release receivers");
+    wait_for_asset_cache(&app.cache, 2).await;
+    assert_eq!(app.cache.len(), 2, "aborted fills leave no partial cache");
+    assert_eq!(broker.calls(), KEYS);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert!(
+        peak.load(Ordering::SeqCst) <= 2,
+        "only two detached fills may hold body chunks concurrently"
+    );
+}
+
+async fn add_asset_user(harness: &Harness, display_name: &str) -> UserId {
+    let user = UserId::new();
+    harness
+        .store
+        .users()
+        .create(&User {
+            id: user,
+            display_name: display_name.to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            created_at: 1_000,
+            updated_at: 1_000,
+        })
+        .await
+        .expect("create asset user");
+    user
+}
+
+async fn add_asset_binding(harness: &Harness, display_name: &str) -> (UserId, BindingId) {
+    let user = add_asset_user(harness, display_name).await;
+    let binding = Binding {
+        id: BindingId::new(),
+        user_id: user,
+        upstream_id: "phigros".to_string(),
+        upstream_user_id: display_name.to_string(),
+        status: BindingStatus::Active,
+        created_at: 1_000,
+        updated_at: 1_000,
+        last_refreshed_at: None,
+        last_error_code: None,
+    };
+    harness
+        .store
+        .bindings()
+        .upsert(&binding, &fact_binding())
+        .await
+        .expect("create asset binding");
+    let sealed = MockSealer::new()
+        .seal(&binding.id, &SecretString::from("other-token".to_string()))
+        .expect("seal asset credential");
+    harness
+        .store
+        .bindings()
+        .store_sub_credential(&binding.id, &sealed, 1_000)
+        .await
+        .expect("store asset credential");
+    (user, binding.id)
+}
+
+#[tokio::test]
+async fn private_asset_cache_is_isolated_by_binding() {
+    let app = asset_harness(false).await;
+    app.harness.connector.set_asset_stream(
+        "jacket",
+        "image/png",
+        [bytes::Bytes::from_static(png())],
+    );
+    let (other, other_binding) = add_asset_binding(&app.harness, "other-player").await;
+    let granted = scopes();
+
+    for _ in 0..2 {
+        for user in [app.harness.user.id, other] {
+            let response = app
+                .harness
+                .service
+                .fetch_asset(
+                    request(user, app.harness.connector_id, &granted, "jacket"),
+                    Some("image/png"),
+                )
+                .await
+                .expect("private asset");
+            assert_eq!(read_asset(response).await, png());
+        }
+    }
+
+    assert_eq!(app.harness.connector.calls().len(), 2);
+    assert_eq!(app.cache.len(), 2);
+    let first_key = re0auth_api::cache::key(
+        &app.harness.binding.id,
+        &app.harness.endpoint.name,
+        "jacket",
+    );
+    let second_key = re0auth_api::cache::key(&other_binding, &app.harness.endpoint.name, "jacket");
+    assert!(app.cache.get(&first_key).await.is_some());
+    assert!(app.cache.get(&second_key).await.is_some());
+}
+
+#[tokio::test]
+async fn shared_asset_users_share_one_upstream_call_and_cache_entry() {
+    let app = asset_harness(true).await;
+    app.harness.connector.set_asset_stream(
+        "jacket",
+        "image/png",
+        [bytes::Bytes::from_static(png())],
+    );
+    let other = add_asset_user(&app.harness, "shared-without-binding").await;
+    let granted = scopes();
+
+    for _ in 0..2 {
+        for user in [app.harness.user.id, other] {
+            let response = app
+                .harness
+                .service
+                .fetch_asset(
+                    request(user, app.harness.connector_id, &granted, "jacket"),
+                    Some("image/png"),
+                )
+                .await
+                .expect("shared asset");
+            assert_eq!(read_asset(response).await, png());
+        }
+    }
+
+    assert_eq!(app.harness.connector.calls().len(), 1);
+    assert_eq!(app.cache.len(), 1);
+    let key =
+        re0auth_api::cache::key_shared(&app.harness.endpoint.name, "jacket", &BTreeMap::new());
+    assert!(app.cache.get(&key).await.is_some());
+    assert!(!key.contains(&app.harness.binding.id.0.to_string()));
+}
+
+#[tokio::test]
+async fn unavailable_assets_are_negative_cached_unless_ttl_is_zero() {
+    let app = asset_harness(false).await;
+    app.harness
+        .connector
+        .set_asset_error("jacket", UpstreamError::Unavailable);
+    let granted = scopes();
+    for _ in 0..2 {
+        let error = app
+            .harness
+            .service
+            .fetch_asset(
+                request(
+                    app.harness.user.id,
+                    app.harness.connector_id,
+                    &granted,
+                    "jacket",
+                ),
+                Some("image/png"),
+            )
+            .await
+            .expect_err("cached unavailability");
+        assert!(matches!(
+            error,
+            GatewayError::Upstream(UpstreamError::Unavailable)
+        ));
+    }
+    assert_eq!(app.harness.connector.calls().len(), 1);
+    assert_eq!(app.failures.entries.lock().expect("failures").len(), 1);
+
+    let disabled = asset_harness_with_limits(false, 0, 4, 32, 45, 10).await;
+    disabled
+        .harness
+        .connector
+        .set_asset_error("jacket", UpstreamError::Unavailable);
+    for _ in 0..2 {
+        let error = disabled
+            .harness
+            .service
+            .fetch_asset(
+                request(
+                    disabled.harness.user.id,
+                    disabled.harness.connector_id,
+                    &granted,
+                    "jacket",
+                ),
+                Some("image/png"),
+            )
+            .await
+            .expect_err("uncached unavailability");
+        assert!(matches!(
+            error,
+            GatewayError::Upstream(UpstreamError::Unavailable)
+        ));
+    }
+    assert_eq!(disabled.harness.connector.calls().len(), 2);
+    assert!(
+        disabled
+            .failures
+            .entries
+            .lock()
+            .expect("failures")
+            .is_empty()
+    );
+}
+
+async fn assert_avif_box(body: &'static [u8], accepted: bool) {
+    let app = asset_harness(false).await;
+    app.harness.connector.set_asset_stream(
+        "jacket",
+        "image/avif",
+        body.chunks(4)
+            .map(bytes::Bytes::copy_from_slice)
+            .collect::<Vec<_>>(),
+    );
+    let granted = scopes();
+    let result = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/avif"),
+        )
+        .await;
+    if accepted {
+        assert_eq!(read_asset(result.expect("valid AVIF")).await, body);
+        assert_eq!(app.cache.len(), 1);
+    } else {
+        let error = result.expect_err("invalid AVIF");
+        assert!(matches!(
+            error,
+            GatewayError::Upstream(UpstreamError::ContractChanged)
+        ));
+        assert!(app.cache.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn avif_loader_waits_for_the_entire_ftyp_box() {
+    let compatible_at_16: &'static [u8] = b"\0\0\0\x18ftypmif1\0\0\0\0aviftest";
+    let compatible_at_20: &'static [u8] = b"\0\0\0\x18ftypmiaf\0\0\0\0testavif";
+    assert_avif_box(compatible_at_16, true).await;
+    assert_avif_box(compatible_at_20, true).await;
+    assert_avif_box(b"\0\0\0\x18ftypmif1\0\0\0\0testtest", false).await;
+    assert_avif_box(b"\0\0\0\x18ftypmif1\0\0\0\0avif", false).await;
+    assert_avif_box(b"\0\0\0\x10ftypavif\0\0\0\0", true).await;
+    assert_avif_box(b"\0\0\0\x0cftypavif\0\0\0\0", false).await;
+    assert_avif_box(b"\0\0\x01\x01ftypavif\0\0\0\0aviftest", false).await;
+}
+
+#[tokio::test]
+async fn ten_asset_requests_share_one_loader_and_start_at_chunk_zero() {
+    let app = asset_harness(false).await;
+    app.harness.connector.set_asset_stream(
+        "jacket",
+        "image/png",
+        [
+            bytes::Bytes::from_static(b"\x89PNG\r\n\x1a\nbo"),
+            bytes::Bytes::from_static(b"d"),
+            bytes::Bytes::from_static(b"y"),
+        ],
+    );
+    let granted = scopes();
+    let requests = (0..10).map(|_| {
+        let service = app.harness.service.clone();
+        let granted = granted.clone();
+        let user = app.harness.user.id;
+        let connector = app.harness.connector_id;
+        async move {
+            let response = service
+                .fetch_asset(
+                    request(user, connector, &granted, "jacket"),
+                    Some("image/png"),
+                )
+                .await
+                .expect("asset response");
+            read_asset(response).await
+        }
+    });
+    let bodies = futures_util::future::join_all(requests).await;
+    assert!(bodies.iter().all(|body| body == png()));
+    assert_eq!(app.harness.connector.calls().len(), 1);
+    assert_eq!(app.cache.len(), 1);
+}
+
+#[tokio::test]
+async fn shared_assets_need_no_binding_but_private_assets_still_do() {
+    let app = asset_harness(true).await;
+    app.harness.connector.set_asset_stream(
+        "jacket",
+        "image/png",
+        [bytes::Bytes::from_static(png())],
+    );
+    let other = UserId::new();
+    app.harness
+        .store
+        .users()
+        .create(&User {
+            id: other,
+            display_name: "shared-user".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            created_at: 1_000,
+            updated_at: 1_000,
+        })
+        .await
+        .expect("user");
+    let granted = scopes();
+    let response = app
+        .harness
+        .service
+        .fetch_asset(
+            request(other, app.harness.connector_id, &granted, "jacket"),
+            Some("image/png"),
+        )
+        .await
+        .expect("shared request without binding");
+    assert_eq!(read_asset(response).await, png());
+
+    let private = asset_harness(false).await;
+    private
+        .harness
+        .store
+        .users()
+        .create(&User {
+            id: other,
+            display_name: "private-user".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            created_at: 1_000,
+            updated_at: 1_000,
+        })
+        .await
+        .expect("user");
+    let error = private
+        .harness
+        .service
+        .fetch_asset(
+            request(other, private.harness.connector_id, &granted, "jacket"),
+            Some("image/png"),
+        )
+        .await
+        .err()
+        .expect("private binding required");
+    assert!(matches!(error, GatewayError::BindingRequired));
+}
+
+#[tokio::test]
+async fn negative_assets_expire_on_the_injected_clock() {
+    let app = asset_harness(false).await;
+    app.harness
+        .connector
+        .set_asset_error("jacket", UpstreamError::NotFound);
+    let granted = scopes();
+    for _ in 0..2 {
+        let error = app
+            .harness
+            .service
+            .fetch_asset(
+                request(
+                    app.harness.user.id,
+                    app.harness.connector_id,
+                    &granted,
+                    "jacket",
+                ),
+                Some("image/png"),
+            )
+            .await
+            .err()
+            .expect("negative response");
+        assert!(matches!(
+            error,
+            GatewayError::Upstream(UpstreamError::NotFound)
+        ));
+    }
+    assert_eq!(app.harness.connector.calls().len(), 1);
+    app.harness.set_now(1_006);
+    app.harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .err()
+        .expect("expired negative");
+    assert_eq!(app.harness.connector.calls().len(), 2);
+}
+
+#[tokio::test]
+async fn accept_magic_and_normalized_route_are_enforced() {
+    let app = asset_harness(false).await;
+    let granted = scopes();
+    let error = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/jpeg"),
+        )
+        .await
+        .err()
+        .expect("unacceptable type");
+    assert!(matches!(error, GatewayError::NotAcceptable));
+
+    app.harness.connector.set_asset_stream(
+        "jacket",
+        "image/png",
+        [bytes::Bytes::from_static(br#"{"not":"png"}"#)],
+    );
+    let error = app
+        .harness
+        .service
+        .fetch_asset(
+            request(
+                app.harness.user.id,
+                app.harness.connector_id,
+                &granted,
+                "jacket",
+            ),
+            Some("image/png"),
+        )
+        .await
+        .err()
+        .expect("magic mismatch");
+    assert!(matches!(
+        error,
+        GatewayError::Upstream(UpstreamError::ContractChanged)
+    ));
+    assert!(app.cache.is_empty());
+
+    let error = app
+        .harness
+        .service
+        .fetch(request(
+            app.harness.user.id,
+            app.harness.connector_id,
+            &granted,
+            "jacket",
+        ))
+        .await
+        .err()
+        .expect("normalized fetch rejects binary");
+    assert!(matches!(
+        error,
+        GatewayError::InvalidRequest("binary resource requires /api/v1/assets")
+    ));
+}
+
+#[tokio::test]
+async fn shared_json_fetch_skips_binding_and_subject() {
+    let mut app = asset_harness(true).await;
+    let mut spec = ResourceSpec::new("public_stats", "/v1/public")
+        .expect("shared JSON spec")
+        .with_scope("scores.read")
+        .expect("scope");
+    spec.shared = true;
+    app.harness.endpoint.resources.push(spec);
+    app.harness.connector.register(app.harness.endpoint.clone());
+    app.harness
+        .connector
+        .set_response("public_stats", Ok(payload(br#"{"available":true}"#)));
+    let user = add_asset_user(&app.harness, "shared-json").await;
+    let granted = scopes();
+    let payload = app
+        .harness
+        .service
+        .fetch(request(
+            user,
+            app.harness.connector_id,
+            &granted,
+            "public_stats",
+        ))
+        .await
+        .expect("shared JSON without binding");
+    let document: serde_json::Value = serde_json::from_slice(&payload.body).expect("envelope");
+    assert_eq!(document["data"], serde_json::json!({"available": true}));
+    let calls = app.harness.connector.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].subject, "");
 }

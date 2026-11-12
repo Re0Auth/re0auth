@@ -153,6 +153,34 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
                         path: JsonPath::parse("$.id").expect("path"),
                     }],
                 }),
+            ResourceSpec::new("song", "/v1/songs/{song}")
+                .expect("spec")
+                .with_scope(SCOPE)
+                .expect("scope")
+                .with_params(vec![re0auth_api::connector::ParamSpec {
+                    name: "song".to_string(),
+                    upstream: "song".to_string(),
+                    location: re0auth_api::connector::ParamLocation::Path,
+                    kind: re0auth_api::connector::ParamKind::String,
+                    required: true,
+                    min_len: Some(1),
+                    max_len: Some(64),
+                    min: None,
+                    max: None,
+                    values: Vec::new(),
+                    array: false,
+                    max_items: None,
+                }])
+                .expect("path param"),
+            ResourceSpec::new("jacket", "/v1/jacket")
+                .expect("spec")
+                .with_scope(SCOPE)
+                .expect("scope")
+                .with_response(
+                    re0auth_api::connector::ResponseKind::Binary,
+                    vec!["image/png".to_string()],
+                    None,
+                ),
         ],
     });
 
@@ -219,7 +247,8 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
         clock,
         Arc::new(CircuitTracker::new(CircuitPolicy::default())),
         4 * 1024 * 1024,
-    );
+    )
+    .with_asset_spawner(Arc::new(|future| drop(tokio::spawn(future))));
     let state = re0auth_http::AppState::new(oauth, auth)
         .with_gateway(Arc::new(gateway))
         .with_rate_limiter(rate);
@@ -710,4 +739,157 @@ async fn s14_gateway_responses_disable_sniffing() {
             .expect("nosniff header"),
         "nosniff"
     );
+}
+
+async fn asset_response(
+    fixture: &Fixture,
+    uri: &str,
+    accept: Option<&str>,
+) -> axum::response::Response {
+    let token = access_token(fixture, SCOPE);
+    let mut request = Request::builder()
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"));
+    if let Some(accept) = accept {
+        request = request.header("accept", accept);
+    }
+    fixture
+        .router
+        .clone()
+        .oneshot(request.body(Body::empty()).expect("request"))
+        .await
+        .expect("response")
+}
+
+#[tokio::test]
+async fn binary_asset_route_streams_configured_bytes_and_headers() {
+    let fixture = fixture().await;
+    fixture.connector.set_asset_stream(
+        "jacket",
+        "image/png",
+        [bytes::Bytes::from_static(b"\x89PNG\r\n\x1a\nbody")],
+    );
+    let response = asset_response(&fixture, "/api/v1/assets/probe/jacket", Some("image/png")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("asset body");
+    assert_eq!(body.as_ref(), b"\x89PNG\r\n\x1a\nbody");
+}
+
+#[tokio::test]
+async fn binary_asset_route_rejects_bad_accept_and_wrong_public_route() {
+    let fixture = fixture().await;
+    let (status, body) = {
+        let response = asset_response(&fixture, "/api/v1/assets/probe/jacket", None).await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("problem");
+        (status, body)
+    };
+    assert_eq!(status, StatusCode::NOT_ACCEPTABLE);
+    assert!(String::from_utf8_lossy(&body).contains("not_acceptable"));
+
+    let response = asset_response(&fixture, "/api/v1/assets/probe/scores", Some("image/png")).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("problem");
+    assert!(String::from_utf8_lossy(&body).contains("unknown_resource"));
+
+    let response = asset_response(
+        &fixture,
+        "/api/v1/upstreams/probe/jacket",
+        Some("image/png"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("problem");
+    assert!(String::from_utf8_lossy(&body).contains("binary resource requires /api/v1/assets"));
+}
+
+#[tokio::test]
+async fn dynamic_path_values_survive_query_decoding_and_single_segment_encoding() {
+    let fixture = fixture().await;
+    fixture.connector.set_response(
+        "song",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"ok":true}"#.to_vec(),
+        }),
+    );
+    let token = access_token(&fixture, SCOPE);
+    for (wire, decoded, encoded) in [
+        ("IN%2FOUT", "IN/OUT", "IN%2FOUT"),
+        (
+            "%E7%8B%82%E5%96%9C%E8%98%AD%E8%88%9E",
+            "\u{72c2}\u{559c}\u{862d}\u{821e}",
+            "%E7%8B%82%E5%96%9C%E8%98%AD%E8%88%9E",
+        ),
+        ("Ain%20Soph%20Aur", "Ain Soph Aur", "Ain%20Soph%20Aur"),
+        ("v1.2", "v1.2", "v1.2"),
+        ("IN%2B", "IN+", "IN%2B"),
+        ("Re:End", "Re:End", "Re%3AEnd"),
+        ("te.st@example", "te.st@example", "te.st%40example"),
+        ("IN+", "IN ", "IN%20"),
+        ("C%23", "C#", "C%23"),
+        ("What%3F", "What?", "What%3F"),
+        ("A%26B", "A&B", "A%26B"),
+        ("A%25B", "A%B", "A%25B"),
+    ] {
+        let uri = format!("/api/v1/upstreams/probe/song?song={wire}");
+        let (status, _) = get(&fixture, &uri, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        let calls = fixture.connector.calls();
+        let call = calls.last().expect("upstream call");
+        assert_eq!(call.params["song"].as_query_string(), decoded);
+        let path =
+            std::collections::BTreeMap::from([("song".to_string(), call.params["song"].clone())]);
+        let url = re0auth_connectors::connector::build_url(
+            "https://upstream.test",
+            "/v1/songs/{song}",
+            &call.subject,
+            &path,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("upstream URL");
+        assert_eq!(url, format!("https://upstream.test/v1/songs/{encoded}"));
+    }
+}
+
+#[tokio::test]
+async fn dynamic_path_values_reject_traversal_controls_and_bad_utf8() {
+    let fixture = fixture().await;
+    let token = access_token(&fixture, SCOPE);
+    for wire in [
+        "%2F",
+        "%2F%2F",
+        "a%2F..%2Fb",
+        "..",
+        ".",
+        "",
+        "%FF",
+        "%5C",
+        "%00",
+    ] {
+        let uri = format!("/api/v1/upstreams/probe/song?song={wire}");
+        let (status, _) = get(&fixture, &uri, Some(&token)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+    }
+    assert!(fixture.connector.calls().is_empty());
+
+    let (status, body) = get(
+        &fixture,
+        "/api/v1/upstreams/probe/song/schema",
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(String::from_utf8_lossy(&body).contains("unknown_resource"));
 }

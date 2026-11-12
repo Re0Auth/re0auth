@@ -30,6 +30,7 @@ pub(crate) fn gateway_error(error: GatewayError) -> ApiError {
         }
         GatewayError::ConnectorNotFound | GatewayError::UnknownResource => StatusCode::NOT_FOUND,
         GatewayError::RawNotAllowed => StatusCode::FORBIDDEN,
+        GatewayError::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
         GatewayError::CircuitOpen { .. } => StatusCode::SERVICE_UNAVAILABLE,
         GatewayError::Upstream(UpstreamError::CredentialExpired) => StatusCode::UNAUTHORIZED,
         GatewayError::Upstream(UpstreamError::InsufficientScope) => StatusCode::FORBIDDEN,

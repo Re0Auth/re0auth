@@ -58,6 +58,14 @@ pub struct CatalogResource {
     pub data_schema: Option<String>,
     /// Where the schema can be fetched directly, if one is declared.
     pub schema_url: Option<String>,
+    /// The public response representation: `json` or `binary`.
+    pub response: String,
+    /// Media types accepted and emitted by a binary resource.
+    pub content_types: Vec<String>,
+    /// Per-resource binary body cap, when configured.
+    pub max_bytes: Option<u64>,
+    /// Whether the resource uses a binding-free shared cache key.
+    pub shared: bool,
     pub params: Vec<CatalogParam>,
     pub paginated: bool,
 }
@@ -227,6 +235,10 @@ mod tests {
                 raw_path: "/api/v1/raw/phigros-query/save".to_string(),
                 data_schema: Some("PhigrosQuerySaveData".to_string()),
                 schema_url: Some("/api/v1/upstreams/phigros-query/save/schema".to_string()),
+                response: "json".to_string(),
+                content_types: Vec::new(),
+                max_bytes: None,
+                shared: false,
                 params: Vec::new(),
                 paginated: false,
             }],

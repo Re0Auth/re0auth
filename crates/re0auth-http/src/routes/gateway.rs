@@ -5,15 +5,17 @@ use std::net::SocketAddr;
 
 use crate::catalog::{self, Catalog};
 use axum::Json;
+use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
+use percent_encoding::percent_decode_str;
+use re0auth_api::connector::AssetResponse;
 use re0auth_api::rate::Lane;
 use re0auth_app::gateway::{GatewayRequest, Pagination};
 use re0auth_app::oauth::OAuthError;
-use url::form_urlencoded;
 
-use crate::parsers::bearer_token;
+use crate::parsers::{bearer_token, has_malformed_escape};
 use crate::rate::{charge, charge_unauthenticated};
 use crate::request_id;
 use crate::{
@@ -136,6 +138,110 @@ pub(crate) async fn fetch_upstream(
     .await
 }
 
+/// Binary asset fetch: `GET /api/v1/assets/{connector}/{resource}`.
+///
+/// Uses the same token, scope, and rate-limit pipeline as normalized fetch. The
+/// gateway validates the configured media types and coalesces the response body.
+#[utoipa::path(
+    get,
+    path = "/api/v1/assets/{connector}/{resource}",
+    tag = "gateway",
+    security(("bearer" = [])),
+    params(
+        ("connector" = String, Path, description = "The configured connector id."),
+        ("resource" = String, Path, description = "A binary resource name declared in that connector's config."),
+        ("Accept" = String, Header, description = "Must allow one of the resource's configured image content types, or */*.")
+    ),
+    responses(
+        (status = 200, body = String, content_type = "image/*", description = "The configured binary image, without a JSON envelope."),
+        (status = 401, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 403, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 404, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 406, body = crate::ProblemBody, content_type = "application/problem+json"),
+        (status = 502, body = crate::ProblemBody, content_type = "application/problem+json")
+    )
+)]
+pub(crate) async fn fetch_asset(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path((connector, resource)): Path<(String, String)>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let params = parse_query(raw.as_deref())?;
+    charge_unauthenticated(
+        &state,
+        &state.client_address(addr, &headers),
+        Shape::Problem,
+    )?;
+    let Some(gateway) = state.gateway.clone() else {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "unknown_connector",
+            "no connector is configured",
+        ));
+    };
+    let token = bearer_token(&headers)
+        .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Problem))?;
+    let (user_id, granted, client_id) = state
+        .oauth
+        .verify_gateway_token(&token)
+        .await
+        .map_err(|error| oauth_error(error, Shape::Problem))?;
+    charge(&state, Lane::Authenticated, &client_id, Shape::Problem)?;
+    charge(
+        &state,
+        Lane::PerUser,
+        &user_id.0.to_string(),
+        Shape::Problem,
+    )?;
+    let connector_id = re0auth_app::gateway::connector_id_for_name(&connector);
+    let scopes: Vec<String> = granted
+        .split_ascii_whitespace()
+        .map(ToString::to_string)
+        .collect();
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok());
+    let asset = gateway
+        .fetch_asset(
+            GatewayRequest {
+                user_id,
+                client_id: &client_id,
+                granted_scopes: &scopes,
+                connector_id,
+                resource: &resource,
+                raw: false,
+                correlation_id: request_id::of(&headers),
+                params: &params,
+                pagination: Pagination::default(),
+            },
+            accept,
+        )
+        .await
+        .map_err(|error| match error {
+            re0auth_app::gateway::GatewayError::UnknownResource => error_response(
+                StatusCode::NOT_FOUND,
+                "unknown_resource",
+                "the resource is not a configured binary asset",
+            ),
+            other => gateway_error(other),
+        })?;
+    let (content_type, body) = match asset {
+        AssetResponse::Buffered(payload) => (payload.content_type, Body::from(payload.body)),
+        AssetResponse::Streaming(stream) => (stream.content_type, Body::from_stream(stream.body)),
+    };
+    let mut response = Response::new(body);
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, gateway_content_type(&content_type));
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    Ok(no_store(response))
+}
+
 /// Raw view: `GET /api/v1/raw/{connector}/{resource}`.
 ///
 /// Same pipeline as `fetch_upstream`, plus INV-RAW-01's two gates. The response
@@ -185,22 +291,35 @@ fn parse_query(raw: Option<&str>) -> Result<BTreeMap<String, Vec<String>>, ApiEr
         return Err(invalid_request("query string is too long", Shape::Problem));
     }
     let mut params: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (pair_index, (key, value)) in form_urlencoded::parse(raw.as_bytes()).enumerate() {
+    for (pair_index, pair) in raw.split('&').filter(|pair| !pair.is_empty()).enumerate() {
         if pair_index >= 32 {
             return Err(invalid_request("too many query parameters", Shape::Problem));
         }
+        let (raw_key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = decode_query_component(raw_key)
+            .ok_or_else(|| invalid_request("invalid query encoding", Shape::Problem))?;
+        let value = decode_query_component(raw_value)
+            .ok_or_else(|| invalid_request("invalid query encoding", Shape::Problem))?;
         if key.is_empty() {
             return Err(invalid_request(
                 "empty query parameter name",
                 Shape::Problem,
             ));
         }
-        params
-            .entry(key.into_owned())
-            .or_default()
-            .push(value.into_owned());
+        params.entry(key).or_default().push(value);
     }
     Ok(params)
+}
+
+fn decode_query_component(raw: &str) -> Option<String> {
+    if has_malformed_escape(raw) {
+        return None;
+    }
+    let form = raw.replace('+', " ");
+    percent_decode_str(&form)
+        .decode_utf8()
+        .ok()
+        .map(std::borrow::Cow::into_owned)
 }
 
 /// Reads a key that may appear once, rejecting repeats.
@@ -328,6 +447,30 @@ mod query_tests {
         let page = pagination(&params).expect("pagination");
         assert_eq!(page.limit, Some(10));
         assert_eq!(page.cursor.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn path_query_values_decode_strictly_after_pair_splitting() {
+        for (raw, expected) in [
+            ("IN%2FOUT", "IN/OUT"),
+            (
+                "%E7%8B%82%E5%96%9C%E8%98%AD%E8%88%9E",
+                "\u{72c2}\u{559c}\u{862d}\u{821e}",
+            ),
+            ("Ain%20Soph%20Aur", "Ain Soph Aur"),
+            ("IN%2B", "IN+"),
+            ("IN+", "IN "),
+            ("C%23", "C#"),
+            ("What%3F", "What?"),
+            ("A%26B", "A&B"),
+            ("A%25B", "A%B"),
+        ] {
+            let params = parse_query(Some(&format!("song={raw}"))).expect("valid query");
+            assert_eq!(params["song"], [expected]);
+        }
+        for raw in ["song=%FF", "song=%ZZ", "song=%"] {
+            assert!(parse_query(Some(raw)).is_err(), "{raw}");
+        }
     }
 
     #[test]
