@@ -973,6 +973,8 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     // Kept for the retention job: the scheduler takes ownership of `clock`.
     let retention_clock = clock.clone();
     let scheduler = re0auth_runtime::Scheduler::new(clock, shutdown.clone());
+    let telemetry_scheduler =
+        re0auth_runtime::Scheduler::new(retention_clock.clone(), shutdown.clone());
     // The limiter's keyed store is the one piece of state that grows with every
     // distinct IP and client id and never shrinks on its own, so it is swept
     // here rather than left to accumulate for the life of the process.
@@ -1002,8 +1004,8 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
         sweep as Arc<dyn ScheduledTask>,
         prune as Arc<dyn ScheduledTask>,
         retention as Arc<dyn ScheduledTask>,
-        telemetry as Arc<dyn ScheduledTask>,
     ]);
+    let telemetry_handle = telemetry_scheduler.start(vec![telemetry as Arc<dyn ScheduledTask>]);
 
     axum::serve(
         listener,
@@ -1016,6 +1018,7 @@ async fn serve(cfg: config::Config) -> anyhow::Result<()> {
     // shutdown never leaves a half-written cleanup behind.
     shutdown.cancel();
     let _ = scheduler_handle.await;
+    let _ = telemetry_handle.await;
     tracing::info!("re0auth-server stopped");
     Ok(())
 }
