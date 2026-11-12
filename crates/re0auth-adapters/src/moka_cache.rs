@@ -21,9 +21,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use moka::future::Cache as Moka;
 use moka::sync::Cache as SyncMoka;
-use re0auth_api::Clock;
 use re0auth_api::cache::{Cache, CachedResponse, FailureCache};
 use re0auth_api::connector::UpstreamError;
+use re0auth_api::{BindingId, Clock};
 
 /// How long past its fresh TTL an entry may still be served during an outage.
 ///
@@ -192,6 +192,30 @@ impl Cache for MokaCache {
         }
         doomed.len()
     }
+
+    async fn invalidate_bindings(&self, bindings: &[BindingId]) -> usize {
+        let Some(first) = bindings.first() else {
+            return 0;
+        };
+        let prefix_len = re0auth_api::cache::binding_prefix(first).len();
+        let prefixes: std::collections::HashSet<String> = bindings
+            .iter()
+            .map(re0auth_api::cache::binding_prefix)
+            .collect();
+        let doomed: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(key, _)| {
+                key.get(..prefix_len)
+                    .is_some_and(|prefix| prefixes.contains(prefix))
+            })
+            .map(|(key, _)| key.as_ref().clone())
+            .collect();
+        for key in &doomed {
+            self.entries.invalidate(key).await;
+        }
+        doomed.len()
+    }
 }
 
 #[cfg(test)]
@@ -318,5 +342,28 @@ mod tests {
             .await;
         assert_eq!(removed, 2);
         assert!(cache.get(&survivor).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn bulk_binding_sweep_only_removes_the_requested_bindings() {
+        let (_clock, cache) = setup();
+        let first = re0auth_api::BindingId::new();
+        let second = re0auth_api::BindingId::new();
+        let survivor = re0auth_api::BindingId::new();
+        let value = CachedResponse::new("application/json", b"x".to_vec());
+        for binding in [first, second, survivor] {
+            cache
+                .put(
+                    &re0auth_api::cache::key(&binding, "phigros", "scores"),
+                    &value,
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
+
+        let removed = cache.invalidate_bindings(&[first, second]).await;
+        assert_eq!(removed, 2);
+        let survivor_key = re0auth_api::cache::key(&survivor, "phigros", "scores");
+        assert!(cache.get(&survivor_key).await.is_some());
     }
 }

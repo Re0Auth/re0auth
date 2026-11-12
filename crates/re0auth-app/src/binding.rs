@@ -529,6 +529,7 @@ impl BindingService {
     ) -> Result<BindingRevocationSummary, AuthError> {
         let now = self.clock.now();
         let mut revoked = 0u64;
+        let mut revoked_ids = Vec::new();
         let mut failed = Vec::new();
         for binding in bindings {
             if binding.status == BindingStatus::Revoked {
@@ -557,7 +558,7 @@ impl BindingService {
             {
                 Ok(()) => {
                     // INV-CACHE-02: 本地已生效，扫缓存不能被后面的错误跳过。
-                    self.cache.invalidate(&binding_prefix(&binding.id)).await;
+                    revoked_ids.push(binding.id);
                     revoked += 1;
                 }
                 Err(RepoError::NotFound) => {}
@@ -577,6 +578,7 @@ impl BindingService {
                 }
             }
         }
+        self.cache.invalidate_bindings(&revoked_ids).await;
         Ok(BindingRevocationSummary { revoked, failed })
     }
 

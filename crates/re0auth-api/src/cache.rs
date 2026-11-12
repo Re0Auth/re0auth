@@ -215,6 +215,14 @@ pub trait Cache: Send + Sync {
     /// (INV-CACHE-02). Returns how many entries were removed, so callers can
     /// tell "nothing was cached" from "the sweep silently failed".
     async fn invalidate(&self, prefix: &str) -> usize;
+    /// 批量删除绑定条目，重叠项只删一次。
+    async fn invalidate_bindings(&self, bindings: &[BindingId]) -> usize {
+        let mut removed = 0;
+        for binding in bindings {
+            removed += self.invalidate(&binding_prefix(binding)).await;
+        }
+        removed
+    }
 }
 
 /// A cache that stores nothing. Used where no cache is configured, so call
