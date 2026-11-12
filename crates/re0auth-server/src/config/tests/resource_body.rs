@@ -1,7 +1,7 @@
 use super::super::connector::{ResourceConfig, ViewConfig};
-use super::super::{load_config, validate};
+use super::super::validate;
 use super::{example, phihub_resource, resource_with_view, string_param};
-use std::path::Path;
+use figment::providers::Format;
 
 fn body_resource() -> ResourceConfig {
     phihub_resource("sync_read", "/get/cloud/sync", &[])
@@ -92,20 +92,23 @@ fn body_placeholders_are_whitelisted_at_config_load() {
     assert_eq!(spec.raw_body.expect("raw")["literal"], "{{credntial}}");
 }
 
+/// The document is inline because the real `config.phihub.toml` is
+/// operator-local and excluded from the repository, so a checkout has no
+/// such file and the test failed on "missing field `server`".
 #[test]
 fn phihub_sync_read_preserves_null_and_is_not_idempotent() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.phihub.toml");
-    let config = load_config(&path).expect("config.phihub.toml is valid");
-    let connector = config
-        .connectors
-        .iter()
-        .find(|connector| connector.id == "phihub")
-        .expect("phihub connector");
-    let resource = connector
-        .resources
-        .iter()
-        .find(|resource| resource.name == "sync_read")
-        .expect("sync_read");
+    let raw = r#"
+name = "sync_read"
+path = "/get/cloud/sync"
+scope = "phihub.save.read"
+method = "post"
+idempotent = false
+body = {}
+body_json = '{"history": null}'
+"#;
+    let resource: ResourceConfig = figment::Figment::from(figment::providers::Toml::string(raw))
+        .extract()
+        .expect("sync_read document");
     let spec = resource.to_spec().expect("sync_read spec");
     assert_eq!(spec.raw_body, Some(serde_json::json!({"history": null})));
     assert!(!spec.idempotent);
