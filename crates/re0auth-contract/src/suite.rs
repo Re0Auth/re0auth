@@ -881,6 +881,27 @@ pub async fn consent_contract<S: Storage>(store: &S) {
         .grant(&first, &fact(AuditAction::ConsentGranted, 1_400, "consent"))
         .await
         .expect("interactive regrant");
+    let changed = store
+        .consents()
+        .grant(
+            &Consent {
+                updated_at: 1_500,
+                ..regranted.clone()
+            },
+            &fact(AuditAction::ConsentGranted, 1_500, "consent"),
+        )
+        .await
+        .expect("consent change");
+    let stale = store
+        .consents()
+        .grant_if_live(
+            &changed,
+            &fact(AuditAction::ConsentGranted, 1_600, "device"),
+            changed.updated_at,
+        )
+        .await
+        .expect("stale device grant");
+    assert!(stale.is_none(), "any newer consent change must win");
     assert_eq!(regranted.version, ConsentVersion(6));
 }
 

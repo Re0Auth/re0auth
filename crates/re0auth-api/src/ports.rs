@@ -822,11 +822,8 @@ pub trait ConsentRepo: Send + Sync {
     /// the grant in the same transaction (INV-AUDIT-01). The returned row is the
     /// stored one; its `version` is what newly issued access tokens must carry.
     async fn grant(&self, consent: &Consent, fact: &SecurityFact) -> RepoResult<Consent>;
-    /// Inserts or updates a consent only while it is live.
-    ///
-    /// A revoked row returns `None` instead of being revived. Device-flow grants
-    /// use this: only an explicit approval on the consent page may clear
-    /// `revoked_at` (INV-AUTHZ-02).
+    /// 仅在同意未于流程开始后变化时写入。
+    /// 命中变更时返回 `None`，且不留下审计记录。
     async fn grant_if_live(
         &self,
         consent: &Consent,

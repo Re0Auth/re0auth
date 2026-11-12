@@ -932,10 +932,7 @@ impl ConsentRepo for MemoryStore {
         let key = (consent.user_id, consent.client_id);
         let mut stored = consent.clone();
         if let Some(existing) = inner.consents.get(&key) {
-            if existing
-                .revoked_at
-                .is_some_and(|revoked| revoked >= revive_after)
-            {
+            if existing.updated_at >= revive_after {
                 return Ok(None);
             }
             stored.id = existing.id;
