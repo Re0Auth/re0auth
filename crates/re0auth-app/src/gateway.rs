@@ -150,14 +150,13 @@ pub struct Envelope<'a> {
 ///
 /// `fetched_at` travels with the data so a cache hit can keep telling the truth
 /// about when the upstream was actually read.
-#[derive(Serialize, serde::Deserialize)]
 struct CachedView {
     fetched_at: i64,
     /// The view-applied JSON, already encoded.
     ///
     /// Keeping bytes (rather than a `Value`) means a cache hit splices the data
     /// into the envelope instead of rebuilding the whole JSON tree.
-    data: Vec<u8>,
+    data: bytes::Bytes,
 }
 
 const DEFAULT_PAGE_LIMIT: u32 = 20;
@@ -206,7 +205,8 @@ impl CachedView {
                 ViewOutput::Items(items) => Value::Array(items),
             },
         };
-        let data = serde_json::to_vec(&data).map_err(|_| GatewayError::Internal)?;
+        let data =
+            bytes::Bytes::from(serde_json::to_vec(&data).map_err(|_| GatewayError::Internal)?);
         Ok(Self { fetched_at, data })
     }
 
@@ -214,22 +214,22 @@ impl CachedView {
     ///
     /// A hand-rolled header rather than a JSON wrapper: the point is to avoid
     /// re-serialising the view on the way into the cache.
-    fn encode(&self) -> Result<Vec<u8>, GatewayError> {
-        let mut out = Vec::with_capacity(8 + self.data.len());
+    fn encode(&self) -> Result<bytes::Bytes, GatewayError> {
+        let mut out = bytes::BytesMut::with_capacity(8 + self.data.len());
         out.extend_from_slice(&self.fetched_at.to_be_bytes());
         out.extend_from_slice(&self.data);
-        Ok(out)
+        Ok(out.freeze())
     }
 
-    fn decode(body: &[u8]) -> Result<Self, GatewayError> {
+    fn decode(body: bytes::Bytes) -> Result<Self, GatewayError> {
         if body.len() < 8 {
             return Err(GatewayError::Internal);
         }
-        let (head, data) = body.split_at(8);
-        let fetched_at = i64::from_be_bytes(head.try_into().map_err(|_| GatewayError::Internal)?);
+        let fetched_at =
+            i64::from_be_bytes(body[..8].try_into().map_err(|_| GatewayError::Internal)?);
         Ok(Self {
             fetched_at,
-            data: data.to_vec(),
+            data: body.slice(8..),
         })
     }
 }
@@ -738,7 +738,7 @@ impl GatewayService {
         }
         if !request.raw {
             if let Some(cached) = self.cache.get(&cache_key).await {
-                let snapshot = CachedView::decode(cached.body())?;
+                let snapshot = CachedView::decode(cached.body_bytes())?;
                 self.observer.cache_hit(&endpoint.name, request.resource);
                 self.record_access(&request, &endpoint, AccessSource::Cache, 0);
                 return self.normalized(&request, &endpoint, list_view, snapshot);
@@ -1416,10 +1416,10 @@ mod p01_tests {
     fn p01_cached_bytes_round_trip_and_splice_into_valid_json() {
         let cached = CachedView {
             fetched_at: 1_700_000_000,
-            data: br#"{"score":42}"#.to_vec(),
+            data: bytes::Bytes::from_static(br#"{"score":42}"#),
         };
         let encoded = cached.encode().expect("encode");
-        let decoded = CachedView::decode(&encoded).expect("decode");
+        let decoded = CachedView::decode(encoded).expect("decode");
         assert_eq!(decoded.fetched_at, cached.fetched_at);
         assert_eq!(decoded.data, cached.data);
 
@@ -1445,19 +1445,19 @@ mod p01_tests {
         ) {
             let view = CachedView {
                 fetched_at,
-                data: data.clone(),
+                data: bytes::Bytes::from(data.clone()),
             };
-            let decoded = CachedView::decode(&view.encode().expect("encode"))
+            let decoded = CachedView::decode(view.encode().expect("encode"))
                 .expect("decode");
             prop_assert_eq!(decoded.fetched_at, fetched_at);
-            prop_assert_eq!(decoded.data, data);
+            prop_assert_eq!(decoded.data, bytes::Bytes::from(data));
         }
 
         #[test]
         fn p01_bodies_shorter_than_the_header_are_rejected(
             data in proptest::collection::vec(any::<u8>(), 0..8),
         ) {
-            prop_assert!(CachedView::decode(&data).is_err());
+            prop_assert!(CachedView::decode(bytes::Bytes::from(data)).is_err());
         }
 
         #[test]
