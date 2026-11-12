@@ -19,6 +19,7 @@
 	let cursor = $state<string | null>(null);
 	let loading = $state(true);
 	let loadingMore = $state(false);
+	let querySequence = 0;
 	let error = $state('');
 	let notice = $state('');
 	let busyId = $state('');
@@ -42,6 +43,7 @@
 	}
 
 	async function load(reset: boolean): Promise<void> {
+		const request = ++querySequence;
 		error = '';
 		if (reset) {
 			loading = true;
@@ -53,13 +55,17 @@
 			const params = queryParams();
 			if (!reset && cursor) params.set('cursor', cursor);
 			const page = await apiGet(`/api/admin/bindings?${params}`, adminBindingPageSchema);
+			if (request !== querySequence) return;
 			items = reset ? page.items : [...items, ...page.items];
 			cursor = page.next_cursor;
 		} catch (cause) {
+			if (request !== querySequence) return;
 			error = describe(cause);
 		} finally {
-			loading = false;
-			loadingMore = false;
+			if (request === querySequence) {
+				loading = false;
+				loadingMore = false;
+			}
 		}
 	}
 
