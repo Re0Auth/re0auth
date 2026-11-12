@@ -43,6 +43,13 @@ signing_key_file = "data/signing-key.pem"
 upstream_response_bytes = 4194304
 upstream_inflight_bytes = 67108864
 inbound_body_bytes = 1048576
+# detached_fill_concurrency：客户端全断开后仍允许的资产后台填充数（默认 4）。
+# max_active_asset_loaders：前台与后台资产加载器的全局总数上限（默认 32）。
+# detached_deadline_secs：单个资产加载器的总时限（默认 45）；
+# 实际下限为 2 * timeouts.upstream_secs，慢速传输不能无限占用内存。
+# detached_fill_concurrency = 4
+# max_active_asset_loaders = 32
+# detached_deadline_secs = 45
 
 # 分层限流（INV-RATE-01）。三条车道互相独立：
 # unauthenticated 按客户端 IP 计数，保护匿名入口（设备码申请、令牌端点）；
@@ -67,6 +74,10 @@ inbound_body_bytes = 1048576
 # enabled = true
 # ttl_secs = 300
 # max_bytes = 8388608
+# 二进制资产使用独立加权 LRU（最近最少使用）缓存与字节预算，默认 512 MiB。
+# asset_max_bytes = 536870912
+# 404、502 与内容契约错误的短负缓存默认 5 秒；0 关闭，最大 60。
+# asset_negative_ttl_secs = 5
 
 # Prometheus 指标。默认关闭；开启后 /metrics 仍只允许本地回环或管理员会话。
 # [metrics]
@@ -205,8 +216,17 @@ inbound_body_bytes = 1048576
 # scope = "phigros.records.read"
 #
 # 读取方法对上游无感（ADR-0046）：默认 GET。上游只提供 POST + 请求体时，
-# 声明 method 与 body；body 的值只能是常量、{subject} 或 {credential}，
-# 由服务端生成，请求方无法添加字段。
+# 声明 method 与 body；body 保留 JSON 类型，可写嵌套表、数组、布尔值与数值。
+# body_json 用 JSON 字符串声明完整对象，支持任意深度与 null；两者同时存在时，
+# 新服务使用 body_json，body 仅供滚动发布期间的旧服务解析，但两者都会校验。
+# 字符串中的 {subject} 与 {credential} 在发送前替换，可嵌入 "Bearer {credential}"；
+# {{ 与 }} 分别转义为字面量 { 与 }，例如 {{subject}} 不会替换。
+# 类型化占位符必须独占整个字符串：{subject:int} / {subject:uint} 输出整数，
+# {subject:number} 输出有限浮点数，{subject:bool} 接受 true/false/1/0。
+# {subject:int} 会丢弃前导零；前导零有意义的 ID 必须保留为普通字符串。
+# 64 位平台 ID（Steam ID、snowflake 等）同样必须保留为普通字符串：
+# {subject:uint} 只用于上游强制原生 JSON 数值且 ID 确认不超过 2^53-1 的场景，
+# 否则 JavaScript 等 IEEE-754 消费方会丢失精度。credential 没有类型化形式。
 # 上游确实不需要请求体时，显式写 `body = {}`（发送 JSON 空对象）；
 # 完全不写 body 仍视为配置错误，避免漏写。
 # idempotent 默认：GET 为 true，POST 为 false（POST 未被声明为可重试前不重试）。
@@ -244,7 +264,7 @@ inbound_body_bytes = 1048576
 # 网关排序去重后写进上游（body 里是 JSON 数组，query 里是重复键）。
 # [[connectors.resources.params]]
 # name = "song_id"
-# in = "query"          # query（默认）或 body；body 仅限 method = "post"
+# in = "query"          # query（默认）/ body / path；body 仅限 method = "post"
 # upstream = "songId"   # 可选，上游字段名；默认与 name 相同
 # kind = "string"       # string / enum / integer / number / boolean
 # required = true
@@ -254,6 +274,30 @@ inbound_body_bytes = 1048576
 # array = false         # true 时下游可重复该 key，按集合处理
 # max_items = 8         # 仅 array；上限 32，默认 32
 # integer/number 用 min/max；最多 16 个参数，单值长度上限 256
+#
+# in = "path" 时，公共请求仍通过查询参数传值（例如 ?song=IN%2FOUT）；
+# 网关把值编码成 path 模板中的一个上游路径段，不增加公共 URL 路径形状。
+# path 参数必须 required = true、array = false、kind = string 或 enum，
+# upstream 必须对应模板占位符，例如 path = "/jackets/{song}"。
+# + 按查询 form 规则解码为空格；字面加号写 %2B，内容斜杠写 %2F。
+#
+# 图片使用独立 /api/v1/assets/{connector}/{resource} 路由：
+# response = "binary" 时必须声明具体 content_types，不接受 SVG、通配符或 octet-stream；
+# max_bytes 可进一步缩小单资源上限，但不能超过 limits.upstream_response_bytes。
+# shared = true 只用于无需玩家凭据的公共资源（曲绘、横幅等），复用跨用户缓存；
+# 此时路径、body/body_json 及所有参数声明都不得引用 {subject}/{credential}。
+# [[connectors.resources]]
+# name = "jacket"
+# path = "/jackets/{song}"
+# scope = "phigros.jacket.read"
+# response = "binary"
+# content_types = ["image/png", "image/webp", "image/avif"]
+# shared = true
+# [[connectors.resources.params]]
+# name = "song"
+# in = "path"
+# kind = "string"
+# required = true
 #
 # 可选：让用户在本实例上绑定这个上游（INV-BIND-03）。
 # 不写这一段，绑定路由对这个 connector 返回 404——它仍可服务

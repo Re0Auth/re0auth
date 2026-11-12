@@ -142,6 +142,7 @@ GET    /api/v1/upstreams
 GET    /api/v1/upstreams/{connector}/{resource}/schema
 GET    /api/v1/upstreams/{connector}/{resource}
 GET    /api/v1/raw/{connector}/{resource}
+GET    /api/v1/assets/{connector}/{resource}
 GET    /api/admin/stats
 GET    /api/admin/clients
 POST   /api/admin/clients

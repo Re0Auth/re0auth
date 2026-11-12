@@ -1839,6 +1839,107 @@
         ]
       }
     },
+    "/api/v1/assets/{connector}/{resource}": {
+      "get": {
+        "tags": [
+          "gateway"
+        ],
+        "summary": "Binary asset fetch: `GET /api/v1/assets/{connector}/{resource}`.",
+        "description": "Uses the same token, scope, and rate-limit pipeline as normalized fetch. The\ngateway validates the configured media types and coalesces the response body.",
+        "operationId": "fetch_asset",
+        "parameters": [
+          {
+            "name": "connector",
+            "in": "path",
+            "description": "The configured connector id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource",
+            "in": "path",
+            "description": "A binary resource name declared in that connector's config.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Accept",
+            "in": "header",
+            "description": "Must allow one of the resource's configured image content types, or */*.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The configured binary image, without a JSON envelope.",
+            "content": {
+              "image/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/raw/{connector}/{resource}": {
       "get": {
         "tags": [
@@ -3661,16 +3762,35 @@
           "scope",
           "path",
           "raw_path",
+          "response",
+          "content_types",
+          "shared",
           "params",
           "paginated"
         ],
         "properties": {
+          "content_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Media types accepted and emitted by a binary resource."
+          },
           "data_schema": {
             "type": [
               "string",
               "null"
             ],
             "description": "Name of the schema in `openapi.json` components, if one is declared."
+          },
+          "max_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Per-resource binary body cap, when configured.",
+            "minimum": 0
           },
           "method": {
             "type": "string",
@@ -3694,6 +3814,10 @@
           "raw_path": {
             "type": "string"
           },
+          "response": {
+            "type": "string",
+            "description": "The public response representation: `json` or `binary`."
+          },
           "schema_url": {
             "type": [
               "string",
@@ -3703,6 +3827,10 @@
           },
           "scope": {
             "type": "string"
+          },
+          "shared": {
+            "type": "boolean",
+            "description": "Whether the resource uses a binding-free shared cache key."
           },
           "upstream_method": {
             "type": "string"
