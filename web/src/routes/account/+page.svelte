@@ -78,16 +78,18 @@
 		}
 		try {
 			me = await apiGet('/api/me', meSchema);
-			authorizations = await apiGet('/api/me/authorizations', authorizationsSchema);
-			bindings = await apiGet('/api/me/bindings', bindingsSchema);
-			identities = await apiGet('/api/me/identities', identitiesSchema);
-			try {
-				const available = await apiGet('/api/me/bindings/upstreams', bindableUpstreamsSchema);
-				bindableUpstreams = available.upstreams;
-			} catch {
-				// Binding is opt-in per deployment; an unconfigured instance has none.
-				bindableUpstreams = [];
-			}
+			const [authorizationPage, bindingPage, identityPage, available] = await Promise.all([
+				apiGet('/api/me/authorizations', authorizationsSchema),
+				apiGet('/api/me/bindings', bindingsSchema),
+				apiGet('/api/me/identities', identitiesSchema),
+				apiGet('/api/me/bindings/upstreams', bindableUpstreamsSchema).catch(() => ({
+					upstreams: []
+				}))
+			]);
+			authorizations = authorizationPage;
+			bindings = bindingPage;
+			identities = identityPage;
+			bindableUpstreams = available.upstreams;
 		} catch (cause) {
 			if (cause instanceof ApiError && cause.status === 401 && cause.code !== 'missing_csrf') {
 				openLogin(currentLocation());
