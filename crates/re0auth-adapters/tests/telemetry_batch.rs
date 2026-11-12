@@ -41,3 +41,26 @@ async fn a_bad_batch_row_does_not_roll_back_the_other_rows() {
     assert_eq!(failures.len(), 1);
     assert_eq!(store.audits().count().await.expect("count"), 2);
 }
+
+#[tokio::test]
+async fn retention_purges_every_expired_batch() {
+    let store = SqliteStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+    let records: Vec<_> = (0..1_001).map(|_| record()).collect();
+    let (appended, failures) = store
+        .audits()
+        .append_batch(&records)
+        .await
+        .expect("seed telemetry");
+    assert_eq!(appended, 1_001);
+    assert!(failures.is_empty());
+
+    let purged = store
+        .audits()
+        .purge_tier_before(AuditTier::Telemetry, 1_000)
+        .await
+        .expect("purge");
+    assert_eq!(purged, 1_001);
+    assert_eq!(store.audits().count().await.expect("count"), 0);
+}

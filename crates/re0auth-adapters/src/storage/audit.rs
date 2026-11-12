@@ -193,13 +193,26 @@ impl AuditRepo for SqliteStore {
     }
 
     async fn purge_tier_before(&self, tier: AuditTier, before: Unix) -> RepoResult<u64> {
-        let result = sqlx::query("DELETE FROM audit_logs WHERE tier = ? AND occurred_at <= ?")
+        const BATCH_SIZE: i64 = 500;
+        let mut purged = 0;
+        loop {
+            let result = sqlx::query(
+                "DELETE FROM audit_logs WHERE rowid IN (\
+                 SELECT rowid FROM audit_logs WHERE tier = ? AND occurred_at <= ? LIMIT ?\
+                 )",
+            )
             .bind(tier.as_str())
             .bind(before)
+            .bind(BATCH_SIZE)
             .execute(&self.pool)
             .await
             .map_err(db_error)?;
-        Ok(result.rows_affected())
+            let rows = result.rows_affected();
+            purged += rows;
+            if rows < BATCH_SIZE as u64 {
+                return Ok(purged);
+            }
+        }
     }
 
     async fn query(
