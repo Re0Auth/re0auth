@@ -235,6 +235,34 @@ function createClient(config: string, name: string): string {
 		.slice('client_id='.length);
 }
 
+function createAdminSession(config: string): { name: string; value: string; url: string } {
+	const created = spawnSync(
+		binary,
+		['--config', config, 'admin', 'create-user', '--display-name', 'Race Admin', '--role', 'admin'],
+		{ encoding: 'utf8' }
+	);
+	if (created.status !== 0) throw new Error(`create admin failed: ${created.stderr}`);
+	const userId = created.stdout
+		.split('\n')
+		.find((line) => line.startsWith('user_id='))
+		?.slice('user_id='.length);
+	if (!userId) throw new Error('admin user id was not returned');
+	const createdSession = spawnSync(
+		binary,
+		['--config', config, 'admin', 'create-session', '--user-id', userId],
+		{ encoding: 'utf8' }
+	);
+	if (createdSession.status !== 0) {
+		throw new Error(`create admin session failed: ${createdSession.stderr}`);
+	}
+	const line = createdSession.stdout
+		.split('\n')
+		.find((line) => line.startsWith('session_cookie='));
+	if (!line) throw new Error('admin session cookie was not returned');
+	const [name, value] = line.slice('session_cookie='.length).split('=');
+	return { name, value, url: APP };
+}
+
 async function startRe0auth(): Promise<void> {
 	work = await mkdtemp(path.join(tmpdir(), 're0auth-e2e-'));
 	const config = path.join(work, 'config.toml');
@@ -451,5 +479,59 @@ test('account attaches a second login method and keeps the last one', async ({ b
 	await expect(methods.getByRole('button', { name: /移除来自/ })).toBeDisabled();
 
 	idpSubject = 'e2e-user';
+	await context.close();
+});
+
+test('admin audit keeps the newest filter response', async ({ browser }) => {
+	const cookie = createAdminSession(path.join(work, 'config.toml'));
+	const context = await browser.newContext();
+	await context.addCookies([cookie]);
+	const page = await context.newPage();
+	const auditRow = (target: string) => ({
+		id: target,
+		occurred_at: 1,
+		actor_user_id: null,
+		client_id: null,
+		action: 'user_banned',
+		target,
+		outcome: 'success',
+		severity: 'info',
+		request_id: null,
+		tier: 'fact',
+		detail: '{}'
+	});
+	const initialResponse = Promise.withResolvers<void>();
+	const filteredResponse = Promise.withResolvers<void>();
+	const filteredRequest = Promise.withResolvers<void>();
+	const initialResponded = Promise.withResolvers<void>();
+	const filteredResponded = Promise.withResolvers<void>();
+	await page.route('**/api/admin/audit?*', async (route) => {
+		const actor = new URL(route.request().url()).searchParams.get('actor');
+		if (actor === 'race-filter') {
+			filteredRequest.resolve();
+			await filteredResponse.promise;
+			await route.fulfill({
+				json: { items: [auditRow('current-filter')], next_cursor: null }
+			});
+			filteredResponded.resolve();
+		} else {
+			await initialResponse.promise;
+			await route.fulfill({
+				json: items: [auditRow('stale-filter')], next_cursor: null }
+			});
+			initialResponded.resolve();
+		}
+	});
+	await page.goto('/admin/audit', { waitUntil: 'domcontentloaded' });
+	await page.locator('#audit-actor').fill('race-filter');
+	await page.getByRole('button', { name: '查询' }).click();
+	await filteredRequest.promise;
+	filteredResponse.resolve();
+	await filteredResponded.promise;
+	await expect(page.getByText('current-filter')).toBeVisible();
+	initialResponse.resolve();
+	await initialResponded.promise;
+	await expect(page.getByText('current-filter')).toBeVisible();
+	await expect(page.getByText('stale-filter')).toHaveCount(0);
 	await context.close();
 });
