@@ -1,8 +1,9 @@
 use re0auth_adapters::storage::SqliteStore;
 use re0auth_api::audit::{AuditAction, SecurityFact};
 use re0auth_api::ports::{
-    Binding, BindingStatus, PendingBinding, Storage, User, UserRole, UserStatus,
+    Binding, BindingStatus, PendingBinding, RepoError, Storage, User, UserRole, UserStatus,
 };
+use re0auth_api::secret::SealedSecret;
 use re0auth_api::{BindingId, Unix, UserId};
 
 fn fact() -> SecurityFact {
@@ -59,6 +60,16 @@ async fn legacy_revoked_bindings_gain_a_generation_without_changing_old_flows() 
         .insert(&pending)
         .await
         .expect("legacy flow");
+    let post_revoke_flow = PendingBinding {
+        state_hash: vec![8; 32],
+        created_at: 2_000,
+        ..pending.clone()
+    };
+    store
+        .pending_bindings()
+        .insert(&post_revoke_flow)
+        .await
+        .expect("post-revoke legacy flow");
     store.close().await;
 
     let pool = sqlx::SqlitePool::connect(&url)
@@ -100,6 +111,44 @@ async fn legacy_revoked_bindings_gain_a_generation_without_changing_old_flows() 
         .await
         .expect("legacy pending flow");
     assert_eq!(consumed.revocation_generation, 0);
+    let sealed = SealedSecret::new(
+        1,
+        vec![0x10; 12],
+        vec![0x20; 44],
+        vec![0x30; 12],
+        vec![0x40; 32],
+    )
+    .expect("sealed credential");
+    assert!(matches!(
+        migrated
+            .bindings()
+            .upsert_with_credential(&binding, &sealed, &fact(), 0, 2_000)
+            .await,
+        Err(RepoError::Conflict("binding revoked"))
+    ));
+
+    let post_revoke_flow = migrated
+        .pending_bindings()
+        .consume(&post_revoke_flow.state_hash, 2_000)
+        .await
+        .expect("post-revoke pending flow");
+    assert_eq!(post_revoke_flow.revocation_generation, 1);
+    let requested = Binding {
+        status: BindingStatus::Active,
+        ..binding
+    };
+    let rebound = migrated
+        .bindings()
+        .upsert_with_credential(
+            &requested,
+            &sealed,
+            &fact(),
+            post_revoke_flow.revocation_generation,
+            2_000,
+        )
+        .await
+        .expect("flow started after the old revoke");
+    assert_eq!(rebound.status, BindingStatus::Active);
 
     migrated.users().delete(&user.id).await.expect("cleanup");
     migrated.close().await;
