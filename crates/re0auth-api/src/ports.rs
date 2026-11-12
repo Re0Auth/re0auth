@@ -569,6 +569,13 @@ pub struct Binding {
 #[async_trait]
 pub trait UserRepo: Send + Sync {
     async fn create(&self, user: &User) -> RepoResult<()>;
+    /// 用户、首个身份及审计原子写入。
+    async fn create_with_identity(
+        &self,
+        user: &User,
+        identity: &Identity,
+        fact: &SecurityFact,
+    ) -> RepoResult<()>;
     async fn get(&self, id: &UserId) -> RepoResult<Option<User>>;
     /// Attaches an identity; `(issuer, subject)` is unique across accounts.
     async fn link_identity(&self, identity: &Identity, fact: &SecurityFact) -> RepoResult<()>;

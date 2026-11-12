@@ -1133,7 +1133,6 @@ impl AuthService {
             created_at: now,
             updated_at: now,
         };
-        self.storage.users().create(&user).await?;
         let linked = Identity {
             id: IdentityId::new(),
             user_id: user.id,
@@ -1147,7 +1146,12 @@ impl AuthService {
             format!("identity:{}", linked.id.0),
         )
         .actor(user.id);
-        match self.storage.users().link_identity(&linked, &fact).await {
+        match self
+            .storage
+            .users()
+            .create_with_identity(&user, &linked, &fact)
+            .await
+        {
             Ok(()) => Ok(user.id),
             Err(RepoError::Conflict(_)) => {
                 let existing = self
@@ -1156,7 +1160,9 @@ impl AuthService {
                     .find_by_identity(&identity.issuer, &identity.subject)
                     .await?
                     .ok_or(AuthError::Internal)?;
-                let _ = self.storage.users().delete(&user.id).await;
+                if existing.status == UserStatus::Banned {
+                    return Err(AuthError::AccountBanned);
+                }
                 Ok(existing.id)
             }
             Err(error) => Err(AuthError::Repo(error)),

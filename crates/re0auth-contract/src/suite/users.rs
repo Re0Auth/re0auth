@@ -59,6 +59,29 @@ pub async fn user_contract<S: Storage>(store: &S) {
         Err(RepoError::Conflict(_))
     ));
 
+    let orphan = super::user(now + 1);
+    let conflicting = Identity {
+        id: IdentityId::new(),
+        user_id: orphan.id,
+        ..identity.clone()
+    };
+    assert!(matches!(
+        store
+            .users()
+            .create_with_identity(
+                &orphan,
+                &conflicting,
+                &fact(AuditAction::IdentityAttached, now, "identity"),
+            )
+            .await,
+        Err(RepoError::Conflict(_))
+    ));
+    assert_eq!(
+        store.users().get(&orphan.id).await.expect("rollback"),
+        None,
+        "an identity conflict must not leave a newly inserted user"
+    );
+
     // Attaching a second identity to an existing account is what the account
     // page will call; it must add a row without creating or stealing a user.
     let second = Identity {

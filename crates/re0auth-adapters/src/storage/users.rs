@@ -86,6 +86,42 @@ impl UserRepo for SqliteStore {
         Ok(())
     }
 
+    async fn create_with_identity(
+        &self,
+        user: &User,
+        identity: &Identity,
+        fact: &SecurityFact,
+    ) -> RepoResult<()> {
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        sqlx::query(
+            "INSERT INTO users (id, display_name, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(user.id.0.to_string())
+        .bind(&user.display_name)
+        .bind(role_to_str(user.role))
+        .bind(user_status_to_str(user.status))
+        .bind(user.created_at)
+        .bind(user.updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        sqlx::query(
+            "INSERT INTO identities (id, user_id, issuer, subject, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(identity.id.0.to_string())
+        .bind(identity.user_id.0.to_string())
+        .bind(&identity.issuer)
+        .bind(&identity.subject)
+        .bind(identity.created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        record_fact(&mut tx, fact).await?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(())
+    }
+
     async fn get(&self, id: &UserId) -> RepoResult<Option<User>> {
         let row = sqlx::query(
             "SELECT id, display_name, role, status, created_at, updated_at FROM users WHERE id = ?",

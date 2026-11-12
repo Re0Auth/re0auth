@@ -246,6 +246,26 @@ impl UserRepo for MemoryStore {
         inner.users.insert(user.id, user.clone());
         Ok(())
     }
+    async fn create_with_identity(
+        &self,
+        user: &User,
+        identity: &Identity,
+        fact: &SecurityFact,
+    ) -> RepoResult<()> {
+        let mut inner = self.lock();
+        if inner.users.contains_key(&user.id) {
+            return Err(RepoError::Conflict("user id"));
+        }
+        let key = (identity.issuer.clone(), identity.subject.clone());
+        if inner.identities.contains_key(&key) {
+            return Err(RepoError::Conflict("identity"));
+        }
+        inner.users.insert(user.id, user.clone());
+        inner.identities.insert(key, identity.clone());
+        Self::push_fact(&mut inner, fact);
+        Ok(())
+    }
+
     async fn get(&self, id: &UserId) -> RepoResult<Option<User>> {
         Ok(self.lock().users.get(id).cloned())
     }
