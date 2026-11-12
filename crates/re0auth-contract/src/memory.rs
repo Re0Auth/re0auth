@@ -17,11 +17,11 @@ use re0auth_api::ports::{
     AccessTokenRepo, ApprovalDecision, ApprovalTicket, ApprovalTicketRepo, AuditRepo, AuthCode,
     AuthCodeRepo, AuthGrant, Binding, BindingRepo, BindingStatus, Client, ClientRepo,
     ConnectorRecord, ConnectorRepo, Consent, ConsentRepo, ConsumeAuthCode, DeviceAttemptRepo,
-    DeviceCode, DeviceCodeRepo, DeviceCodeState, DeviceCodeStatus, DevicePoll, Identity,
-    LoginTransaction, LoginTransactionRepo, PendingAuthorization, PendingAuthorizationRepo,
-    PendingBinding, PendingBindingRepo, RefreshToken, RefreshTokenRepo, RepoError, RepoResult,
-    RotateOutcome, RotateRefreshToken, Session, SessionRepo, SigningKeyRecord, SigningKeyRepo,
-    Storage, User, UserRepo, UserRole, UserStatus,
+    DeviceCode, DeviceCodeRepo, DeviceCodeState, Identity, LoginTransaction, LoginTransactionRepo,
+    PendingAuthorization, PendingAuthorizationRepo, PendingBinding, PendingBindingRepo,
+    RefreshToken, RefreshTokenRepo, RepoError, RepoResult, RotateOutcome, RotateRefreshToken,
+    Session, SessionRepo, SigningKeyRecord, SigningKeyRepo, Storage, User, UserRepo, UserRole,
+    UserStatus,
 };
 use re0auth_api::secret::SealedSecret;
 use re0auth_api::{
@@ -32,6 +32,7 @@ use re0auth_api::{
 mod audit;
 mod bindings;
 mod clients;
+mod device_codes;
 mod sessions;
 
 #[derive(Default)]
@@ -393,34 +394,39 @@ impl AuthCodeRepo for MemoryStore {
         Ok(())
     }
 
-    async fn consume(&self, req: ConsumeAuthCode<'_>, now: Unix) -> RepoResult<AuthGrant> {
+    async fn inspect(&self, req: &ConsumeAuthCode<'_>, now: Unix) -> RepoResult<AuthGrant> {
+        let inner = self.lock();
+        let code = validate_auth_code(inner.auth_codes.get(req.code_hash), req, now)?;
+        Ok(grant_of(code))
+    }
+
+    async fn consume_and_insert_refresh(
+        &self,
+        req: ConsumeAuthCode<'_>,
+        refresh: &RefreshToken,
+        now: Unix,
+    ) -> RepoResult<AuthGrant> {
         let mut inner = self.lock();
-        let Some(code) = inner.auth_codes.get_mut(req.code_hash) else {
-            return Err(RepoError::NotFound);
+        let grant = {
+            let code = validate_auth_code(inner.auth_codes.get(req.code_hash), &req, now)?;
+            grant_of(code)
         };
-        if code.consumed_at.is_some() {
-            return Err(RepoError::AlreadyConsumed);
-        }
-        if code.expires_at <= now {
-            return Err(RepoError::Expired);
-        }
-        if code.client_id != req.client_id
-            || code.redirect_uri != req.redirect_uri
-            || code.code_challenge.as_deref() != req.code_challenge
-            || code.code_challenge_method.as_deref() != req.code_challenge_method
-        {
+        // Same preconditions as `RefreshTokenRepo::insert`, checked before the
+        // consumption so a refused insert leaves the code redeemable.
+        if !inner.users.contains_key(&refresh.user_id) {
             return Err(RepoError::NotFound);
         }
-        code.consumed_at = Some(now);
-        code.family_id = Some(req.family_id);
-        Ok(AuthGrant {
-            user_id: code.user_id,
-            client_id: code.client_id,
-            redirect_uri: code.redirect_uri.clone(),
-            scopes: code.scopes.clone(),
-            nonce: code.nonce.clone(),
-            auth_time: code.auth_time,
-        })
+        if inner.refresh_tokens.contains_key(&refresh.token_hash) {
+            return Err(RepoError::Conflict("refresh token hash"));
+        }
+        inner
+            .refresh_tokens
+            .insert(refresh.token_hash.clone(), refresh.clone());
+        if let Some(code) = inner.auth_codes.get_mut(req.code_hash) {
+            code.consumed_at = Some(now);
+            code.family_id = Some(req.family_id);
+        }
+        Ok(grant)
     }
 
     async fn family_and_client_of(
@@ -571,188 +577,6 @@ impl RefreshTokenRepo for MemoryStore {
         // The test double keeps family ids without timestamps, so it cannot
         // decide by age; production retention is covered by the SQLite test.
         Ok(0)
-    }
-}
-
-#[async_trait]
-#[async_trait]
-impl DeviceCodeRepo for MemoryStore {
-    async fn insert(&self, code: &DeviceCode) -> RepoResult<()> {
-        let mut inner = self.lock();
-        if !inner.clients.contains_key(&code.client_id) {
-            return Err(RepoError::NotFound);
-        }
-        if let Some(user) = code.state.approver()
-            && !inner.users.contains_key(&user)
-        {
-            return Err(RepoError::NotFound);
-        }
-        // The user code is the one the caller redraws, so it gets its own signal;
-        // the device code is 8 random bytes and a collision there is a defect, not
-        // a retry.
-        if inner
-            .device_codes
-            .values()
-            .any(|existing| existing.user_code_hash == code.user_code_hash)
-        {
-            return Err(RepoError::UserCodeConflict);
-        }
-        if inner.device_codes.contains_key(&code.device_code_hash) {
-            return Err(RepoError::Conflict("device code hash"));
-        }
-        inner
-            .device_codes
-            .insert(code.device_code_hash.clone(), code.clone());
-        Ok(())
-    }
-
-    async fn find_by_device_hash(&self, hash: &[u8]) -> RepoResult<Option<DeviceCode>> {
-        Ok(self.lock().device_codes.get(hash).cloned())
-    }
-
-    async fn find_by_user_code_hash(&self, hash: &[u8]) -> RepoResult<Option<DeviceCode>> {
-        Ok(self
-            .lock()
-            .device_codes
-            .values()
-            .find(|code| code.user_code_hash == hash)
-            .cloned())
-    }
-
-    async fn approve(&self, user_code_hash: &[u8], user_id: UserId, now: Unix) -> RepoResult<()> {
-        let mut inner = self.lock();
-        if !inner.users.contains_key(&user_id) {
-            return Err(RepoError::NotFound);
-        }
-        let Some(code) = inner
-            .device_codes
-            .values_mut()
-            .find(|code| code.user_code_hash == user_code_hash)
-        else {
-            return Err(RepoError::NotFound);
-        };
-        if code.expires_at <= now {
-            code.state = DeviceCodeState::Expired;
-            return Err(RepoError::Expired);
-        }
-        if !code.state.is_pending() {
-            return Err(RepoError::Conflict("device code is not pending"));
-        }
-        code.state = DeviceCodeState::Approved { approver: user_id };
-        Ok(())
-    }
-
-    async fn deny(&self, user_code_hash: &[u8], now: Unix) -> RepoResult<()> {
-        let mut inner = self.lock();
-        let Some(code) = inner
-            .device_codes
-            .values_mut()
-            .find(|code| code.user_code_hash == user_code_hash)
-        else {
-            return Err(RepoError::NotFound);
-        };
-        if code.expires_at <= now {
-            code.state = DeviceCodeState::Expired;
-            return Err(RepoError::Expired);
-        }
-        if !code.state.is_pending() {
-            return Err(RepoError::Conflict("device code is not pending"));
-        }
-        // This path has no authenticated actor, so it records no approver.
-        code.state = DeviceCodeState::Denied { approver: None };
-        Ok(())
-    }
-
-    async fn revoke_approved_for_client(
-        &self,
-        user: &UserId,
-        client: &ClientId,
-    ) -> RepoResult<u64> {
-        let mut inner = self.lock();
-        let mut revoked = 0;
-        for code in inner.device_codes.values_mut() {
-            if code.client_id == *client
-                && matches!(
-                    &code.state,
-                    DeviceCodeState::Approved { approver } if *approver == *user
-                )
-            {
-                code.state = DeviceCodeState::Denied {
-                    approver: Some(*user),
-                };
-                revoked += 1;
-            }
-        }
-        Ok(revoked)
-    }
-
-    async fn poll(
-        &self,
-        device_code_hash: &[u8],
-        now: Unix,
-        client_id: ClientId,
-        family_id: &FamilyId,
-    ) -> RepoResult<DevicePoll> {
-        let mut inner = self.lock();
-        let Some(code) = inner.device_codes.get_mut(device_code_hash) else {
-            return Ok(DevicePoll::NotFound);
-        };
-
-        if code.client_id != client_id {
-            return Ok(DevicePoll::ClientMismatch);
-        }
-
-        if code.state.status() == DeviceCodeStatus::Consumed {
-            return Ok(DevicePoll::Consumed {
-                family: code.family_id,
-            });
-        }
-        if code.state.status() == DeviceCodeStatus::Denied {
-            return Ok(DevicePoll::Denied);
-        }
-        if code.state.status() == DeviceCodeStatus::Expired || code.expires_at <= now {
-            code.state = DeviceCodeState::Expired;
-            return Ok(DevicePoll::Expired);
-        }
-
-        // No defensive `else` here any more: an approved code always carries
-        // its approver, so the polling path cannot invent an expired code from
-        // a half-written row.
-        if let DeviceCodeState::Approved { approver: user_id } = code.state {
-            code.state = DeviceCodeState::Consumed { approver: user_id };
-            code.consumed_at = Some(now);
-            code.last_polled_at = Some(now);
-            code.family_id = Some(*family_id);
-            return Ok(DevicePoll::Approved {
-                client_id: code.client_id,
-                user_id,
-                scopes: code.scopes.clone(),
-                created_at: code.created_at,
-            });
-        }
-
-        if let Some(last) = code.last_polled_at
-            && now < last + i64::from(code.interval_secs)
-        {
-            code.interval_secs += 5;
-            code.last_polled_at = Some(now);
-            return Ok(DevicePoll::SlowDown {
-                interval_secs: code.interval_secs,
-            });
-        }
-
-        code.last_polled_at = Some(now);
-        code.poll_count += 1;
-        Ok(DevicePoll::Pending)
-    }
-
-    async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {
-        let mut inner = self.lock();
-        let before_len = inner.device_codes.len();
-        inner.device_codes.retain(|_, code| {
-            !(code.expires_at <= before || code.consumed_at.is_some_and(|at| at <= before))
-        });
-        Ok((before_len - inner.device_codes.len()) as u64)
     }
 }
 
@@ -988,6 +812,46 @@ impl ApprovalTicketRepo for MemoryStore {
             !(ticket.expires_at <= before || ticket.consumed_at.is_some_and(|at| at <= before))
         });
         Ok((before_len - inner.approval_tickets.len()) as u64)
+    }
+}
+
+/// The auth-code checks shared by `inspect` and the atomic consumption.
+///
+/// Precedence is the port's: missing beats nothing, a consumed code reports
+/// `AlreadyConsumed` even when it is also expired, and a live code that does
+/// not match the request is indistinguishable from a missing one.
+fn validate_auth_code<'a>(
+    code: Option<&'a AuthCode>,
+    req: &ConsumeAuthCode<'_>,
+    now: Unix,
+) -> RepoResult<&'a AuthCode> {
+    let Some(code) = code else {
+        return Err(RepoError::NotFound);
+    };
+    if code.consumed_at.is_some() {
+        return Err(RepoError::AlreadyConsumed);
+    }
+    if code.expires_at <= now {
+        return Err(RepoError::Expired);
+    }
+    if code.client_id != req.client_id
+        || code.redirect_uri != req.redirect_uri
+        || code.code_challenge.as_deref() != req.code_challenge
+        || code.code_challenge_method.as_deref() != req.code_challenge_method
+    {
+        return Err(RepoError::NotFound);
+    }
+    Ok(code)
+}
+
+fn grant_of(code: &AuthCode) -> AuthGrant {
+    AuthGrant {
+        user_id: code.user_id,
+        client_id: code.client_id,
+        redirect_uri: code.redirect_uri.clone(),
+        scopes: code.scopes.clone(),
+        nonce: code.nonce.clone(),
+        auth_time: code.auth_time,
     }
 }
 

@@ -1909,8 +1909,8 @@ async fn a_signing_failure_does_not_consume_the_refresh_token() {
     drop(app.key);
 }
 
-/// The code is already consumed at this point, but no unreachable refresh row
-/// may be left behind.
+/// Nothing is committed before signing, so the code stays redeemable: the old
+/// implementation consumed it first and left the client holding a 500.
 #[tokio::test]
 async fn a_signing_failure_on_code_exchange_inserts_no_refresh_token() {
     let app = setup().await;
@@ -1921,6 +1921,21 @@ async fn a_signing_failure_on_code_exchange_inserts_no_refresh_token() {
         .exchange_code(app.client_id, None, &code, REDIRECT_URI, VERIFIER)
         .await;
     assert!(matches!(result, Err(OAuthError::Internal)), "{result:?}");
+    assert!(
+        app.store
+            .auth_codes()
+            .family_and_client_of(&hash_secret(&code))
+            .await
+            .expect("family after failed exchange")
+            .is_none(),
+        "a signer failure must not consume the code"
+    );
+
+    // The retry proves it: a burned code would answer invalid_grant.
+    let response = exchange_code(&app, &code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let tokens = body_json(response).await;
+    assert!(tokens["refresh_token"].is_string());
 
     drop(app.key);
 }

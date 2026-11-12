@@ -10,11 +10,11 @@ use anyhow::Context;
 use async_trait::async_trait;
 use re0auth_api::audit::SecurityFact;
 use re0auth_api::ports::{
-    ApprovalDecision, ApprovalTicket, ApprovalTicketRepo, AuthCode, AuthCodeRepo, AuthGrant,
-    Binding, BindingStatus, Client, ClientRepo, ClientStatus, ConsumeAuthCode, DeviceCode,
-    DeviceCodeState, DeviceCodeStatus, LoginPurpose, LoginTransaction, LoginTransactionRepo,
-    PendingBinding, PendingBindingRepo, RefreshToken, RefreshTokenRepo, RepoError, RepoResult,
-    RotateOutcome, RotateRefreshToken, Session, SessionRepo,
+    ApprovalDecision, ApprovalTicket, ApprovalTicketRepo, Binding, BindingStatus, Client,
+    ClientRepo, ClientStatus, DeviceCode, DeviceCodeState, DeviceCodeStatus, LoginPurpose,
+    LoginTransaction, LoginTransactionRepo, PendingBinding, PendingBindingRepo, RefreshToken,
+    RefreshTokenRepo, RepoError, RepoResult, RotateOutcome, RotateRefreshToken, Session,
+    SessionRepo,
 };
 use re0auth_api::secret::ClientSecretHash;
 use re0auth_api::{
@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 mod access_tokens;
 mod audit;
+mod auth_codes;
 mod bindings;
 mod connectors;
 mod consent;
@@ -183,6 +184,37 @@ fn scopes_json(scopes: &[String]) -> RepoResult<String> {
 
 fn scopes_from_json(value: &str) -> RepoResult<Vec<String>> {
     serde_json::from_str(value).map_err(|error| RepoError::Backend(error.to_string()))
+}
+
+/// The refresh-token INSERT, shared by rotation, code exchange and device
+/// exchange so all three agree on the column list.
+pub(super) async fn insert_refresh_row<'e, E>(executor: E, token: &RefreshToken) -> RepoResult<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO refresh_tokens \
+         (id, token_hash, family_id, client_id, user_id, scopes, created_at, \
+          family_created_at, auth_time, expires_at, consumed_at, revoked_at, replaced_by) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(token.id.0.to_string())
+    .bind(token.token_hash.as_slice())
+    .bind(token.family_id.0.to_string())
+    .bind(token.client_id.0.to_string())
+    .bind(token.user_id.0.to_string())
+    .bind(scopes_json(&token.scopes)?)
+    .bind(token.created_at)
+    .bind(token.family_created_at)
+    .bind(token.auth_time)
+    .bind(token.expires_at)
+    .bind(token.consumed_at)
+    .bind(token.revoked_at)
+    .bind(token.replaced_by.map(|id| id.0.to_string()))
+    .execute(executor)
+    .await
+    .map_err(db_error)?;
+    Ok(())
 }
 
 fn status_to_str(status: BindingStatus) -> &'static str {
@@ -564,160 +596,9 @@ impl SessionRepo for SqliteStore {
 }
 
 #[async_trait]
-impl AuthCodeRepo for SqliteStore {
-    async fn insert(&self, code: &AuthCode, fact: &SecurityFact) -> RepoResult<()> {
-        // INV-AUDIT-01: the code and its audit fact land together or not at all.
-        let mut tx = self.pool.begin().await.map_err(db_error)?;
-        sqlx::query(
-            "INSERT INTO auth_codes \
-             (id, code_hash, client_id, user_id, redirect_uri, scopes, code_challenge, \
-              code_challenge_method, nonce, auth_time, created_at, expires_at, consumed_at, family_id) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(code.id.0.to_string())
-        .bind(code.code_hash.as_slice())
-        .bind(code.client_id.0.to_string())
-        .bind(code.user_id.0.to_string())
-        .bind(&code.redirect_uri)
-        .bind(scopes_json(&code.scopes)?)
-        .bind(code.code_challenge.as_deref())
-        .bind(code.code_challenge_method.as_deref())
-        .bind(code.nonce.as_deref())
-        .bind(code.auth_time)
-        .bind(code.created_at)
-        .bind(code.expires_at)
-        .bind(code.consumed_at)
-        .bind(code.family_id.map(|family| family.0.to_string()))
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error)?;
-        record_fact(&mut tx, fact).await?;
-        tx.commit().await.map_err(db_error)?;
-        Ok(())
-    }
-
-    async fn consume(&self, req: ConsumeAuthCode<'_>, now: Unix) -> RepoResult<AuthGrant> {
-        // The UPDATE is the whole check: matching on the challenge with `IS ?`
-        // rather than `=` makes a NULL challenge match a NULL column, so a code
-        // issued without PKCE cannot be redeemed with one (and vice versa). The
-        // row only disappears under RETURNING if every binding still holds,
-        // which is what makes concurrent redemption have exactly one winner.
-        let row = sqlx::query(
-            "UPDATE auth_codes SET consumed_at = ?, family_id = ? \
-             WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ? \
-             AND client_id = ? AND redirect_uri = ? \
-             AND code_challenge IS ? AND code_challenge_method IS ? \
-             RETURNING user_id, client_id, redirect_uri, scopes, nonce, auth_time",
-        )
-        .bind(now)
-        .bind(req.family_id.0.to_string())
-        .bind(req.code_hash)
-        .bind(now)
-        .bind(req.client_id.0.to_string())
-        .bind(req.redirect_uri)
-        .bind(req.code_challenge)
-        .bind(req.code_challenge_method)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_error)?;
-
-        if let Some(row) = row {
-            return Ok(AuthGrant {
-                user_id: UserId(parse_uuid(
-                    &row.try_get::<String, _>("user_id").map_err(db_error)?,
-                )?),
-                client_id: ClientId(parse_uuid(
-                    &row.try_get::<String, _>("client_id").map_err(db_error)?,
-                )?),
-                redirect_uri: row.try_get("redirect_uri").map_err(db_error)?,
-                scopes: scopes_from_json(&row.try_get::<String, _>("scopes").map_err(db_error)?)?,
-                nonce: row.try_get("nonce").map_err(db_error)?,
-                auth_time: row.try_get("auth_time").map_err(db_error)?,
-            });
-        }
-
-        let existing =
-            sqlx::query("SELECT consumed_at, expires_at FROM auth_codes WHERE code_hash = ?")
-                .bind(req.code_hash)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_error)?;
-        let Some(existing) = existing else {
-            return Err(RepoError::NotFound);
-        };
-        let consumed_at: Option<i64> = existing.try_get("consumed_at").map_err(db_error)?;
-        let expires_at: i64 = existing.try_get("expires_at").map_err(db_error)?;
-        if consumed_at.is_some() {
-            Err(RepoError::AlreadyConsumed)
-        } else if expires_at <= now {
-            Err(RepoError::Expired)
-        } else {
-            Err(RepoError::NotFound)
-        }
-    }
-
-    async fn family_and_client_of(
-        &self,
-        code_hash: &[u8],
-    ) -> RepoResult<Option<(FamilyId, ClientId)>> {
-        let row = sqlx::query("SELECT family_id, client_id FROM auth_codes WHERE code_hash = ?")
-            .bind(code_hash)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_error)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let raw: Option<String> = row.try_get("family_id").map_err(db_error)?;
-        let Some(family) = raw else {
-            return Ok(None);
-        };
-        let client = ClientId(parse_uuid(
-            &row.try_get::<String, _>("client_id").map_err(db_error)?,
-        )?);
-        Ok(Some((FamilyId(parse_uuid(&family)?), client)))
-    }
-
-    async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {
-        let result = sqlx::query(
-            "DELETE FROM auth_codes WHERE expires_at <= ? \
-             OR (consumed_at IS NOT NULL AND consumed_at <= ?)",
-        )
-        .bind(before)
-        .bind(before)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(result.rows_affected())
-    }
-}
-
-#[async_trait]
 impl RefreshTokenRepo for SqliteStore {
     async fn insert(&self, token: &RefreshToken) -> RepoResult<()> {
-        sqlx::query(
-            "INSERT INTO refresh_tokens \
-             (id, token_hash, family_id, client_id, user_id, scopes, created_at, \
-              family_created_at, auth_time, expires_at, consumed_at, revoked_at, replaced_by) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(token.id.0.to_string())
-        .bind(token.token_hash.as_slice())
-        .bind(token.family_id.0.to_string())
-        .bind(token.client_id.0.to_string())
-        .bind(token.user_id.0.to_string())
-        .bind(scopes_json(&token.scopes)?)
-        .bind(token.created_at)
-        .bind(token.family_created_at)
-        .bind(token.auth_time)
-        .bind(token.expires_at)
-        .bind(token.consumed_at)
-        .bind(token.revoked_at)
-        .bind(token.replaced_by.map(|id| id.0.to_string()))
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        Ok(())
+        insert_refresh_row(&self.pool, token).await
     }
 
     async fn find(&self, token_hash: &[u8]) -> RepoResult<Option<RefreshToken>> {

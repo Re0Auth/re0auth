@@ -4,6 +4,7 @@
 //! runs all of them; adapters may also call individual suites while migrating.
 
 pub mod approval_ticket;
+pub mod auth_codes;
 pub mod binding;
 pub mod connector;
 pub mod device_attempt;
@@ -12,6 +13,7 @@ pub mod refresh_revoke;
 pub mod users;
 
 pub use approval_ticket::approval_ticket_contract;
+pub use auth_codes::auth_code_contract;
 pub use binding::binding_contract;
 pub use connector::connector_contract;
 pub use device_attempt::device_attempt_contract;
@@ -25,9 +27,9 @@ use re0auth_api::audit::{
 use re0auth_api::oauth::ConsentVersion;
 use re0auth_api::ports::{
     AuditFilter, AuthCode, Binding, BindingQuery, BindingStatus, Client, ClientStatus, Consent,
-    ConsumeAuthCode, DeviceCode, DeviceCodeState, LoginPurpose, LoginTransaction,
-    PendingAuthorization, PendingBinding, RefreshToken, RepoError, RotateOutcome,
-    RotateRefreshToken, Session, Storage, User, UserRole,
+    DeviceCode, DeviceCodeState, LoginPurpose, LoginTransaction, PendingAuthorization,
+    PendingBinding, RefreshToken, RepoError, RotateOutcome, RotateRefreshToken, Session, Storage,
+    User, UserRole,
 };
 use re0auth_api::secret::ClientSecretHash;
 use re0auth_api::{
@@ -90,7 +92,7 @@ fn auth_code(user: UserId, client: ClientId, hash: u8, expires: Unix) -> AuthCod
     }
 }
 
-fn refresh(
+pub(super) fn refresh(
     user: UserId,
     client: ClientId,
     family: FamilyId,
@@ -272,168 +274,6 @@ pub async fn session_contract<S: Storage>(store: &S) {
             .expect("purged lookup"),
         None
     );
-}
-
-pub async fn auth_code_contract<S: Storage>(store: &S) {
-    let now = 1_000;
-    let user = user(now);
-    let client = ClientId::new();
-    store.users().create(&user).await.expect("create user");
-
-    let code = auth_code(user.id, client, 20, 2_000);
-    store
-        .auth_codes()
-        .insert(&code, &fact(AuditAction::AuthCodeIssued, now, "code"))
-        .await
-        .expect("insert code");
-    assert!(matches!(
-        store
-            .auth_codes()
-            .insert(&code, &fact(AuditAction::AuthCodeIssued, now, "code"))
-            .await,
-        Err(RepoError::Conflict(_))
-    ));
-
-    let grant = store
-        .auth_codes()
-        .consume(
-            ConsumeAuthCode {
-                code_hash: &code.code_hash,
-                client_id: client,
-                redirect_uri: &code.redirect_uri,
-                code_challenge: code.code_challenge.as_deref(),
-                code_challenge_method: code.code_challenge_method.as_deref(),
-                family_id: FamilyId::new(),
-            },
-            now,
-        )
-        .await
-        .expect("consume code");
-    assert_eq!(grant.user_id, user.id);
-    assert_eq!(grant.client_id, client);
-    assert_eq!(grant.scopes, code.scopes);
-    assert_eq!(grant.nonce, code.nonce);
-    assert!(matches!(
-        store
-            .auth_codes()
-            .consume(
-                ConsumeAuthCode {
-                    code_hash: &code.code_hash,
-                    client_id: client,
-                    redirect_uri: &code.redirect_uri,
-                    code_challenge: code.code_challenge.as_deref(),
-                    code_challenge_method: code.code_challenge_method.as_deref(),
-                    family_id: FamilyId::new(),
-                },
-                now,
-            )
-            .await,
-        Err(RepoError::AlreadyConsumed)
-    ));
-
-    let expired = auth_code(user.id, client, 21, 1_000);
-    store
-        .auth_codes()
-        .insert(&expired, &fact(AuditAction::AuthCodeIssued, now, "code"))
-        .await
-        .expect("expired code");
-    assert!(matches!(
-        store
-            .auth_codes()
-            .consume(
-                ConsumeAuthCode {
-                    code_hash: &expired.code_hash,
-                    client_id: client,
-                    redirect_uri: &expired.redirect_uri,
-                    code_challenge: expired.code_challenge.as_deref(),
-                    code_challenge_method: expired.code_challenge_method.as_deref(),
-                    family_id: FamilyId::new(),
-                },
-                1_000,
-            )
-            .await,
-        Err(RepoError::Expired)
-    ));
-
-    let mismatch = auth_code(user.id, client, 22, 2_000);
-    store
-        .auth_codes()
-        .insert(&mismatch, &fact(AuditAction::AuthCodeIssued, now, "code"))
-        .await
-        .expect("mismatch code");
-    assert!(matches!(
-        store
-            .auth_codes()
-            .consume(
-                ConsumeAuthCode {
-                    code_hash: &mismatch.code_hash,
-                    client_id: ClientId::new(),
-                    redirect_uri: &mismatch.redirect_uri,
-                    code_challenge: mismatch.code_challenge.as_deref(),
-                    code_challenge_method: mismatch.code_challenge_method.as_deref(),
-                    family_id: FamilyId::new(),
-                },
-                now,
-            )
-            .await,
-        Err(RepoError::NotFound)
-    ));
-    assert!(matches!(
-        store
-            .auth_codes()
-            .consume(
-                ConsumeAuthCode {
-                    code_hash: &mismatch.code_hash,
-                    client_id: client,
-                    redirect_uri: "https://client.example/other",
-                    code_challenge: mismatch.code_challenge.as_deref(),
-                    code_challenge_method: mismatch.code_challenge_method.as_deref(),
-                    family_id: FamilyId::new(),
-                },
-                now,
-            )
-            .await,
-        Err(RepoError::NotFound)
-    ));
-    assert!(matches!(
-        store
-            .auth_codes()
-            .consume(
-                ConsumeAuthCode {
-                    code_hash: &mismatch.code_hash,
-                    client_id: client,
-                    redirect_uri: &mismatch.redirect_uri,
-                    code_challenge: Some("wrong-challenge"),
-                    code_challenge_method: Some("S256"),
-                    family_id: FamilyId::new(),
-                },
-                now,
-            )
-            .await,
-        Err(RepoError::NotFound)
-    ));
-    store
-        .auth_codes()
-        .consume(
-            ConsumeAuthCode {
-                code_hash: &mismatch.code_hash,
-                client_id: client,
-                redirect_uri: &mismatch.redirect_uri,
-                code_challenge: mismatch.code_challenge.as_deref(),
-                code_challenge_method: mismatch.code_challenge_method.as_deref(),
-                family_id: FamilyId::new(),
-            },
-            now,
-        )
-        .await
-        .expect("mismatch did not consume");
-
-    let purged = store
-        .auth_codes()
-        .purge_expired(3_000)
-        .await
-        .expect("purge codes");
-    assert!(purged >= 1, "purge should remove expired rows");
 }
 
 pub async fn refresh_token_contract<S: Storage>(store: &S) {

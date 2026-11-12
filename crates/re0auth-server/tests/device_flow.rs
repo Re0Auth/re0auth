@@ -8,11 +8,12 @@ use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::crypto::RsaTokenSigner;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
-use re0auth_api::ports::{Client, ClientStatus, Storage, User, UserRole};
+use re0auth_api::oauth::{AccessTokenClaims, ApprovalTicketClaims, IdTokenClaims, TokenSigner};
+use re0auth_api::ports::{Client, ClientStatus, DeviceCodeStatus, Storage, User, UserRole};
 use re0auth_api::{ClientId, Clock, UserId};
 use re0auth_app::admin;
 use re0auth_app::auth::AuthService;
-use re0auth_app::oauth::OAuthService;
+use re0auth_app::oauth::{OAuthError, OAuthService};
 use re0auth_http::{AppState, router};
 use serde_json::Value;
 use tower::ServiceExt;
@@ -424,4 +425,81 @@ async fn device_flow_denied_and_expired() {
     let response = poll_device(&app, expired_device).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(response).await["error"], "expired_token");
+}
+
+struct FailingSigner;
+
+impl TokenSigner for FailingSigner {
+    fn sign_access(&self, _: &AccessTokenClaims) -> re0auth_api::Re0Result<String> {
+        Err(re0auth_api::Re0Error::Internal(
+            "signing failed".to_string(),
+        ))
+    }
+    fn sign_id(&self, _: &IdTokenClaims) -> re0auth_api::Re0Result<String> {
+        Err(re0auth_api::Re0Error::Internal(
+            "signing failed".to_string(),
+        ))
+    }
+    fn sign_approval_ticket(&self, _: &ApprovalTicketClaims) -> re0auth_api::Re0Result<String> {
+        panic!("not used")
+    }
+    fn verify_access(&self, _: &str) -> re0auth_api::Re0Result<AccessTokenClaims> {
+        panic!("not used")
+    }
+    fn verify_approval_ticket(&self, _: &str) -> re0auth_api::Re0Result<ApprovalTicketClaims> {
+        panic!("not used")
+    }
+    fn jwks(&self) -> String {
+        panic!("not used")
+    }
+}
+
+/// The real store with a signer that always fails.
+fn failing_service(app: &TestApp) -> OAuthService {
+    OAuthService::new(
+        Arc::new(app.store.clone()),
+        Arc::new(FailingSigner),
+        Arc::new(app.clock.clone()),
+        Arc::new(OsRandom),
+        Arc::new(
+            re0auth_adapters::client_secret::HmacClientSecretHasher::new(TEST_MASTER)
+                .expect("hasher"),
+        ),
+        ISSUER,
+    )
+}
+
+/// 签名失败发生在设备码被消费之前，所以下一次轮询仍能换到令牌。
+#[tokio::test]
+async fn a_signing_failure_leaves_the_device_code_retryable() {
+    let app = setup().await;
+    let authorization = start_device(&app).await;
+    let device_code = authorization["device_code"].as_str().unwrap().to_string();
+    let user_code = authorization["user_code"].as_str().unwrap();
+    admin::approve_device(&app.store, &app.clock, user_code, app.user_id)
+        .await
+        .expect("approve");
+
+    let service = failing_service(&app);
+    let result = service
+        .exchange_device_code(app.client_id, None, &device_code, None)
+        .await;
+    assert!(matches!(result, Err(OAuthError::Internal)), "{result:?}");
+    let stored = app
+        .store
+        .device_codes()
+        .find_by_device_hash(&re0auth_app::oauth::hash_secret(&device_code))
+        .await
+        .expect("find device code")
+        .expect("device code exists");
+    assert_eq!(
+        stored.state.status(),
+        DeviceCodeStatus::Approved,
+        "a signer failure must leave the code approved"
+    );
+
+    let response = poll_device(&app, &device_code).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let tokens = body_json(response).await;
+    assert!(tokens["refresh_token"].is_string());
 }

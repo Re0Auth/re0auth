@@ -223,8 +223,8 @@ pub async fn user_contract<S: Storage>(store: &S) {
     assert!(matches!(
         store
             .auth_codes()
-            .consume(
-                ConsumeAuthCode {
+            .inspect(
+                &ConsumeAuthCode {
                     code_hash: &code.code_hash,
                     client_id: code.client_id,
                     redirect_uri: &code.redirect_uri,

@@ -1,6 +1,6 @@
 //! Device authorization contract (RFC 8628).
 
-use super::{client, device_code, fact, user};
+use super::{client, device_code, fact, refresh, user};
 use re0auth_api::FamilyId;
 use re0auth_api::audit::AuditAction;
 use re0auth_api::ports::{DeviceCodeState, DevicePoll, RepoError, Storage};
@@ -67,7 +67,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_000, client.id, &FamilyId::new())
+            .prepare_poll(&code.device_code_hash, 1_000, client.id)
             .await
             .expect("first poll"),
         DevicePoll::Pending
@@ -78,7 +78,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_001, stranger.id, &FamilyId::new())
+            .prepare_poll(&code.device_code_hash, 1_001, stranger.id)
             .await
             .expect("foreign poll"),
         DevicePoll::ClientMismatch
@@ -97,7 +97,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_002, client.id, &FamilyId::new())
+            .prepare_poll(&code.device_code_hash, 1_002, client.id)
             .await
             .expect("fast poll"),
         DevicePoll::SlowDown { interval_secs: 10 }
@@ -105,7 +105,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_012, client.id, &FamilyId::new())
+            .prepare_poll(&code.device_code_hash, 1_012, client.id)
             .await
             .expect("poll after slow down"),
         DevicePoll::Pending
@@ -117,23 +117,66 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
         .await
         .expect("approve");
     let consumed_family = FamilyId::new();
+    let approved = DevicePoll::Approved {
+        client_id: client.id,
+        user_id: user.id,
+        scopes: vec!["phigros.stats.read".to_string()],
+        created_at: 1_000,
+    };
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_014, client.id, &consumed_family)
+            .prepare_poll(&code.device_code_hash, 1_014, client.id)
             .await
             .expect("approved poll"),
-        DevicePoll::Approved {
-            client_id: client.id,
-            user_id: user.id,
-            scopes: vec!["phigros.stats.read".to_string()],
-            created_at: 1_000,
-        }
+        approved
+    );
+    // Preparing again must not consume: the exchange commits separately.
+    assert_eq!(
+        store
+            .device_codes()
+            .prepare_poll(&code.device_code_hash, 1_015, client.id)
+            .await
+            .expect("repeat prepare"),
+        approved
+    );
+    let token = refresh(user.id, client.id, consumed_family, 0x70, 10_000);
+    assert_eq!(
+        store
+            .device_codes()
+            .consume_and_insert_refresh(
+                &code.device_code_hash,
+                1_016,
+                client.id,
+                &consumed_family,
+                &token,
+            )
+            .await
+            .expect("consume approved code"),
+        approved
+    );
+    assert_eq!(
+        store
+            .refresh_tokens()
+            .find(&token.token_hash)
+            .await
+            .expect("find refresh token"),
+        Some(token.clone())
     );
     assert_eq!(
         store
             .device_codes()
-            .poll(&code.device_code_hash, 1_015, client.id, &FamilyId::new())
+            .find_by_device_hash(&code.device_code_hash)
+            .await
+            .expect("find after consumption")
+            .expect("code exists")
+            .state,
+        DeviceCodeState::Consumed { approver: user.id }
+    );
+    assert_eq!(
+        store
+            .device_codes()
+            .prepare_poll(&code.device_code_hash, 1_017, client.id)
             .await
             .expect("second poll"),
         DevicePoll::Consumed {
@@ -190,12 +233,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(
-                &revocable.device_code_hash,
-                1_020,
-                client.id,
-                &FamilyId::new()
-            )
+            .prepare_poll(&revocable.device_code_hash, 1_020, client.id)
             .await
             .expect("revoked poll"),
         DevicePoll::Denied
@@ -247,7 +285,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&denied.device_code_hash, 1_002, client.id, &FamilyId::new())
+            .prepare_poll(&denied.device_code_hash, 1_002, client.id)
             .await
             .expect("denied poll"),
         DevicePoll::Denied
@@ -262,12 +300,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(
-                &expired.device_code_hash,
-                1_000,
-                client.id,
-                &FamilyId::new()
-            )
+            .prepare_poll(&expired.device_code_hash, 1_000, client.id)
             .await
             .expect("expired poll"),
         DevicePoll::Expired
@@ -275,7 +308,7 @@ pub async fn device_code_contract<S: Storage>(store: &S) {
     assert_eq!(
         store
             .device_codes()
-            .poll(&[0xff; 32], 1_000, client.id, &FamilyId::new())
+            .prepare_poll(&[0xff; 32], 1_000, client.id)
             .await
             .expect("missing poll"),
         DevicePoll::NotFound

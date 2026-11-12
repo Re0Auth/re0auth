@@ -5,9 +5,10 @@ use std::sync::Arc;
 use re0auth_adapters::storage::SqliteStore;
 use re0auth_api::audit::{AuditAction, SecurityFact};
 use re0auth_api::ports::{
-    Client, ClientStatus, DeviceCode, DeviceCodeState, DevicePoll, Storage, User, UserRole,
+    Client, ClientStatus, DeviceCode, DeviceCodeState, DevicePoll, RefreshToken, Storage, User,
+    UserRole,
 };
-use re0auth_api::{ClientId, DeviceCodeId, FamilyId, UserId};
+use re0auth_api::{ClientId, DeviceCodeId, FamilyId, RefreshTokenId, UserId};
 use tokio::sync::Barrier;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -75,16 +76,34 @@ async fn concurrent_device_polls_consume_once() {
     let barrier = Arc::new(Barrier::new(2));
     let client_id = code.client_id;
     let mut tasks = Vec::new();
-    for _ in 0..2 {
+    for index in 0..2u8 {
         let store = store.clone();
         let hash = code.device_code_hash.clone();
         let barrier = barrier.clone();
+        let user_id = user.id;
         tasks.push(tokio::spawn(async move {
+            let family = FamilyId::new();
+            let refresh = RefreshToken {
+                id: RefreshTokenId::new(),
+                token_hash: vec![0x90 + index; 32],
+                family_id: family,
+                client_id,
+                user_id,
+                scopes: vec!["openid".to_string()],
+                created_at: 1_001,
+                family_created_at: 1_001,
+                auth_time: 1_000,
+                expires_at: 10_000,
+                consumed_at: None,
+                revoked_at: None,
+                replaced_by: None,
+            };
             barrier.wait().await;
             store
                 .device_codes()
-                .poll(&hash, 1_001, client_id, &FamilyId::new())
+                .consume_and_insert_refresh(&hash, 1_001, client_id, &family, &refresh)
                 .await
+                .map(|outcome| (outcome, refresh.token_hash))
         }));
     }
 
@@ -92,9 +111,25 @@ async fn concurrent_device_polls_consume_once() {
     let mut consumed = 0;
     for task in tasks {
         match task.await.expect("join") {
-            Ok(DevicePoll::Approved { .. }) => approved += 1,
-            Ok(DevicePoll::Consumed { .. }) => consumed += 1,
-            Ok(other) => panic!("unexpected poll outcome: {other:?}"),
+            Ok((outcome, token_hash)) => {
+                let stored = store
+                    .refresh_tokens()
+                    .find(&token_hash)
+                    .await
+                    .expect("find refresh token")
+                    .is_some();
+                match outcome {
+                    DevicePoll::Approved { .. } => {
+                        approved += 1;
+                        assert!(stored, "the winner must leave its refresh token");
+                    }
+                    DevicePoll::Consumed { .. } => {
+                        consumed += 1;
+                        assert!(!stored, "the loser must not insert a refresh token");
+                    }
+                    other => panic!("unexpected poll outcome: {other:?}"),
+                }
+            }
             Err(error) => panic!("poll must not fail: {error:?}"),
         }
     }

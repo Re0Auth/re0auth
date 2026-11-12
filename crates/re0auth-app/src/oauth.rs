@@ -682,13 +682,10 @@ impl OAuthService {
         let outcome = self
             .storage
             .device_codes()
-            .poll(&hash, now, client_id, &family)
+            .prepare_poll(&hash, now, client_id)
             .await
             .map_err(map_repo)?;
         match outcome {
-            DevicePoll::Pending => Err(OAuthError::AuthorizationPending),
-            DevicePoll::SlowDown { interval_secs } => Err(OAuthError::SlowDown { interval_secs }),
-            DevicePoll::ClientMismatch => Err(OAuthError::InvalidGrant("client mismatch")),
             DevicePoll::Approved {
                 user_id,
                 scopes,
@@ -727,8 +724,8 @@ impl OAuthService {
                     revoked_at: None,
                     replaced_by: None,
                 };
-                // Sign first: a signer failure must not leave a refresh token
-                // nobody can ever learn.
+                // Sign before committing: the device code has not moved yet, so
+                // a signer failure leaves it approved and retryable.
                 let signed = self
                     .sign_tokens(
                         user_id,
@@ -741,21 +738,29 @@ impl OAuthService {
                         &family,
                     )
                     .await?;
-                self.storage
-                    .refresh_tokens()
-                    .insert(&refresh)
+                // 提交：消费设备码与 refresh 落库同事务。
+                match self
+                    .storage
+                    .device_codes()
+                    .consume_and_insert_refresh(&hash, now, client_id, &family, &refresh)
                     .await
-                    .map_err(map_repo)?;
-                Ok(signed.into_response(Some(refresh_raw)))
+                    .map_err(map_repo)?
+                {
+                    DevicePoll::Approved { .. } => Ok(signed.into_response(Some(refresh_raw))),
+                    DevicePoll::Consumed { family } => {
+                        self.revoke_replayed_device_code(family, client_id, now)
+                            .await?;
+                        Err(OAuthError::InvalidGrant("device code already consumed"))
+                    }
+                    other => Err(device_poll_error(other)),
+                }
             }
-            DevicePoll::Denied => Err(OAuthError::AccessDenied),
-            DevicePoll::Expired => Err(OAuthError::ExpiredToken),
             DevicePoll::Consumed { family } => {
                 self.revoke_replayed_device_code(family, client_id, now)
                     .await?;
                 Err(OAuthError::InvalidGrant("device code already consumed"))
             }
-            DevicePoll::NotFound => Err(OAuthError::InvalidGrant("unknown device code")),
+            other => Err(device_poll_error(other)),
         }
     }
 
@@ -767,7 +772,7 @@ impl OAuthService {
         redirect_uri: &str,
         code_verifier: &str,
     ) -> Result<TokenResponse, OAuthError> {
-        // Before `consume`: a wrong secret must not burn the code.
+        // Before `inspect`: a wrong secret must not burn the code.
         self.authenticate_client(client_id, client_secret).await?;
         // 先校验 verifier 语法
         if !pkce::is_valid_verifier(code_verifier) {
@@ -777,22 +782,16 @@ impl OAuthService {
         let code_hash = hash_secret(code);
         let now = self.clock.now();
         let family_id = FamilyId::new();
-        let attempt = self
-            .storage
-            .auth_codes()
-            .consume(
-                ConsumeAuthCode {
-                    code_hash: &code_hash,
-                    client_id,
-                    redirect_uri,
-                    code_challenge: Some(&challenge),
-                    code_challenge_method: Some("S256"),
-                    family_id,
-                },
-                now,
-            )
-            .await;
-        let grant = match attempt {
+        let attempt = ConsumeAuthCode {
+            code_hash: &code_hash,
+            client_id,
+            redirect_uri,
+            code_challenge: Some(&challenge),
+            code_challenge_method: Some("S256"),
+            family_id,
+        };
+        // 预检不写状态：签名失败或 consent 拒绝时授权码仍可重试。
+        let grant = match self.storage.auth_codes().inspect(&attempt, now).await {
             Ok(grant) => grant,
             // 重放则回收该码签发的令牌
             Err(RepoError::AlreadyConsumed) => {
@@ -824,8 +823,8 @@ impl OAuthService {
             revoked_at: None,
             replaced_by: None,
         };
-        // Sign first: a signer failure must not leave an unreachable refresh
-        // row behind. The auth code is already consumed either way.
+        // Sign before committing: nothing has been written yet, so a signer
+        // failure leaves the code redeemable instead of burning it.
         let signed = self
             .sign_tokens(
                 grant.user_id,
@@ -838,11 +837,22 @@ impl OAuthService {
                 &family_id,
             )
             .await?;
-        self.storage
-            .refresh_tokens()
-            .insert(&refresh)
+        // 提交：消费码与 refresh 落库同事务，失败则授权码保持未消费。
+        match self
+            .storage
+            .auth_codes()
+            .consume_and_insert_refresh(attempt, &refresh, now)
             .await
-            .map_err(map_repo)?;
+        {
+            Ok(_) => {}
+            Err(RepoError::AlreadyConsumed) => {
+                // Two requests passed `inspect`; exactly one commits.
+                self.revoke_replayed_code(&code_hash, client_id, now)
+                    .await?;
+                return Err(OAuthError::InvalidGrant("already consumed"));
+            }
+            Err(error) => return Err(map_repo(error)),
+        }
 
         Ok(signed.into_response(Some(refresh_raw)))
     }
@@ -1455,35 +1465,23 @@ fn map_repo(error: RepoError) -> OAuthError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use re0auth_api::ports::MissingBinding;
-
-    /// The schema twin must stay field-for-field equal to the port type it
-    /// stands in for; nothing else can catch the two drifting apart.
-    #[test]
-    fn missing_bindings_shape_matches_the_port() {
-        let port = MissingBinding {
-            upstream_id: "phihub".to_string(),
-            scopes: vec!["save_info".to_string()],
-        };
-        let shape = super::MissingBindingShape {
-            upstream_id: port.upstream_id.clone(),
-            scopes: port.scopes.clone(),
-        };
-        assert_eq!(
-            serde_json::to_value(&port).expect("the port serialises"),
-            serde_json::to_value(&shape).expect("the shape serialises"),
-        );
-    }
-
-    use super::*;
-
-    #[test]
-    fn busy_maps_to_temporarily_unavailable() {
-        assert!(matches!(
-            map_repo(RepoError::Busy),
-            OAuthError::TemporarilyUnavailable
-        ));
+/// Maps a poll outcome that does not commit anything to its OAuth error.
+///
+/// `Approved` and `Consumed` are handled by the caller: the first starts a
+/// token exchange, the second has to revoke a family asynchronously.
+fn device_poll_error(outcome: DevicePoll) -> OAuthError {
+    match outcome {
+        DevicePoll::Pending => OAuthError::AuthorizationPending,
+        DevicePoll::SlowDown { interval_secs } => OAuthError::SlowDown { interval_secs },
+        DevicePoll::ClientMismatch => OAuthError::InvalidGrant("client mismatch"),
+        DevicePoll::Denied => OAuthError::AccessDenied,
+        DevicePoll::Expired => OAuthError::ExpiredToken,
+        DevicePoll::NotFound => OAuthError::InvalidGrant("unknown device code"),
+        // Not an outcome a caller can receive: both are consumed above. A
+        // 500 is the honest answer if a refactor ever lets one through.
+        DevicePoll::Approved { .. } | DevicePoll::Consumed { .. } => OAuthError::Internal,
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -191,12 +191,12 @@ async fn a_failed_audit_write_rolls_back_the_business_row() {
         "the duplicate audit id should have failed the write"
     );
 
-    // Probing with `consume`: if the row survived, this consumes it and
-    // succeeds; if the transaction rolled back, the row is simply absent.
+    // Probing with `inspect`: if the row survived, this finds it; if the
+    // transaction rolled back, the row is simply absent.
     let probe = store
         .auth_codes()
-        .consume(
-            re0auth_api::ports::ConsumeAuthCode {
+        .inspect(
+            &re0auth_api::ports::ConsumeAuthCode {
                 code_hash: &colliding_hash,
                 client_id: client,
                 redirect_uri: "https://client.example/callback",

@@ -7,14 +7,15 @@
 
 use async_trait::async_trait;
 use re0auth_api::ports::{
-    DeviceCode, DeviceCodeRepo, DeviceCodeState, DeviceCodeStatus, DevicePoll, RepoError,
-    RepoResult,
+    DeviceCode, DeviceCodeRepo, DeviceCodeState, DeviceCodeStatus, DevicePoll, RefreshToken,
+    RepoError, RepoResult,
 };
 use re0auth_api::{ClientId, FamilyId, Unix, UserId};
 use sqlx::Row;
 
 use super::{
-    SqliteStore, db_error, device_status_to_str, parse_uuid, row_to_device_code, scopes_json,
+    SqliteStore, db_error, device_status_to_str, insert_refresh_row, parse_uuid,
+    row_to_device_code, scopes_json,
 };
 
 /// Names the unique constraint an insert violated.
@@ -184,12 +185,11 @@ impl DeviceCodeRepo for SqliteStore {
         Ok(result.rows_affected())
     }
 
-    async fn poll(
+    async fn prepare_poll(
         &self,
         device_code_hash: &[u8],
         now: Unix,
         client_id: ClientId,
-        family_id: &FamilyId,
     ) -> RepoResult<DevicePoll> {
         // Common case: a pending code polled after its advertised interval.
         // One atomic statement covers the whole decision plus the counter bump,
@@ -256,41 +256,15 @@ impl DeviceCodeRepo for SqliteStore {
         // approver" branch to defend against: `from_columns` already refused
         // such a row when it was read.
         if let DeviceCodeState::Approved { approver: user_id } = code.state {
-            let result = sqlx::query(
-                "UPDATE device_codes SET status = 'consumed', consumed_at = ?, \
-                 last_polled_at = ?, family_id = ? \
-                 WHERE device_code_hash = ? AND status = 'approved'",
-            )
-            .bind(now)
-            .bind(now)
-            .bind(family_id.0.to_string())
-            .bind(device_code_hash)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
-            if result.rows_affected() == 1 {
-                tx.commit().await.map_err(db_error)?;
-                return Ok(DevicePoll::Approved {
-                    client_id: code.client_id,
-                    user_id,
-                    scopes: code.scopes,
-                    created_at: code.created_at,
-                });
-            }
-            // A concurrent poll consumed it; return the family it recorded so
-            // the loser can revoke it (RFC 6749 §4.1.2 semantics).
-            let family =
-                sqlx::query("SELECT family_id FROM device_codes WHERE device_code_hash = ?")
-                    .bind(device_code_hash)
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(db_error)?
-                    .try_get::<Option<String>, _>("family_id")
-                    .map_err(db_error)?
-                    .map(|value| parse_uuid(&value).map(FamilyId))
-                    .transpose()?;
+            // Nothing is written: the code stays redeemable until the token
+            // exchange commits, so a signing failure does not burn it.
             tx.commit().await.map_err(db_error)?;
-            return Ok(DevicePoll::Consumed { family });
+            return Ok(DevicePoll::Approved {
+                client_id: code.client_id,
+                user_id,
+                scopes: code.scopes,
+                created_at: code.created_at,
+            });
         }
 
         if let Some(last) = code.last_polled_at
@@ -327,6 +301,98 @@ impl DeviceCodeRepo for SqliteStore {
         .map_err(db_error)?;
         tx.commit().await.map_err(db_error)?;
         Ok(DevicePoll::Pending)
+    }
+
+    async fn consume_and_insert_refresh(
+        &self,
+        device_code_hash: &[u8],
+        now: Unix,
+        client_id: ClientId,
+        family_id: &FamilyId,
+        refresh: &RefreshToken,
+    ) -> RepoResult<DevicePoll> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(db_error)?;
+        let row = sqlx::query(
+            "SELECT id, device_code_hash, user_code_hash, client_id, scopes, status, user_id, \
+             interval_secs, last_polled_at, poll_count, user_code_misses, created_at, expires_at, \
+             consumed_at, family_id FROM device_codes WHERE device_code_hash = ?",
+        )
+        .bind(device_code_hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let Some(row) = row else {
+            return Ok(DevicePoll::NotFound);
+        };
+        let code = row_to_device_code(&row)?;
+        if code.client_id != client_id {
+            return Ok(DevicePoll::ClientMismatch);
+        }
+        if code.state.status() == DeviceCodeStatus::Consumed {
+            return Ok(DevicePoll::Consumed {
+                family: code.family_id,
+            });
+        }
+        if code.state.status() == DeviceCodeStatus::Denied {
+            return Ok(DevicePoll::Denied);
+        }
+        if code.state.status() == DeviceCodeStatus::Expired || code.expires_at <= now {
+            return Ok(DevicePoll::Expired);
+        }
+        // `BEGIN IMMEDIATE` already holds the write lock, so the row cannot have
+        // moved since the read above; the conditional UPDATE is still the guard
+        // that keeps a second committer from minting a second refresh token.
+        let DeviceCodeState::Approved { approver: user_id } = code.state else {
+            tx.commit().await.map_err(db_error)?;
+            return Ok(DevicePoll::Pending);
+        };
+        let updated = sqlx::query(
+            "UPDATE device_codes SET status = 'consumed', consumed_at = ?, \
+             last_polled_at = ?, family_id = ? \
+             WHERE device_code_hash = ? AND status = 'approved'",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(family_id.0.to_string())
+        .bind(device_code_hash)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        if updated.rows_affected() != 1 {
+            let row = sqlx::query(
+                "SELECT status, family_id FROM device_codes WHERE device_code_hash = ?",
+            )
+            .bind(device_code_hash)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?;
+            let status: String = row.try_get("status").map_err(db_error)?;
+            let family: Option<String> = row.try_get("family_id").map_err(db_error)?;
+            let family = family
+                .map(|value| parse_uuid(&value).map(FamilyId))
+                .transpose()?;
+            tx.commit().await.map_err(db_error)?;
+            return Ok(match status.as_str() {
+                "consumed" => DevicePoll::Consumed { family },
+                "denied" => DevicePoll::Denied,
+                "expired" => DevicePoll::Expired,
+                _ => DevicePoll::Pending,
+            });
+        }
+        // Same transaction as the consumption: a failed insert leaves the code
+        // approved, so the next poll can retry instead of losing the grant.
+        insert_refresh_row(&mut *tx, refresh).await?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(DevicePoll::Approved {
+            client_id: code.client_id,
+            user_id,
+            scopes: code.scopes,
+            created_at: code.created_at,
+        })
     }
 
     async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {
