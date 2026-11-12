@@ -491,9 +491,9 @@ test('account attaches a second login method and keeps the last one', async ({ b
 });
 
 test('admin audit keeps the newest filter response', async ({ browser }) => {
-	const cookie = createAdminSession(path.join(work, 'config.toml'));
+	const cookies = createAdminSession(path.join(work, 'config.toml'));
 	const context = await browser.newContext();
-	await context.addCookies([cookie]);
+	await context.addCookies(cookies);
 	const page = await context.newPage();
 	const auditRow = (target: string) => ({
 		id: target,
