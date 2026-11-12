@@ -5450,6 +5450,55 @@
           }
         }
       },
+      "PhihubChartDifficulty": {
+        "type": "object",
+        "required": [
+          "charter",
+          "difficulty"
+        ],
+        "properties": {
+          "charter": {
+            "type": "string"
+          },
+          "difficulty": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "PhihubChartInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "song",
+          "composer",
+          "illustrator",
+          "chart"
+        ],
+        "properties": {
+          "chart": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PhihubChartDifficulty"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "composer": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "illustrator": {
+            "type": "string"
+          },
+          "song": {
+            "type": "string"
+          }
+        }
+      },
       "PhihubClearCountPoint": {
         "type": "object",
         "description": "One v3 history point whose value is the five cleared/full-combo/phi counters.",
@@ -5604,6 +5653,15 @@
             "format": "int32",
             "minimum": 0
           }
+        }
+      },
+      "PhihubInfoFileData": {
+        "type": "object",
+        "additionalProperties": {
+          "$ref": "#/components/schemas/PhihubChartInfo"
+        },
+        "propertyNames": {
+          "type": "string"
         }
       },
       "PhihubInfoFileVersionData": {
@@ -6333,6 +6391,9 @@
           },
           {
             "$ref": "#/components/schemas/PhigrosQuerySaveRksData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubInfoFileData"
           },
           {
             "$ref": "#/components/schemas/PhihubInfoFileVersionData"

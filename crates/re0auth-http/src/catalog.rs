@@ -98,12 +98,14 @@ pub fn schema_name(connector: &str, resource: &str) -> Option<&'static str> {
         ("phihub", "record_v4") => Some("PhihubRecordV4Data"),
         ("phigros-query", "save") => Some("PhigrosQuerySaveData"),
         ("phigros-query", "save_rks") => Some("PhigrosQuerySaveRksData"),
+        ("phihub", "info_file") => Some("PhihubInfoFileData"),
         ("phihub", "info_file_version") => Some("PhihubInfoFileVersionData"),
         ("phihub", "player_ids") => Some("PhihubPlayerIdsData"),
         ("phihub", "rank_by_rank") => Some("PhihubRankData"),
         ("phigros-query", "verify_public_key") => Some("PhigrosVerifyPublicKeyData"),
         ("phigros-query", "stats_summary") => Some("PhigrosStatsSummaryData"),
         ("phigros-query", "leaderboard_top") => Some("PhigrosLeaderboardPage"),
+        ("phigros-query", "leaderboard_by_rank") => Some("PhigrosLeaderboardPage"),
         _ => None,
     }
 }
@@ -128,6 +130,7 @@ pub fn schema_json(connector: &str, resource: &str) -> Option<Value> {
         "PhigrosQuerySaveRksData" => {
             schema_value::<re0auth_app::upstream_models::PhigrosQuerySaveRksData>()
         }
+        "PhihubInfoFileData" => schema_value::<re0auth_app::upstream_models::PhihubInfoFileData>(),
         "PhihubInfoFileVersionData" => {
             schema_value::<re0auth_app::upstream_models::PhihubInfoFileVersionData>()
         }
@@ -192,12 +195,14 @@ mod tests {
     #[test]
     fn public_batch_resources_declare_a_schema() {
         for (connector, resource) in [
+            ("phihub", "info_file"),
             ("phihub", "info_file_version"),
             ("phihub", "player_ids"),
             ("phihub", "rank_by_rank"),
             ("phigros-query", "verify_public_key"),
             ("phigros-query", "stats_summary"),
             ("phigros-query", "leaderboard_top"),
+            ("phigros-query", "leaderboard_by_rank"),
         ] {
             assert!(
                 schema_name(connector, resource).is_some(),
@@ -208,5 +213,13 @@ mod tests {
                 "{connector}/{resource} has no schema document"
             );
         }
+        assert_eq!(
+            schema_json("phihub", "info_file").expect("schema")["type"],
+            "object"
+        );
+        assert_eq!(
+            schema_json("phihub", "player_ids").expect("schema")["type"],
+            "array"
+        );
     }
 }

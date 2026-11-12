@@ -26,6 +26,7 @@ pub enum UpstreamData {
     PhihubRecordV4(PhihubRecordV4Data),
     PhigrosQuerySave(PhigrosQuerySaveData),
     PhigrosQuerySaveRks(PhigrosQuerySaveRksData),
+    PhihubInfoFile(PhihubInfoFileData),
     PhihubInfoFileVersion(PhihubInfoFileVersionData),
     PhihubPlayerIds(PhihubPlayerIdsData),
     PhihubRank(PhihubRankData),
@@ -373,6 +374,25 @@ pub struct PhigrosCfcPCounts {
 // ---------------------------------------------------------------------------
 // PhiHub: public catalog, player directory, and rank list
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct PhihubInfoFileData(pub HashMap<String, PhihubChartInfo>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubChartInfo {
+    pub id: String,
+    pub song: String,
+    pub composer: String,
+    pub illustrator: String,
+    pub chart: HashMap<String, PhihubChartDifficulty>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PhihubChartDifficulty {
+    pub charter: String,
+    pub difficulty: f64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PhihubInfoFileVersionData {

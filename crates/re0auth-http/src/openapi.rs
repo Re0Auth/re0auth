@@ -157,6 +157,9 @@ use crate::{AppState, admin, binding_routes};
         re0auth_app::upstream_models::PhigrosChartRankingScore,
         re0auth_app::upstream_models::PhigrosGradeCounts,
         re0auth_app::upstream_models::PhigrosCfcPCounts,
+        re0auth_app::upstream_models::PhihubInfoFileData,
+        re0auth_app::upstream_models::PhihubChartInfo,
+        re0auth_app::upstream_models::PhihubChartDifficulty,
         re0auth_app::upstream_models::PhihubInfoFileVersionData,
         re0auth_app::upstream_models::PhihubPlayerIdsData,
         re0auth_app::upstream_models::PhihubPlayerId,
@@ -458,6 +461,7 @@ mod tests {
             "PhihubRecordV4Data",
             "PhigrosQuerySaveData",
             "PhigrosQuerySaveRksData",
+            "PhihubInfoFileData",
             "PhihubInfoFileVersionData",
             "PhihubPlayerIdsData",
             "PhihubRankData",
@@ -470,8 +474,8 @@ mod tests {
         let union = &json["components"]["schemas"]["UpstreamData"]["oneOf"];
         assert_eq!(
             union.as_array().map(Vec::len),
-            Some(16),
-            "the union carries fifteen resource models plus PageBody"
+            Some(17),
+            "the union carries sixteen resource models plus PageBody"
         );
     }
 
