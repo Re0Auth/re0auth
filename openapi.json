@@ -5309,6 +5309,60 @@
           }
         }
       },
+      "PhigrosSongInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "composer",
+          "illustrator",
+          "chartConstants"
+        ],
+        "properties": {
+          "chartConstants": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "composer": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "illustrator": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "PhigrosSongSearchPage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhigrosSongInfo"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "PhigrosStatsSummaryData": {
         "type": "object",
         "required": [
@@ -5948,6 +6002,49 @@
           }
         }
       },
+      "PhihubRankDetailData": {
+        "type": "object",
+        "required": [
+          "rank",
+          "summary",
+          "save",
+          "index"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rank": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "save": {},
+          "summary": {
+            "$ref": "#/components/schemas/PhihubRankDetailSummary"
+          }
+        }
+      },
+      "PhihubRankDetailSummary": {
+        "type": "object",
+        "required": [
+          "gameuser",
+          "saveInfo",
+          "index"
+        ],
+        "properties": {
+          "gameuser": {
+            "$ref": "#/components/schemas/PhihubRankGameUser"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "saveInfo": {
+            "$ref": "#/components/schemas/PhihubRankSaveInfo"
+          }
+        }
+      },
       "PhihubRankGameUser": {
         "type": "object",
         "required": [
@@ -6337,6 +6434,13 @@
             "type": "integer",
             "format": "int64"
           }
+        }
+      },
+      "PhihubSongAccListData": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {}
         }
       },
       "PhihubSongData": {
@@ -6789,6 +6893,18 @@
           },
           {
             "$ref": "#/components/schemas/PhigrosLeaderboardPage"
+          },
+          {
+            "$ref": "#/components/schemas/PhigrosSongSearchPage"
+          },
+          {
+            "$ref": "#/components/schemas/PhigrosSongInfo"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubRankDetailData"
+          },
+          {
+            "$ref": "#/components/schemas/PhihubSongAccListData"
           },
           {
             "$ref": "#/components/schemas/PageBody"

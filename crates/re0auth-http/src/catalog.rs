@@ -120,6 +120,10 @@ pub fn schema_name(connector: &str, resource: &str) -> Option<&'static str> {
         ("phigros-query", "stats_summary") => Some("PhigrosStatsSummaryData"),
         ("phigros-query", "leaderboard_top") => Some("PhigrosLeaderboardPage"),
         ("phigros-query", "leaderboard_by_rank") => Some("PhigrosLeaderboardPage"),
+        ("phigros-query", "songs_search") => Some("PhigrosSongSearchPage"),
+        ("phigros-query", "songs_search_unique") => Some("PhigrosSongInfo"),
+        ("phihub", "rank_detail") => Some("PhihubRankDetailData"),
+        ("phihub", "song_acc_list") => Some("PhihubSongAccListData"),
         _ => None,
     }
 }
@@ -183,6 +187,16 @@ pub fn schema_json(connector: &str, resource: &str) -> Option<Value> {
         }
         "PhigrosLeaderboardPage" => {
             schema_value::<re0auth_app::upstream_models::PhigrosLeaderboardPage>()
+        }
+        "PhigrosSongSearchPage" => {
+            schema_value::<re0auth_app::upstream_models::PhigrosSongSearchPage>()
+        }
+        "PhigrosSongInfo" => schema_value::<re0auth_app::upstream_models::PhigrosSongInfo>(),
+        "PhihubRankDetailData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubRankDetailData>()
+        }
+        "PhihubSongAccListData" => {
+            schema_value::<re0auth_app::upstream_models::PhihubSongAccListData>()
         }
         _ => return None,
     };
@@ -254,6 +268,10 @@ mod tests {
             ("phigros-query", "stats_summary"),
             ("phigros-query", "leaderboard_top"),
             ("phigros-query", "leaderboard_by_rank"),
+            ("phigros-query", "songs_search"),
+            ("phigros-query", "songs_search_unique"),
+            ("phihub", "rank_detail"),
+            ("phihub", "song_acc_list"),
         ] {
             assert!(
                 schema_name(connector, resource).is_some(),

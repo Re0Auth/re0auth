@@ -190,6 +190,11 @@ use crate::{AppState, admin, binding_routes};
         re0auth_app::upstream_models::PhigrosLeaderboardPage,
         re0auth_app::upstream_models::PhigrosLeaderboardItem,
         re0auth_app::upstream_models::PhigrosChartText,
+        re0auth_app::upstream_models::PhigrosSongInfo,
+        re0auth_app::upstream_models::PhigrosSongSearchPage,
+        re0auth_app::upstream_models::PhihubRankDetailData,
+        re0auth_app::upstream_models::PhihubRankDetailSummary,
+        re0auth_app::upstream_models::PhihubSongAccListData,
     ))
 )]
 pub struct ApiDoc;
@@ -494,14 +499,18 @@ mod tests {
             "PhigrosVerifyPublicKeyData",
             "PhigrosStatsSummaryData",
             "PhigrosLeaderboardPage",
+            "PhigrosSongInfo",
+            "PhigrosSongSearchPage",
+            "PhihubRankDetailData",
+            "PhihubSongAccListData",
         ] {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }
         let union = &json["components"]["schemas"]["UpstreamData"]["oneOf"];
         assert_eq!(
             union.as_array().map(Vec::len),
-            Some(28),
-            "the union carries twenty-seven resource models plus PageBody"
+            Some(32),
+            "the union carries thirty-one resource models plus PageBody"
         );
     }
 
