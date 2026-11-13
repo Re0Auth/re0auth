@@ -13,5 +13,5 @@ toml.workspace = true
 # `api_contract` asserts the serialised shape of these DTOs against the zod
 # schemas the SPA uses. It has to name them; no other crate does.
 re0auth-api = { version = "0.19.0", path = "../re0auth-api" }
-re0auth-http = { version = "0.2.0", path = "../re0auth-http" }
-re0auth-app = { version = "0.2.0", path = "../re0auth-app" }
+re0auth-http = { version = "0.3.0", path = "../re0auth-http" }
+re0auth-app = { version = "0.3.0", path = "../re0auth-app" }

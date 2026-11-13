@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 re0auth-api = { version = "0.19.0", path = "../re0auth-api" }
-re0auth-app = { version = "0.2.0", path = "../re0auth-app" }
+re0auth-app = { version = "0.3.0", path = "../re0auth-app" }
 accept-language.workspace = true
 axum.workspace = true
 base64.workspace = true

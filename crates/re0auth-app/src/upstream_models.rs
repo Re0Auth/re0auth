@@ -48,6 +48,25 @@ pub enum UpstreamData {
     PhigrosSong(PhigrosSongInfo),
     PhihubRankDetail(PhihubRankDetailData),
     PhihubSongAccList(PhihubSongAccListData),
+    LxnsPlayer(LxnsPlayerData),
+    LxnsScores(LxnsScorePage),
+    LxnsUserProfile(LxnsUserProfileData),
+    LxnsBests(LxnsBestsData),
+    LxnsSongList(LxnsSongListData),
+    LxnsAliasList(LxnsAliasListData),
+    LxnsTrend(LxnsRatingTrendData),
+    LxnsHeatmap(LxnsHeatmapData),
+    LxnsScoreHistory(LxnsScoreHistoryData),
+    LxnsScoreRanking(LxnsRankingScorePage),
+    LxnsCollectionList(LxnsCollectionListData),
+    LxnsCollection(LxnsCollection),
+    DivingFishRecords(DivingFishRecordsData),
+    DivingFishQueryPlayer(DivingFishQueryPlayerData),
+    DivingFishMusic(DivingFishMusicData),
+    DivingFishPlayerRecord(DivingFishPlayerRecordData),
+    DivingFishPlate(DivingFishPlateData),
+    DivingFishRatingRanking(DivingFishRatingRankingData),
+    DivingFishChartStats(DivingFishChartStatsData),
     Page(crate::gateway::PageBody),
 }
 
@@ -931,6 +950,542 @@ pub struct PhihubRankDetailSummary {
 #[serde(transparent)]
 pub struct PhihubSongAccListData(pub Vec<Vec<serde_json::Value>>);
 
+// ---------------------------------------------------------------------------
+// LXNS
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsPlayerData {
+    pub name: String,
+    pub rating: i32,
+    pub friend_code: i64,
+    pub course_rank: i32,
+    pub class_rank: i32,
+    pub star: i32,
+    pub upload_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsScorePage {
+    pub items: Vec<LxnsScore>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsScore {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub song_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    pub level_index: i32,
+    pub achievements: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fc: Option<LxnsFcType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fs: Option<LxnsFsType>,
+    pub dx_score: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dx_star: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dx_rating: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate: Option<LxnsRateType>,
+    #[serde(rename = "type")]
+    pub song_type: LxnsSongType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub play_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_played_time: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LxnsFcType {
+    App,
+    Ap,
+    Fcp,
+    Fc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LxnsFsType {
+    Fsdp,
+    Fsd,
+    Fsp,
+    Fs,
+    Sync,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LxnsRateType {
+    Sssp,
+    Sss,
+    Ssp,
+    Ss,
+    Sp,
+    S,
+    Aaa,
+    Aa,
+    A,
+    Bbb,
+    Bb,
+    B,
+    C,
+    D,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LxnsSongType {
+    Standard,
+    Dx,
+    Utage,
+}
+
+/// `GET /api/v0/user/profile` after the OAuth API's envelope is unwrapped.
+///
+/// Live shape: id, name, email, email_verified, email_verified_time,
+/// permission, register_time. `bind`, `avatar_url` and `token` are not returned
+/// by this endpoint, even though the website's User object can carry them.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsUserProfileData {
+    pub id: i64,
+    pub name: String,
+    pub email: String,
+    pub email_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email_verified_time: Option<String>,
+    pub permission: u32,
+    pub register_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsBestsData {
+    pub standard_total: i64,
+    pub dx_total: i64,
+    pub standard: Vec<LxnsScore>,
+    pub dx: Vec<LxnsScore>,
+    pub standard_selections: Vec<LxnsScore>,
+    pub dx_selections: Vec<LxnsScore>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsSongListData {
+    pub songs: Vec<LxnsSong>,
+    pub genres: Vec<LxnsGenre>,
+    pub versions: Vec<LxnsVersion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsSong {
+    pub id: i64,
+    pub title: String,
+    pub artist: String,
+    pub genre: String,
+    pub bpm: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map: Option<String>,
+    pub version: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rights: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    pub difficulties: LxnsSongDifficulties,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsSongDifficulties {
+    pub standard: Vec<LxnsSongDifficulty>,
+    pub dx: Vec<LxnsSongDifficulty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub utage: Option<Vec<LxnsSongDifficultyUtage>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsSongDifficulty {
+    #[serde(rename = "type")]
+    pub song_type: LxnsSongType,
+    pub difficulty: i32,
+    pub level: String,
+    pub level_value: f64,
+    pub note_designer: String,
+    pub version: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<LxnsNotes>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsSongDifficultyUtage {
+    pub kanji: String,
+    pub description: String,
+    pub is_buddy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<LxnsUtageNotes>,
+    #[serde(rename = "type")]
+    pub song_type: LxnsSongType,
+    pub difficulty: i32,
+    pub level: String,
+    pub level_value: f64,
+    pub note_designer: String,
+    pub version: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum LxnsUtageNotes {
+    Notes(LxnsNotes),
+    Buddy(LxnsBuddyNotes),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsNotes {
+    pub total: i64,
+    pub tap: i64,
+    pub hold: i64,
+    pub slide: i64,
+    pub touch: i64,
+    #[serde(rename = "break")]
+    pub break_notes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsBuddyNotes {
+    pub left: LxnsNotes,
+    pub right: LxnsNotes,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsGenre {
+    pub id: i32,
+    pub title: String,
+    pub genre: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsVersion {
+    pub id: i32,
+    pub title: String,
+    pub version: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsAliasListData {
+    pub aliases: Vec<LxnsAlias>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsAlias {
+    pub song_id: i64,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct LxnsRatingTrendData(pub Vec<LxnsRatingTrend>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsRatingTrend {
+    pub total: i64,
+    pub standard_total: i64,
+    pub dx_total: i64,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct LxnsHeatmapData(pub HashMap<String, i64>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct LxnsScoreHistoryData(pub Option<Vec<LxnsScore>>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsRankingScorePage {
+    pub items: Vec<LxnsRankingScore>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsRankingScore {
+    pub ranking: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub achievements: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dx_score: Option<i64>,
+    pub upload_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct LxnsCollectionListData(pub Vec<LxnsCollection>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsCollection {
+    pub id: i64,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_favorite: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<Vec<LxnsCollectionRequired>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsCollectionRequired {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub difficulties: Option<Vec<i32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate: Option<LxnsRateType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fc: Option<LxnsFcType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fs: Option<LxnsFsType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub songs: Option<Vec<LxnsCollectionRequiredSong>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LxnsCollectionRequiredSong {
+    pub id: i64,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub song_type: LxnsSongType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_difficulties: Option<Vec<i32>>,
+}
+
+// ---------------------------------------------------------------------------
+// DivingFish
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishRecordsData {
+    pub additional_rating: i64,
+    pub nickname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plate: Option<String>,
+    pub rating: i64,
+    pub records: Vec<DivingFishRecord>,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishQueryPlayerData {
+    pub additional_rating: i64,
+    pub charts: DivingFishCharts,
+    pub nickname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plate: Option<String>,
+    pub rating: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_general_data: Option<serde_json::Value>,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishCharts {
+    pub dx: Vec<DivingFishRecord>,
+    pub sd: Vec<DivingFishRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishRecord {
+    pub achievements: f64,
+    pub ds: f64,
+    #[serde(rename = "dxScore")]
+    pub dx_score: i64,
+    pub fc: DivingFishFcType,
+    pub fs: DivingFishFsType,
+    pub level: String,
+    pub level_index: i64,
+    pub level_label: String,
+    pub ra: i64,
+    pub rate: DivingFishRateType,
+    pub song_id: i64,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub song_type: DivingFishSheetType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum DivingFishSheetType {
+    #[serde(rename = "SD")]
+    Sd,
+    #[serde(rename = "DX")]
+    Dx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum DivingFishFcType {
+    #[serde(rename = "")]
+    Blank,
+    #[serde(rename = "fc")]
+    Fc,
+    #[serde(rename = "fcp")]
+    Fcp,
+    #[serde(rename = "ap")]
+    Ap,
+    #[serde(rename = "app")]
+    App,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum DivingFishFsType {
+    #[serde(rename = "")]
+    Blank,
+    #[serde(rename = "sync")]
+    Sync,
+    #[serde(rename = "fs")]
+    Fs,
+    #[serde(rename = "fsp")]
+    Fsp,
+    #[serde(rename = "fsd")]
+    Fsd,
+    #[serde(rename = "fsdp")]
+    Fsdp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum DivingFishRateType {
+    #[serde(rename = "sssp")]
+    Sssp,
+    #[serde(rename = "sss")]
+    Sss,
+    #[serde(rename = "ssp")]
+    Ssp,
+    #[serde(rename = "ss")]
+    Ss,
+    #[serde(rename = "sp")]
+    Sp,
+    #[serde(rename = "s")]
+    S,
+    #[serde(rename = "aaa")]
+    Aaa,
+    #[serde(rename = "aa")]
+    Aa,
+    #[serde(rename = "a")]
+    A,
+    #[serde(rename = "bbb")]
+    Bbb,
+    #[serde(rename = "bb")]
+    Bb,
+    #[serde(rename = "b")]
+    B,
+    #[serde(rename = "c")]
+    C,
+    #[serde(rename = "d")]
+    D,
+}
+
+/// `GET /api/maimaidxprober/music_data`. Live response has song ids as strings.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct DivingFishMusicData(pub Vec<DivingFishSong>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishSong {
+    pub id: String,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub song_type: DivingFishSheetType,
+    pub ds: Vec<f64>,
+    pub level: Vec<String>,
+    pub cids: Vec<i64>,
+    pub charts: Vec<DivingFishChartInfo>,
+    pub basic_info: DivingFishBasicInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishChartInfo {
+    pub notes: Vec<i64>,
+    pub charter: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishBasicInfo {
+    pub title: String,
+    pub artist: String,
+    pub genre: String,
+    pub bpm: i64,
+    pub release_date: String,
+    pub from: String,
+    pub is_new: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct DivingFishPlayerRecordData(pub HashMap<String, Vec<DivingFishRecord>>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishPlateData {
+    pub verlist: Vec<DivingFishRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(transparent)]
+pub struct DivingFishRatingRankingData(pub Vec<DivingFishRatingRank>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishRatingRank {
+    pub ra: i64,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishChartStatsData {
+    pub charts: HashMap<String, Vec<DivingFishChartStat>>,
+    pub diff_data: HashMap<String, DivingFishDiffStat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishChartStat {
+    pub cnt: f64,
+    pub diff: String,
+    pub fit_diff: f64,
+    pub avg: f64,
+    pub avg_dx: f64,
+    pub std_dev: f64,
+    pub dist: Vec<i64>,
+    pub fc_dist: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DivingFishDiffStat {
+    pub achievements: f64,
+    pub dist: Vec<f64>,
+    pub fc_dist: Vec<f64>,
+}
+
 #[cfg(test)]
 mod remaining_samples {
     use super::*;
@@ -992,5 +1547,342 @@ mod remaining_samples {
         ]));
         assert_eq!(data.0.len(), 3);
         assert_eq!(data.0[1][0], 99.6);
+    }
+}
+
+#[cfg(test)]
+mod lxns_samples {
+    use super::*;
+    use serde_json::json;
+
+    fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+        serde_json::from_value(value).expect("sample matches the declared schema")
+    }
+
+    #[test]
+    fn player_sample_matches() {
+        let data: LxnsPlayerData = decode(json!({
+            "name": "player",
+            "rating": 15000,
+            "friend_code": 123456789012345i64,
+            "course_rank": 1,
+            "class_rank": 2,
+            "star": 3,
+            "upload_time": "2026-11-13T14:20:00Z"
+        }));
+        assert_eq!(data.rating, 15000);
+        assert_eq!(data.friend_code, 123456789012345);
+    }
+
+    #[test]
+    fn score_page_sample_matches() {
+        let data: LxnsScorePage = decode(json!({
+            "items": [{
+                "id": 834,
+                "song_name": "Song",
+                "level": "14+",
+                "level_index": 4,
+                "achievements": 100.5,
+                "fc": "app",
+                "fs": "fsdp",
+                "dx_score": 1234,
+                "dx_star": 5,
+                "dx_rating": 300.1,
+                "rate": "sssp",
+                "type": "dx",
+                "play_time": "2026-11-13T14:00:00Z",
+                "upload_time": "2026-11-13T14:20:00Z",
+                "last_played_time": "2026-11-13T14:00:00Z"
+            }],
+            "next_cursor": "cursor"
+        }));
+        assert_eq!(data.items[0].song_type, LxnsSongType::Dx);
+        assert_eq!(data.items[0].fc, Some(LxnsFcType::App));
+        assert_eq!(data.next_cursor.as_deref(), Some("cursor"));
+    }
+
+    #[test]
+    fn user_profile_sample_matches_live_shape() {
+        let data: LxnsUserProfileData = decode(json!({
+            "id": 12345,
+            "name": "user",
+            "email": "user@example.com",
+            "email_verified": true,
+            "email_verified_time": "2026-11-13T14:20:00Z",
+            "permission": 1,
+            "register_time": "2025-01-02T03:04:05.123456789Z"
+        }));
+        assert_eq!(data.id, 12345);
+        assert!(data.email_verified);
+        assert_eq!(data.permission, 1);
+    }
+
+    #[test]
+    fn bests_sample_matches() {
+        let data: LxnsBestsData = decode(json!({
+            "standard_total": 1000,
+            "dx_total": 2000,
+            "standard": [],
+            "dx": [],
+            "standard_selections": [],
+            "dx_selections": []
+        }));
+        assert_eq!(data.standard_total, 1000);
+        assert_eq!(data.dx_total, 2000);
+        assert!(data.standard.is_empty());
+    }
+
+    #[test]
+    fn song_list_sample_matches() {
+        let data: LxnsSongListData = decode(json!({
+            "songs": [{
+                "id": 8,
+                "title": "True Love Song",
+                "artist": "Kai",
+                "genre": "maimai",
+                "bpm": 150,
+                "version": 10000,
+                "release_date": "2019-12-05",
+                "difficulties": {
+                    "standard": [{
+                        "type": "standard",
+                        "difficulty": 0,
+                        "level": "5",
+                        "level_value": 5.0,
+                        "note_designer": "-",
+                        "version": 10000,
+                        "release_date": "2019-12-05"
+                    }],
+                    "dx": []
+                }
+            }],
+            "genres": [{"id": 1, "title": "maimai", "genre": "maimai"}],
+            "versions": [{"id": 1, "title": "maimai", "version": 10000}]
+        }));
+        assert_eq!(data.songs[0].id, 8);
+        assert_eq!(data.songs[0].difficulties.standard.len(), 1);
+        assert!(data.songs[0].difficulties.dx.is_empty());
+    }
+
+    #[test]
+    fn alias_list_sample_matches() {
+        let data: LxnsAliasListData = decode(json!({
+            "aliases": [{"song_id": 8, "aliases": ["真爱歌", "真爱"]}]
+        }));
+        assert_eq!(data.aliases[0].song_id, 8);
+        assert_eq!(data.aliases[0].aliases.len(), 2);
+    }
+
+    #[test]
+    fn trend_sample_matches() {
+        let data: LxnsRatingTrendData = decode(json!([{
+            "total": 15000,
+            "standard_total": 10000,
+            "dx_total": 5000,
+            "date": "2026-11-13"
+        }]));
+        assert_eq!(data.0[0].total, 15000);
+        assert_eq!(data.0[0].date, "2026-11-13");
+    }
+
+    #[test]
+    fn heatmap_sample_matches() {
+        let data: LxnsHeatmapData = decode(json!({"2026-11-13": 3}));
+        assert_eq!(data.0["2026-11-13"], 3);
+    }
+
+    #[test]
+    fn score_history_sample_matches() {
+        let data: LxnsScoreHistoryData = decode(json!([]));
+        assert_eq!(data.0.as_ref().map(Vec::len), Some(0));
+        let empty: LxnsScoreHistoryData = decode(json!(null));
+        assert!(empty.0.is_none());
+    }
+
+    #[test]
+    fn score_ranking_page_sample_matches() {
+        let data: LxnsRankingScorePage = decode(json!({
+            "items": [{
+                "ranking": 1,
+                "player_name": "player",
+                "achievements": 100.5,
+                "dx_score": 1234,
+                "upload_time": "2026-11-13T14:00:00Z"
+            }],
+            "next_cursor": null
+        }));
+        assert_eq!(data.items[0].ranking, 1);
+        assert!(data.next_cursor.is_none());
+    }
+
+    #[test]
+    fn collection_samples_match() {
+        let list: LxnsCollectionListData = decode(json!([{
+            "id": 1,
+            "name": "trophy",
+            "color": "Gold",
+            "genre": "maimai",
+            "is_favorite": true
+        }]));
+        assert_eq!(list.0[0].id, 1);
+        assert_eq!(list.0[0].is_favorite, Some(true));
+
+        let one: LxnsCollection = decode(json!({
+            "id": 1,
+            "name": "trophy",
+            "color": "Gold",
+            "description": "desc",
+            "genre": "maimai",
+            "release_date": "2026-11-13"
+        }));
+        assert_eq!(one.description.as_deref(), Some("desc"));
+    }
+}
+
+#[cfg(test)]
+mod diving_fish_samples {
+    use super::*;
+    use serde_json::json;
+
+    fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+        serde_json::from_value(value).expect("sample matches the declared schema")
+    }
+
+    #[test]
+    fn records_sample_matches() {
+        let data: DivingFishRecordsData = decode(json!({
+            "additional_rating": 13,
+            "nickname": "sample",
+            "plate": "輝将",
+            "rating": 15932,
+            "records": [{
+                "achievements": 91.6265,
+                "ds": 6.0,
+                "dxScore": 520,
+                "fc": "",
+                "fs": "",
+                "level": "6",
+                "level_index": 1,
+                "level_label": "Advanced",
+                "ra": 83,
+                "rate": "aa",
+                "song_id": 11115,
+                "title": "song",
+                "type": "DX"
+            }],
+            "username": "sample_username"
+        }));
+        assert_eq!(data.rating, 15932);
+        assert_eq!(data.records[0].dx_score, 520);
+        assert_eq!(data.records[0].song_type, DivingFishSheetType::Dx);
+        assert_eq!(data.records[0].rate, DivingFishRateType::Aa);
+        assert_eq!(data.records[0].fc, DivingFishFcType::Blank);
+    }
+
+    #[test]
+    fn query_player_sample_matches() {
+        let data: DivingFishQueryPlayerData = decode(json!({
+            "additional_rating": 13,
+            "charts": {"dx": [], "sd": []},
+            "nickname": "sample",
+            "plate": null,
+            "rating": 15932,
+            "user_general_data": null,
+            "username": "sample_username"
+        }));
+        assert_eq!(data.rating, 15932);
+        assert!(data.charts.dx.is_empty());
+        assert!(data.user_general_data.is_none());
+    }
+
+    #[test]
+    fn music_data_sample_matches() {
+        let data: DivingFishMusicData = decode(json!([{
+            "id": "8",
+            "title": "True Love Song",
+            "type": "SD",
+            "ds": [5.0, 7.2, 10.2, 12.4],
+            "level": ["5", "7", "10", "12"],
+            "cids": [1, 2, 3, 4],
+            "charts": [{"notes": [63, 23, 8, 2], "charter": "-"}],
+            "basic_info": {
+                "title": "True Love Song",
+                "artist": "Kai",
+                "genre": "舞萌",
+                "bpm": 150,
+                "release_date": "",
+                "from": "maimai",
+                "is_new": false
+            }
+        }]));
+        assert_eq!(data.0[0].id, "8");
+        assert_eq!(data.0[0].song_type, DivingFishSheetType::Sd);
+        assert_eq!(data.0[0].charts[0].notes.len(), 4);
+    }
+
+    fn record() -> serde_json::Value {
+        json!({
+            "achievements": 91.6265,
+            "ds": 6.0,
+            "dxScore": 520,
+            "fc": "",
+            "fs": "",
+            "level": "6",
+            "level_index": 1,
+            "level_label": "Advanced",
+            "ra": 83,
+            "rate": "aa",
+            "song_id": 11115,
+            "title": "song",
+            "type": "DX"
+        })
+    }
+
+    #[test]
+    fn player_record_sample_matches() {
+        let data: DivingFishPlayerRecordData = decode(json!({"11568": [record()]}));
+        assert_eq!(data.0["11568"].len(), 1);
+    }
+
+    #[test]
+    fn plate_sample_matches() {
+        let data: DivingFishPlateData = decode(json!({"verlist": [record()]}));
+        assert_eq!(data.verlist.len(), 1);
+    }
+
+    #[test]
+    fn rating_ranking_sample_matches() {
+        let data: DivingFishRatingRankingData = decode(json!([{
+            "ra": 15000,
+            "username": "player"
+        }]));
+        assert_eq!(data.0[0].ra, 15000);
+    }
+
+    #[test]
+    fn chart_stats_sample_matches() {
+        let data: DivingFishChartStatsData = decode(json!({
+            "charts": {
+                "8": [{
+                    "cnt": 5463.0,
+                    "diff": "5",
+                    "fit_diff": 5.02,
+                    "avg": 100.05,
+                    "avg_dx": 11181.5,
+                    "std_dev": 0.97,
+                    "dist": [21, 2, 3],
+                    "fc_dist": [225.0, 1242.0]
+                }]
+            },
+            "diff_data": {
+                "1": {
+                    "achievements": 96.5,
+                    "dist": [0.03, 0.01],
+                    "fc_dist": [0.14, 0.11]
+                }
+            }
+        }));
+        assert_eq!(data.charts["8"][0].cnt, 5463.0);
+        assert_eq!(data.diff_data["1"].dist.len(), 2);
     }
 }

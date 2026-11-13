@@ -529,14 +529,33 @@ mod tests {
             "PhigrosSongSearchPage",
             "PhihubRankDetailData",
             "PhihubSongAccListData",
+            "LxnsPlayerData",
+            "LxnsScorePage",
+            "LxnsUserProfileData",
+            "LxnsBestsData",
+            "LxnsSongListData",
+            "LxnsAliasListData",
+            "LxnsRatingTrendData",
+            "LxnsHeatmapData",
+            "LxnsScoreHistoryData",
+            "LxnsRankingScorePage",
+            "LxnsCollectionListData",
+            "LxnsCollection",
+            "DivingFishRecordsData",
+            "DivingFishQueryPlayerData",
+            "DivingFishMusicData",
+            "DivingFishPlayerRecordData",
+            "DivingFishPlateData",
+            "DivingFishRatingRankingData",
+            "DivingFishChartStatsData",
         ] {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }
         let union = &json["components"]["schemas"]["UpstreamData"]["oneOf"];
         assert_eq!(
             union.as_array().map(Vec::len),
-            Some(32),
-            "the union carries thirty-one resource models plus PageBody"
+            Some(51),
+            "the union carries fifty resource models plus PageBody"
         );
     }
 

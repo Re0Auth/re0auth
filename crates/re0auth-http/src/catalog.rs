@@ -132,6 +132,25 @@ pub fn schema_name(connector: &str, resource: &str) -> Option<&'static str> {
         ("phigros-query", "songs_search_unique") => Some("PhigrosSongInfo"),
         ("phihub", "rank_detail") => Some("PhihubRankDetailData"),
         ("phihub", "song_acc_list") => Some("PhihubSongAccListData"),
+        ("lxns", "player") => Some("LxnsPlayerData"),
+        ("lxns", "scores") => Some("LxnsScorePage"),
+        ("lxns", "user_profile") => Some("LxnsUserProfileData"),
+        ("lxns", "bests") => Some("LxnsBestsData"),
+        ("lxns", "song_list") => Some("LxnsSongListData"),
+        ("lxns", "alias_list") => Some("LxnsAliasListData"),
+        ("lxns", "trend") => Some("LxnsRatingTrendData"),
+        ("lxns", "heatmap") => Some("LxnsHeatmapData"),
+        ("lxns", "score_history") => Some("LxnsScoreHistoryData"),
+        ("lxns", "score_ranking") => Some("LxnsRankingScorePage"),
+        ("lxns", "collections") => Some("LxnsCollectionListData"),
+        ("lxns", "collection") => Some("LxnsCollection"),
+        ("diving-fish", "records") => Some("DivingFishRecordsData"),
+        ("diving-fish", "query_player") => Some("DivingFishQueryPlayerData"),
+        ("diving-fish", "music_data") => Some("DivingFishMusicData"),
+        ("diving-fish", "player_record") => Some("DivingFishPlayerRecordData"),
+        ("diving-fish", "player_plate") => Some("DivingFishPlateData"),
+        ("diving-fish", "rating_ranking") => Some("DivingFishRatingRankingData"),
+        ("diving-fish", "chart_stats") => Some("DivingFishChartStatsData"),
         _ => None,
     }
 }
@@ -205,6 +224,49 @@ pub fn schema_json(connector: &str, resource: &str) -> Option<Value> {
         }
         "PhihubSongAccListData" => {
             schema_value::<re0auth_app::upstream_models::PhihubSongAccListData>()
+        }
+        "LxnsPlayerData" => schema_value::<re0auth_app::upstream_models::LxnsPlayerData>(),
+        "LxnsScorePage" => schema_value::<re0auth_app::upstream_models::LxnsScorePage>(),
+        "LxnsUserProfileData" => {
+            schema_value::<re0auth_app::upstream_models::LxnsUserProfileData>()
+        }
+        "LxnsBestsData" => schema_value::<re0auth_app::upstream_models::LxnsBestsData>(),
+        "LxnsSongListData" => schema_value::<re0auth_app::upstream_models::LxnsSongListData>(),
+        "LxnsAliasListData" => schema_value::<re0auth_app::upstream_models::LxnsAliasListData>(),
+        "LxnsRatingTrendData" => {
+            schema_value::<re0auth_app::upstream_models::LxnsRatingTrendData>()
+        }
+        "LxnsHeatmapData" => schema_value::<re0auth_app::upstream_models::LxnsHeatmapData>(),
+        "LxnsScoreHistoryData" => {
+            schema_value::<re0auth_app::upstream_models::LxnsScoreHistoryData>()
+        }
+        "LxnsRankingScorePage" => {
+            schema_value::<re0auth_app::upstream_models::LxnsRankingScorePage>()
+        }
+        "LxnsCollectionListData" => {
+            schema_value::<re0auth_app::upstream_models::LxnsCollectionListData>()
+        }
+        "LxnsCollection" => schema_value::<re0auth_app::upstream_models::LxnsCollection>(),
+        "DivingFishRecordsData" => {
+            schema_value::<re0auth_app::upstream_models::DivingFishRecordsData>()
+        }
+        "DivingFishQueryPlayerData" => {
+            schema_value::<re0auth_app::upstream_models::DivingFishQueryPlayerData>()
+        }
+        "DivingFishMusicData" => {
+            schema_value::<re0auth_app::upstream_models::DivingFishMusicData>()
+        }
+        "DivingFishPlayerRecordData" => {
+            schema_value::<re0auth_app::upstream_models::DivingFishPlayerRecordData>()
+        }
+        "DivingFishPlateData" => {
+            schema_value::<re0auth_app::upstream_models::DivingFishPlateData>()
+        }
+        "DivingFishRatingRankingData" => {
+            schema_value::<re0auth_app::upstream_models::DivingFishRatingRankingData>()
+        }
+        "DivingFishChartStatsData" => {
+            schema_value::<re0auth_app::upstream_models::DivingFishChartStatsData>()
         }
         _ => return None,
     };
@@ -284,6 +346,25 @@ mod tests {
             ("phigros-query", "songs_search_unique"),
             ("phihub", "rank_detail"),
             ("phihub", "song_acc_list"),
+            ("lxns", "player"),
+            ("lxns", "scores"),
+            ("lxns", "user_profile"),
+            ("lxns", "bests"),
+            ("lxns", "song_list"),
+            ("lxns", "alias_list"),
+            ("lxns", "trend"),
+            ("lxns", "heatmap"),
+            ("lxns", "score_history"),
+            ("lxns", "score_ranking"),
+            ("lxns", "collections"),
+            ("lxns", "collection"),
+            ("diving-fish", "records"),
+            ("diving-fish", "query_player"),
+            ("diving-fish", "music_data"),
+            ("diving-fish", "player_record"),
+            ("diving-fish", "player_plate"),
+            ("diving-fish", "rating_ranking"),
+            ("diving-fish", "chart_stats"),
         ] {
             assert!(
                 schema_name(connector, resource).is_some(),

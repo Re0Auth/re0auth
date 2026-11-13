@@ -7,7 +7,7 @@
       "name": "AGPL-3.0-or-later",
       "identifier": "AGPL-3.0-or-later"
     },
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "paths": {
     "/healthz": {
@@ -4099,6 +4099,486 @@
           }
         }
       },
+      "DivingFishBasicInfo": {
+        "type": "object",
+        "required": [
+          "title",
+          "artist",
+          "genre",
+          "bpm",
+          "release_date",
+          "from",
+          "is_new"
+        ],
+        "properties": {
+          "artist": {
+            "type": "string"
+          },
+          "bpm": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "from": {
+            "type": "string"
+          },
+          "genre": {
+            "type": "string"
+          },
+          "is_new": {
+            "type": "boolean"
+          },
+          "release_date": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "DivingFishChartInfo": {
+        "type": "object",
+        "required": [
+          "notes",
+          "charter"
+        ],
+        "properties": {
+          "charter": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        }
+      },
+      "DivingFishChartStat": {
+        "type": "object",
+        "required": [
+          "cnt",
+          "diff",
+          "fit_diff",
+          "avg",
+          "avg_dx",
+          "std_dev",
+          "dist",
+          "fc_dist"
+        ],
+        "properties": {
+          "avg": {
+            "type": "number",
+            "format": "double"
+          },
+          "avg_dx": {
+            "type": "number",
+            "format": "double"
+          },
+          "cnt": {
+            "type": "number",
+            "format": "double"
+          },
+          "diff": {
+            "type": "string"
+          },
+          "dist": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "fc_dist": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "fit_diff": {
+            "type": "number",
+            "format": "double"
+          },
+          "std_dev": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "DivingFishChartStatsData": {
+        "type": "object",
+        "required": [
+          "charts",
+          "diff_data"
+        ],
+        "properties": {
+          "charts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DivingFishChartStat"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "diff_data": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DivingFishDiffStat"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DivingFishCharts": {
+        "type": "object",
+        "required": [
+          "dx",
+          "sd"
+        ],
+        "properties": {
+          "dx": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DivingFishRecord"
+            }
+          },
+          "sd": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DivingFishRecord"
+            }
+          }
+        }
+      },
+      "DivingFishDiffStat": {
+        "type": "object",
+        "required": [
+          "achievements",
+          "dist",
+          "fc_dist"
+        ],
+        "properties": {
+          "achievements": {
+            "type": "number",
+            "format": "double"
+          },
+          "dist": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "fc_dist": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        }
+      },
+      "DivingFishFcType": {
+        "type": "string",
+        "enum": [
+          "Blank",
+          "fc",
+          "fcp",
+          "ap",
+          "app"
+        ]
+      },
+      "DivingFishFsType": {
+        "type": "string",
+        "enum": [
+          "Blank",
+          "sync",
+          "fs",
+          "fsp",
+          "fsd",
+          "fsdp"
+        ]
+      },
+      "DivingFishMusicData": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/DivingFishSong"
+        },
+        "description": "`GET /api/maimaidxprober/music_data`. Live response has song ids as strings."
+      },
+      "DivingFishPlateData": {
+        "type": "object",
+        "required": [
+          "verlist"
+        ],
+        "properties": {
+          "verlist": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DivingFishRecord"
+            }
+          }
+        }
+      },
+      "DivingFishPlayerRecordData": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/DivingFishRecord"
+          }
+        },
+        "propertyNames": {
+          "type": "string"
+        }
+      },
+      "DivingFishQueryPlayerData": {
+        "type": "object",
+        "required": [
+          "additional_rating",
+          "charts",
+          "nickname",
+          "rating",
+          "username"
+        ],
+        "properties": {
+          "additional_rating": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "charts": {
+            "$ref": "#/components/schemas/DivingFishCharts"
+          },
+          "nickname": {
+            "type": "string"
+          },
+          "plate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rating": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "user_general_data": {},
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "DivingFishRateType": {
+        "type": "string",
+        "enum": [
+          "sssp",
+          "sss",
+          "ssp",
+          "ss",
+          "sp",
+          "s",
+          "aaa",
+          "aa",
+          "a",
+          "bbb",
+          "bb",
+          "b",
+          "c",
+          "d"
+        ]
+      },
+      "DivingFishRatingRank": {
+        "type": "object",
+        "required": [
+          "ra",
+          "username"
+        ],
+        "properties": {
+          "ra": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "DivingFishRatingRankingData": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/DivingFishRatingRank"
+        }
+      },
+      "DivingFishRecord": {
+        "type": "object",
+        "required": [
+          "achievements",
+          "ds",
+          "dxScore",
+          "fc",
+          "fs",
+          "level",
+          "level_index",
+          "level_label",
+          "ra",
+          "rate",
+          "song_id",
+          "title",
+          "type"
+        ],
+        "properties": {
+          "achievements": {
+            "type": "number",
+            "format": "double"
+          },
+          "ds": {
+            "type": "number",
+            "format": "double"
+          },
+          "dxScore": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fc": {
+            "$ref": "#/components/schemas/DivingFishFcType"
+          },
+          "fs": {
+            "$ref": "#/components/schemas/DivingFishFsType"
+          },
+          "level": {
+            "type": "string"
+          },
+          "level_index": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "level_label": {
+            "type": "string"
+          },
+          "ra": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rate": {
+            "$ref": "#/components/schemas/DivingFishRateType"
+          },
+          "song_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/DivingFishSheetType"
+          }
+        }
+      },
+      "DivingFishRecordsData": {
+        "type": "object",
+        "required": [
+          "additional_rating",
+          "nickname",
+          "rating",
+          "records",
+          "username"
+        ],
+        "properties": {
+          "additional_rating": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "nickname": {
+            "type": "string"
+          },
+          "plate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rating": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DivingFishRecord"
+            }
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "DivingFishSheetType": {
+        "type": "string",
+        "enum": [
+          "SD",
+          "DX"
+        ]
+      },
+      "DivingFishSong": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "type",
+          "ds",
+          "level",
+          "cids",
+          "charts",
+          "basic_info"
+        ],
+        "properties": {
+          "basic_info": {
+            "$ref": "#/components/schemas/DivingFishBasicInfo"
+          },
+          "charts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DivingFishChartInfo"
+            }
+          },
+          "cids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "ds": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "level": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/DivingFishSheetType"
+          }
+        }
+      },
       "Envelope": {
         "type": "object",
         "description": "The B8 envelope (ADR-0049). Six fields, no more.",
@@ -4290,6 +4770,953 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "LxnsAlias": {
+        "type": "object",
+        "required": [
+          "song_id",
+          "aliases"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "song_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "LxnsAliasListData": {
+        "type": "object",
+        "required": [
+          "aliases"
+        ],
+        "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsAlias"
+            }
+          }
+        }
+      },
+      "LxnsBestsData": {
+        "type": "object",
+        "required": [
+          "standard_total",
+          "dx_total",
+          "standard",
+          "dx",
+          "standard_selections",
+          "dx_selections"
+        ],
+        "properties": {
+          "dx": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsScore"
+            }
+          },
+          "dx_selections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsScore"
+            }
+          },
+          "dx_total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "standard": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsScore"
+            }
+          },
+          "standard_selections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsScore"
+            }
+          },
+          "standard_total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "LxnsBuddyNotes": {
+        "type": "object",
+        "required": [
+          "left",
+          "right"
+        ],
+        "properties": {
+          "left": {
+            "$ref": "#/components/schemas/LxnsNotes"
+          },
+          "right": {
+            "$ref": "#/components/schemas/LxnsNotes"
+          }
+        }
+      },
+      "LxnsCollection": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "genre": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "is_favorite": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "release_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "required": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LxnsCollectionRequired"
+            }
+          }
+        }
+      },
+      "LxnsCollectionListData": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/LxnsCollection"
+        }
+      },
+      "LxnsCollectionRequired": {
+        "type": "object",
+        "properties": {
+          "completed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "difficulties": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "fc": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LxnsFcType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LxnsFsType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LxnsRateType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "songs": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LxnsCollectionRequiredSong"
+            }
+          }
+        }
+      },
+      "LxnsCollectionRequiredSong": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "type"
+        ],
+        "properties": {
+          "completed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "completed_difficulties": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/LxnsSongType"
+          }
+        }
+      },
+      "LxnsFcType": {
+        "type": "string",
+        "enum": [
+          "app",
+          "ap",
+          "fcp",
+          "fc"
+        ]
+      },
+      "LxnsFsType": {
+        "type": "string",
+        "enum": [
+          "fsdp",
+          "fsd",
+          "fsp",
+          "fs",
+          "sync"
+        ]
+      },
+      "LxnsGenre": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "genre"
+        ],
+        "properties": {
+          "genre": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "LxnsHeatmapData": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "propertyNames": {
+          "type": "string"
+        }
+      },
+      "LxnsNotes": {
+        "type": "object",
+        "required": [
+          "total",
+          "tap",
+          "hold",
+          "slide",
+          "touch",
+          "break"
+        ],
+        "properties": {
+          "break": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "hold": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "slide": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tap": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "touch": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "LxnsPlayerData": {
+        "type": "object",
+        "required": [
+          "name",
+          "rating",
+          "friend_code",
+          "course_rank",
+          "class_rank",
+          "star",
+          "upload_time"
+        ],
+        "properties": {
+          "class_rank": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "course_rank": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "friend_code": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rating": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "star": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "upload_time": {
+            "type": "string"
+          }
+        }
+      },
+      "LxnsRankingScore": {
+        "type": "object",
+        "required": [
+          "ranking",
+          "upload_time"
+        ],
+        "properties": {
+          "achievements": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "dx_score": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "player_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ranking": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "upload_time": {
+            "type": "string"
+          }
+        }
+      },
+      "LxnsRankingScorePage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsRankingScore"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LxnsRateType": {
+        "type": "string",
+        "enum": [
+          "sssp",
+          "sss",
+          "ssp",
+          "ss",
+          "sp",
+          "s",
+          "aaa",
+          "aa",
+          "a",
+          "bbb",
+          "bb",
+          "b",
+          "c",
+          "d"
+        ]
+      },
+      "LxnsRatingTrend": {
+        "type": "object",
+        "required": [
+          "total",
+          "standard_total",
+          "dx_total",
+          "date"
+        ],
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "dx_total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "standard_total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "LxnsRatingTrendData": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/LxnsRatingTrend"
+        }
+      },
+      "LxnsScore": {
+        "type": "object",
+        "required": [
+          "id",
+          "level_index",
+          "achievements",
+          "dx_score",
+          "type"
+        ],
+        "properties": {
+          "achievements": {
+            "type": "number",
+            "format": "double"
+          },
+          "dx_rating": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "dx_score": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "dx_star": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "fc": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LxnsFcType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fs": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LxnsFsType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_played_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level_index": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "play_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LxnsRateType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "song_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/LxnsSongType"
+          },
+          "upload_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LxnsScoreHistoryData": {
+        "type": [
+          "array",
+          "null"
+        ],
+        "items": {
+          "$ref": "#/components/schemas/LxnsScore"
+        }
+      },
+      "LxnsScorePage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsScore"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LxnsSong": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "artist",
+          "genre",
+          "bpm",
+          "version",
+          "difficulties"
+        ],
+        "properties": {
+          "artist": {
+            "type": "string"
+          },
+          "bpm": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "difficulties": {
+            "$ref": "#/components/schemas/LxnsSongDifficulties"
+          },
+          "disabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "genre": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "locked": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "map": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "release_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rights": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "LxnsSongDifficulties": {
+        "type": "object",
+        "required": [
+          "standard",
+          "dx"
+        ],
+        "properties": {
+          "dx": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsSongDifficulty"
+            }
+          },
+          "standard": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsSongDifficulty"
+            }
+          },
+          "utage": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LxnsSongDifficultyUtage"
+            }
+          }
+        }
+      },
+      "LxnsSongDifficulty": {
+        "type": "object",
+        "required": [
+          "type",
+          "difficulty",
+          "level",
+          "level_value",
+          "note_designer",
+          "version"
+        ],
+        "properties": {
+          "difficulty": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "level": {
+            "type": "string"
+          },
+          "level_value": {
+            "type": "number",
+            "format": "double"
+          },
+          "locked": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "note_designer": {
+            "type": "string"
+          },
+          "notes": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LxnsNotes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "release_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/LxnsSongType"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "LxnsSongDifficultyUtage": {
+        "type": "object",
+        "required": [
+          "kanji",
+          "description",
+          "is_buddy",
+          "type",
+          "difficulty",
+          "level",
+          "level_value",
+          "note_designer",
+          "version"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "difficulty": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "is_buddy": {
+            "type": "boolean"
+          },
+          "kanji": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "level_value": {
+            "type": "number",
+            "format": "double"
+          },
+          "locked": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "note_designer": {
+            "type": "string"
+          },
+          "notes": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LxnsUtageNotes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "release_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/LxnsSongType"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
+          }
+        }
+      },
+      "LxnsSongListData": {
+        "type": "object",
+        "required": [
+          "songs",
+          "genres",
+          "versions"
+        ],
+        "properties": {
+          "genres": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsGenre"
+            }
+          },
+          "songs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsSong"
+            }
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LxnsVersion"
+            }
+          }
+        }
+      },
+      "LxnsSongType": {
+        "type": "string",
+        "enum": [
+          "standard",
+          "dx",
+          "utage"
+        ]
+      },
+      "LxnsUserProfileData": {
+        "type": "object",
+        "description": "`GET /api/v0/user/profile` after the OAuth API's envelope is unwrapped.\n\nLive shape: id, name, email, email_verified, email_verified_time,\npermission, register_time. `bind`, `avatar_url` and `token` are not returned\nby this endpoint, even though the website's User object can carry them.",
+        "required": [
+          "id",
+          "name",
+          "email",
+          "email_verified",
+          "permission",
+          "register_time"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "email_verified": {
+            "type": "boolean"
+          },
+          "email_verified_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "permission": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "register_time": {
+            "type": "string"
+          }
+        }
+      },
+      "LxnsUtageNotes": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/LxnsNotes"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsBuddyNotes"
+          }
+        ]
+      },
+      "LxnsVersion": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32"
           }
         }
       },
@@ -7049,6 +8476,63 @@
           },
           {
             "$ref": "#/components/schemas/PhihubSongAccListData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsPlayerData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsScorePage"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsUserProfileData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsBestsData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsSongListData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsAliasListData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsRatingTrendData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsHeatmapData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsScoreHistoryData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsRankingScorePage"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsCollectionListData"
+          },
+          {
+            "$ref": "#/components/schemas/LxnsCollection"
+          },
+          {
+            "$ref": "#/components/schemas/DivingFishRecordsData"
+          },
+          {
+            "$ref": "#/components/schemas/DivingFishQueryPlayerData"
+          },
+          {
+            "$ref": "#/components/schemas/DivingFishMusicData"
+          },
+          {
+            "$ref": "#/components/schemas/DivingFishPlayerRecordData"
+          },
+          {
+            "$ref": "#/components/schemas/DivingFishPlateData"
+          },
+          {
+            "$ref": "#/components/schemas/DivingFishRatingRankingData"
+          },
+          {
+            "$ref": "#/components/schemas/DivingFishChartStatsData"
           },
           {
             "$ref": "#/components/schemas/PageBody"
