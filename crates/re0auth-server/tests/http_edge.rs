@@ -77,6 +77,7 @@ impl Drop for KeyGuard {
 
 struct App {
     router: axum::Router,
+    state: AppState,
     store: SqliteStore,
     clock: TestClock,
     client_id: ClientId,
@@ -317,7 +318,9 @@ where
         .with_metrics(metrics_enabled);
 
     App {
-        router: router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4444)))),
+        router: router(state.clone())
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4444)))),
+        state,
         store,
         clock,
         client_id,
@@ -325,6 +328,54 @@ where
         confidential,
         _key: key,
     }
+}
+
+struct UnusedConnectorAuth;
+
+#[async_trait::async_trait]
+impl re0auth_api::connector::ConnectorAuth for UnusedConnectorAuth {
+    fn authorization_url(
+        &self,
+        _endpoint: &re0auth_api::connector::ConnectorEndpoint,
+        _state: &str,
+        _redirect_uri: &str,
+        _pkce_challenge: Option<&str>,
+    ) -> Result<String, re0auth_api::connector::UpstreamError> {
+        Err(re0auth_api::connector::UpstreamError::Rejected)
+    }
+
+    async fn exchange_code(
+        &self,
+        _endpoint: &re0auth_api::connector::ConnectorEndpoint,
+        _code: &str,
+        _redirect_uri: &str,
+        _pkce_verifier: Option<&str>,
+    ) -> Result<re0auth_api::connector::ExchangedCredential, re0auth_api::connector::UpstreamError>
+    {
+        Err(re0auth_api::connector::UpstreamError::Rejected)
+    }
+}
+
+async fn app_with_binding() -> App {
+    let mut app = app().await;
+    let connector = Arc::new(re0auth_contract::MockConnector::new());
+    let sealer = re0auth_adapters::sealer::AesGcmSealer::new(
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        Arc::new(OsRandom),
+    )
+    .expect("sealer");
+    let binding = re0auth_app::binding::BindingService::new(
+        Arc::new(app.store.clone()),
+        connector.clone() as Arc<dyn re0auth_api::connector::ConnectorRegistry>,
+        Arc::new(UnusedConnectorAuth),
+        Arc::new(sealer),
+        Arc::new(app.clock.clone()),
+        Arc::new(OsRandom),
+        "https://auth.example.com/api/me/bindings/callback",
+    );
+    let state = app.state.clone().with_binding(Arc::new(binding));
+    app.router = router(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4444))));
+    app
 }
 
 fn form(pairs: &[(&str, &str)]) -> String {
@@ -1077,22 +1128,19 @@ async fn gateway_route_rejects_bad_bearer_tokens() {
         Some("bearer lowercase"),
         Some("Bearer"),
     ];
-    for header_value in cases {
-        let mut builder = Request::builder().uri("/api/v1/upstreams/probe/scores");
-        if let Some(value) = header_value {
-            builder = builder.header(header::AUTHORIZATION, value);
+    for uri in [
+        "/api/v1/upstreams/probe/scores",
+        "/api/v1/raw/probe/scores",
+        "/api/v1/assets/probe/jacket",
+    ] {
+        for header_value in cases {
+            let mut builder = Request::builder().uri(uri);
+            if let Some(value) = header_value {
+                builder = builder.header(header::AUTHORIZATION, value);
+            }
+            let (status, body, _) = send(&app, builder.body(Body::empty()).unwrap()).await;
+            assert_api(status, &body, StatusCode::NOT_FOUND, "unknown_connector");
         }
-        let (status, body, _) = send(&app, builder.body(Body::empty()).unwrap()).await;
-        // No gateway configured in this fixture: it reports that honestly.
-        let code = error_code(&body);
-        assert!(
-            status == StatusCode::NOT_FOUND || status == StatusCode::UNAUTHORIZED,
-            "unexpected {status} for {header_value:?}: {body}"
-        );
-        assert!(
-            code == "unknown_connector" || code == "invalid_token",
-            "unexpected {code} for {header_value:?}"
-        );
     }
 }
 
@@ -1590,6 +1638,52 @@ async fn seed_binding(
         .await
         .expect("seed binding");
     id
+}
+
+#[tokio::test]
+async fn binding_callback_preserves_configuration_and_query_error_precedence() {
+    let app = app().await;
+    let (status, body, _) = get(
+        &app,
+        "/api/me/bindings/callback?state=opaque&code=upstream-code",
+    )
+    .await;
+    assert_api(status, &body, StatusCode::NOT_FOUND, "not_found");
+
+    let app = app_with_binding().await;
+    for uri in [
+        "/api/me/bindings/callback",
+        "/api/me/bindings/callback?state=opaque",
+        "/api/me/bindings/callback?code=upstream-code",
+    ] {
+        let (status, body, _) = get(&app, uri).await;
+        assert_api(status, &body, StatusCode::BAD_REQUEST, "invalid_request");
+    }
+
+    let (status, body, _) = get(
+        &app,
+        "/api/me/bindings/callback?state=opaque&code=upstream-code",
+    )
+    .await;
+    assert_api(status, &body, StatusCode::UNAUTHORIZED, "login_required");
+}
+
+#[tokio::test]
+async fn delayed_session_handlers_keep_json_extractor_rejections() {
+    let app = app().await;
+    for uri in ["/api/me/bindings/begin", "/api/me/identities/begin"] {
+        let (status, _, _) = post_with_headers(
+            &app,
+            uri,
+            "{".to_string(),
+            &[("content-type", "application/json")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+
+        let (status, _, _) = post(&app, uri, "{}".to_string()).await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{uri}");
+    }
 }
 
 #[tokio::test]

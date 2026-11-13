@@ -2474,3 +2474,600 @@ fn openapi_operations(document: &serde_json::Value) -> BTreeSet<String> {
     }
     operations
 }
+
+const ADMIN_HANDLERS: &[&str] = &[
+    "stats",
+    "list_clients",
+    "create_client",
+    "get_client",
+    "update_client",
+    "rotate_client_secret",
+    "list_users",
+    "update_user",
+    "list_connectors",
+    "get_connector",
+    "list_bindings",
+    "revoke_binding",
+    "killswitch",
+    "list_audit",
+];
+const SESSION_HANDLERS: &[&str] = &[
+    "me",
+    "delete_account",
+    "authorizations",
+    "revoke_authorization",
+    "identities",
+    "detach_identity",
+    "logout",
+    "logout_all",
+];
+const BINDING_HANDLERS: &[&str] = &[
+    "bindings",
+    "revoke_all_bindings",
+    "upstreams",
+    "revoke_binding",
+];
+
+#[derive(Debug)]
+struct AstRoute {
+    path: String,
+    handlers: Vec<String>,
+}
+
+struct RouteVisitor {
+    routes: Vec<AstRoute>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for RouteVisitor {
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if node.method == "route" {
+            let Some(path) = node.args.first().and_then(string_literal) else {
+                panic!("route() must keep a complete literal path");
+            };
+            let mut handlers = Vec::new();
+            for argument in node.args.iter().skip(1) {
+                collect_route_handlers(argument, &mut handlers);
+            }
+            assert!(!handlers.is_empty(), "route {path} has no handler");
+            self.routes.push(AstRoute { path, handlers });
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+}
+
+fn string_literal(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(value),
+        ..
+    }) = expr
+    else {
+        return None;
+    };
+    Some(value.value())
+}
+
+fn collect_route_handlers(expr: &syn::Expr, handlers: &mut Vec<String>) {
+    const WRAPPERS: &[&str] = &["get", "post", "put", "patch", "delete"];
+    match expr {
+        syn::Expr::MethodCall(call) if WRAPPERS.contains(&call.method.to_string().as_str()) => {
+            collect_route_handlers(&call.receiver, handlers);
+            let Some(handler) = call.args.first().and_then(expr_path) else {
+                panic!(
+                    "{}.{} must name a handler",
+                    path_name(&call.receiver),
+                    call.method
+                );
+            };
+            handlers.push(handler);
+        }
+        syn::Expr::Call(call) => {
+            if let Some(wrapper) = expr_path(&call.func)
+                && WRAPPERS.contains(&wrapper.as_str())
+            {
+                let Some(handler) = call.args.first().and_then(expr_path) else {
+                    panic!("{wrapper}() must name a handler");
+                };
+                handlers.push(handler);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn expr_path(expr: &syn::Expr) -> Option<String> {
+    let syn::Expr::Path(path) = expr else {
+        return None;
+    };
+    Some(
+        path.path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::"),
+    )
+}
+
+fn path_name(expr: &syn::Expr) -> String {
+    expr_path(expr).unwrap_or_else(|| "route".to_string())
+}
+
+fn ast_routes(source: &str) -> Vec<AstRoute> {
+    let file = syn::parse_file(source).expect("router Rust source");
+    let mut visitor = RouteVisitor { routes: Vec::new() };
+    syn::visit::Visit::visit_file(&mut visitor, &file);
+    visitor.routes.reverse();
+    visitor.routes
+}
+
+fn functions(source: &str) -> BTreeMap<String, syn::ItemFn> {
+    syn::parse_file(source)
+        .expect("handler Rust source")
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function) => Some((function.sig.ident.to_string(), function)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn type_ends_with(ty: &syn::Type, expected: &str) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == expected)
+}
+
+fn has_principal(function: &syn::ItemFn, expected: &str) -> bool {
+    let mut count = 0;
+    let mut valid = false;
+    for argument in &function.sig.inputs {
+        let syn::FnArg::Typed(argument) = argument else {
+            continue;
+        };
+        if !type_ends_with(&argument.ty, expected) {
+            continue;
+        }
+        count += 1;
+        let syn::Pat::TupleStruct(pattern) = argument.pat.as_ref() else {
+            continue;
+        };
+        if pattern
+            .path
+            .segments
+            .last()
+            .map(|part| part.ident.to_string())
+            != Some(expected.to_string())
+        {
+            continue;
+        }
+        if pattern.elems.len() != 1 {
+            continue;
+        }
+        valid = match pattern.elems.first().expect("one pattern") {
+            syn::Pat::Wild(_) => true,
+            syn::Pat::Ident(ident) => ident.ident == "context" || ident.ident == "_context",
+            _ => false,
+        };
+    }
+    count == 1 && valid
+}
+
+fn principal_failures(
+    functions: &BTreeMap<String, syn::ItemFn>,
+    expected: &[&str],
+    principal: &str,
+) -> Vec<String> {
+    expected
+        .iter()
+        .filter_map(|name| {
+            let Some(function) = functions.get(*name) else {
+                return Some(format!("missing handler {name}"));
+            };
+            (!has_principal(function, principal))
+                .then(|| format!("{name} must take {principal}(context)"))
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct CallReport {
+    count: usize,
+    propagated: usize,
+}
+
+struct CallVisitor<'a> {
+    name: &'a str,
+    report: CallReport,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for CallVisitor<'_> {
+    fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+        if let syn::Expr::Call(call) = expr
+            && expr_path(&call.func).as_deref() == Some(self.name)
+        {
+            self.report.count += 1;
+        }
+        if let syn::Expr::MethodCall(call) = expr
+            && call.method == self.name
+        {
+            self.report.count += 1;
+        }
+        if let syn::Expr::Try(try_expr) = expr
+            && awaited_call(&try_expr.expr, self.name)
+        {
+            self.report.propagated += 1;
+        }
+        syn::visit::visit_expr(self, expr);
+    }
+}
+
+fn invoked_name(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Call(call) => expr_path(&call.func),
+        syn::Expr::MethodCall(call) => Some(call.method.to_string()),
+        _ => None,
+    }
+}
+
+fn awaited_call(expr: &syn::Expr, name: &str) -> bool {
+    match expr {
+        syn::Expr::Await(await_expr) => invoked_name(&await_expr.base).as_deref() == Some(name),
+        syn::Expr::MethodCall(call) if call.method == "map_err" => {
+            awaited_call(&call.receiver, name)
+        }
+        _ => false,
+    }
+}
+
+fn call_report(function: &syn::ItemFn, name: &str) -> CallReport {
+    let mut visitor = CallVisitor {
+        name,
+        report: CallReport::default(),
+    };
+    syn::visit::Visit::visit_item_fn(&mut visitor, function);
+    visitor.report
+}
+
+fn propagated_call_failures(
+    functions: &BTreeMap<String, syn::ItemFn>,
+    handler: &str,
+    callee: &str,
+) -> Vec<String> {
+    let Some(function) = functions.get(handler) else {
+        return vec![format!("missing handler {handler}")];
+    };
+    let report = call_report(function, callee);
+    if report.count == 1 && report.propagated == 1 {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{handler} must contain exactly one {callee}(...).await?; found {} calls and {} propagated",
+            report.count, report.propagated
+        )]
+    }
+}
+
+struct PathVisitor<'a> {
+    name: &'a str,
+    found: bool,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for PathVisitor<'_> {
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if expr_path(&syn::Expr::Path(path.clone())).as_deref() == Some(self.name) {
+            self.found = true;
+        }
+    }
+}
+
+fn contains_path(function: &syn::ItemFn, name: &str) -> bool {
+    let mut visitor = PathVisitor { name, found: false };
+    syn::visit::Visit::visit_item_fn(&mut visitor, function);
+    visitor.found
+}
+
+fn json_body_parameter(function: &syn::ItemFn) -> bool {
+    function.sig.inputs.iter().any(|argument| {
+        let syn::FnArg::Typed(argument) = argument else {
+            return false;
+        };
+        type_ends_with(&argument.ty, "Json")
+            && matches!(argument.pat.as_ref(), syn::Pat::TupleStruct(_))
+    })
+}
+
+fn statement_index(
+    function: &syn::ItemFn,
+    predicate: impl Fn(&syn::Expr) -> bool,
+) -> Option<usize> {
+    struct ExprFinder<'a> {
+        predicate: &'a dyn Fn(&syn::Expr) -> bool,
+        found: bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for ExprFinder<'_> {
+        fn visit_expr(&mut self, expr: &'ast syn::Expr) {
+            if (self.predicate)(expr) {
+                self.found = true;
+            }
+            if !self.found {
+                syn::visit::visit_expr(self, expr);
+            }
+        }
+    }
+    function.block.stmts.iter().position(|statement| {
+        let mut finder = ExprFinder {
+            predicate: &predicate,
+            found: false,
+        };
+        syn::visit::Visit::visit_stmt(&mut finder, statement);
+        finder.found
+    })
+}
+
+fn is_state_binding_config(expr: &syn::Expr) -> bool {
+    let syn::Expr::MethodCall(call) = expr else {
+        return false;
+    };
+    if call.method != "as_ref" {
+        return false;
+    }
+    let syn::Expr::Field(field) = call.receiver.as_ref() else {
+        return false;
+    };
+    matches!(&field.member, syn::Member::Named(name) if name == "binding")
+        && matches!(field.base.as_ref(), syn::Expr::Path(path) if path.path.is_ident("state"))
+}
+
+fn is_state_or_code_query(expr: &syn::Expr) -> bool {
+    let syn::Expr::MethodCall(call) = expr else {
+        return false;
+    };
+    call.method == "get"
+        && call
+            .args
+            .first()
+            .and_then(string_literal)
+            .is_some_and(|name| name == "state" || name == "code")
+}
+
+fn delayed_session_failures(
+    functions: &BTreeMap<String, syn::ItemFn>,
+    handlers: &[&str],
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for &handler in handlers {
+        let Some(function) = functions.get(handler) else {
+            failures.push(format!("missing delayed handler {handler}"));
+            continue;
+        };
+        if has_principal(function, "SessionPrincipal") {
+            failures.push(format!("{handler} must not use an eager SessionPrincipal"));
+        }
+        failures.extend(propagated_call_failures(
+            functions,
+            handler,
+            "session_principal",
+        ));
+        let auth = statement_index(
+            function,
+            |expr| matches!(expr, syn::Expr::Call(call) if expr_path(&call.func).as_deref() == Some("session_principal")),
+        );
+        if handler == "complete" {
+            let config = statement_index(function, is_state_binding_config);
+            let query = statement_index(function, is_state_or_code_query);
+            if !matches!((config, query, auth), (Some(config), Some(query), Some(auth)) if config < query && query < auth)
+            {
+                failures.push("callback must check config, state/code, then session".to_string());
+            }
+        } else {
+            if !json_body_parameter(function) {
+                failures.push(format!("{handler} must keep natural Json rejection"));
+            }
+            if auth != Some(0) {
+                failures.push(format!("{handler} must resolve the session immediately"));
+            }
+            let csrf = statement_index(
+                function,
+                |expr| matches!(expr, syn::Expr::Call(call) if expr_path(&call.func).as_deref() == Some("require_csrf")),
+            );
+            if !matches!((auth, csrf), (Some(auth), Some(csrf)) if auth < csrf) {
+                failures.push(format!("{handler} must check CSRF after the session"));
+            }
+        }
+    }
+    failures
+}
+
+fn passes_addr_to_fetch(function: &syn::ItemFn) -> bool {
+    struct FetchVisitor {
+        found: bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for FetchVisitor {
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if expr_path(&call.func).as_deref() == Some("fetch")
+                && matches!(call.args.iter().nth(1), Some(syn::Expr::Path(path)) if path.path.is_ident("addr"))
+            {
+                self.found = true;
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+    let mut visitor = FetchVisitor { found: false };
+    syn::visit::Visit::visit_item_fn(&mut visitor, function);
+    visitor.found
+}
+
+fn gateway_failures(
+    gateway: &BTreeMap<String, syn::ItemFn>,
+    authz: &BTreeMap<String, syn::ItemFn>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    for handler in ["require_catalog_token", "fetch", "fetch_asset"] {
+        failures.extend(propagated_call_failures(
+            gateway,
+            handler,
+            "gateway_identity",
+        ));
+    }
+    failures.extend(propagated_call_failures(
+        authz,
+        "gateway_identity",
+        "verify_gateway_token",
+    ));
+    if !authz
+        .get("gateway_identity")
+        .is_some_and(|function| contains_path(function, "Lane::Authenticated"))
+    {
+        failures.push("gateway_identity must charge the client lane".to_string());
+    }
+    for handler in ["fetch", "fetch_asset"] {
+        if !gateway
+            .get(handler)
+            .is_some_and(|function| contains_path(function, "Lane::PerUser"))
+        {
+            failures.push(format!("{handler} must charge PerUser"));
+        }
+    }
+    if gateway
+        .get("require_catalog_token")
+        .is_some_and(|function| contains_path(function, "Lane::PerUser"))
+    {
+        failures.push("catalog must not charge PerUser".to_string());
+    }
+    for handler in ["fetch_upstream", "fetch_raw"] {
+        if !gateway.get(handler).is_some_and(passes_addr_to_fetch) {
+            failures.push(format!("{handler} must pass addr to shared fetch"));
+        }
+    }
+    failures
+}
+
+fn route_order_failures(routes: &[AstRoute]) -> Vec<String> {
+    let rotate = routes
+        .iter()
+        .position(|route| route.path == "/api/admin/clients/{id}/rotate-secret");
+    let id = routes
+        .iter()
+        .position(|route| route.path == "/api/admin/clients/{id}");
+    if matches!((rotate, id), (Some(rotate), Some(id)) if rotate < id) {
+        Vec::new()
+    } else {
+        vec!["rotate-secret must be registered before /{id}".to_string()]
+    }
+}
+
+#[test]
+fn protected_routes_declare_their_actual_identity_entry() {
+    let source = |path: &str| fs::read_to_string(root().join(path)).expect("handler source");
+    let router_source = source("crates/re0auth-http/src/lib.rs");
+    let routes = ast_routes(&router_source);
+    let admin = functions(&source("crates/re0auth-http/src/admin.rs"));
+    let session = functions(&source("crates/re0auth-http/src/routes/session.rs"));
+    let binding = functions(&source("crates/re0auth-http/src/binding_routes.rs"));
+    let gateway = functions(&source("crates/re0auth-http/src/routes/gateway.rs"));
+    let authz = functions(&source("crates/re0auth-http/src/authz.rs"));
+    let mut seen_admin = BTreeSet::new();
+    let mut seen_session = BTreeSet::new();
+    let mut seen_binding = BTreeSet::new();
+
+    for route in &routes {
+        if !(route.path.starts_with("/api/admin/")
+            || route.path.starts_with("/api/me")
+            || route.path.starts_with("/api/logout"))
+        {
+            continue;
+        }
+        for handler in &route.handlers {
+            let name = handler
+                .rsplit("::")
+                .next()
+                .expect("handler name")
+                .to_string();
+            if route.path.starts_with("/api/admin/") {
+                assert!(
+                    ADMIN_HANDLERS.contains(&name.as_str()),
+                    "unclassified admin handler {handler}"
+                );
+                seen_admin.insert(name);
+            } else if route.path == "/api/me/bindings/begin" {
+                assert_eq!(name, "begin");
+            } else if route.path == "/api/me/bindings/callback" {
+                assert_eq!(name, "complete");
+            } else if route.path == "/api/me/identities/begin" {
+                assert_eq!(name, "begin_identity_attach");
+            } else if SESSION_HANDLERS.contains(&name.as_str()) {
+                seen_session.insert(name);
+            } else if BINDING_HANDLERS.contains(&name.as_str()) {
+                seen_binding.insert(name);
+            } else {
+                panic!("unclassified protected handler {handler} at {}", route.path);
+            }
+        }
+    }
+    for expected in ADMIN_HANDLERS {
+        assert!(
+            seen_admin.contains(*expected),
+            "admin handler {expected} is not routed"
+        );
+    }
+    for expected in SESSION_HANDLERS {
+        assert!(
+            seen_session.contains(*expected),
+            "session handler {expected} is not routed"
+        );
+    }
+    for expected in BINDING_HANDLERS {
+        assert!(
+            seen_binding.contains(*expected),
+            "binding handler {expected} is not routed"
+        );
+    }
+    assert!(principal_failures(&admin, ADMIN_HANDLERS, "AdminPrincipal").is_empty());
+    assert!(principal_failures(&session, SESSION_HANDLERS, "SessionPrincipal").is_empty());
+    assert!(principal_failures(&binding, BINDING_HANDLERS, "SessionPrincipal").is_empty());
+
+    let mut delayed = delayed_session_failures(&binding, &["begin", "complete"]);
+    delayed.extend(delayed_session_failures(
+        &session,
+        &["begin_identity_attach"],
+    ));
+    assert!(delayed.is_empty(), "{delayed:?}");
+    let gateway_errors = gateway_failures(&gateway, &authz);
+    assert!(gateway_errors.is_empty(), "{gateway_errors:?}");
+    assert!(route_order_failures(&routes).is_empty());
+}
+
+#[test]
+fn the_identity_ast_gate_rejects_planted_bypasses() {
+    let missing = functions("async fn stats(State(state): State<AppState>) {}");
+    assert!(!principal_failures(&missing, &["stats"], "AdminPrincipal").is_empty());
+
+    let comment = functions(
+        r#"async fn fetch() {
+        // gateway_identity(state, addr, headers).await?;
+        let _text = "gateway_identity(state, addr, headers).await?";
+    }"#,
+    );
+    assert!(!propagated_call_failures(&comment, "fetch", "gateway_identity").is_empty());
+
+    let ignored_gateway =
+        functions("async fn fetch() { let _ = gateway_identity(state, addr, headers).await; }");
+    assert!(!propagated_call_failures(&ignored_gateway, "fetch", "gateway_identity").is_empty());
+    let ignored_session =
+        functions("async fn begin() { let _ = session_principal(&state, &headers).await; }");
+    assert!(!propagated_call_failures(&ignored_session, "begin", "session_principal").is_empty());
+
+    let reversed = ast_routes(
+        r#"fn router() {
+        Router::new()
+            .route("/api/admin/clients/{id}", get(get_client))
+            .route("/api/admin/clients/{id}/rotate-secret", post(rotate_client_secret));
+    }"#,
+    );
+    assert!(!route_order_failures(&reversed).is_empty());
+}

@@ -4,7 +4,9 @@
 //! store and a real `AesGcmSealer`. Only the upstream itself is mocked, which is
 //! the point: it proves the whole chain is wired, not just the units.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use re0auth_api::rate::{Lane, RateDecision, RateLimiter};
 
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
@@ -48,7 +50,11 @@ async fn fixture() -> Fixture {
     fixture_with_rate(Arc::new(re0auth_api::rate::Unlimited)).await
 }
 
-async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fixture {
+async fn fixture_with_rate(rate: Arc<dyn RateLimiter>) -> Fixture {
+    fixture_with_gateway(rate, true).await
+}
+
+async fn fixture_with_gateway(rate: Arc<dyn RateLimiter>, with_gateway: bool) -> Fixture {
     let store = Arc::new(
         SqliteStore::connect("sqlite::memory:")
             .await
@@ -249,9 +255,10 @@ async fn fixture_with_rate(rate: Arc<dyn re0auth_api::rate::RateLimiter>) -> Fix
         4 * 1024 * 1024,
     )
     .with_asset_spawner(Arc::new(|future| drop(tokio::spawn(future))));
-    let state = re0auth_http::AppState::new(oauth, auth)
-        .with_gateway(Arc::new(gateway))
-        .with_rate_limiter(rate);
+    let mut state = re0auth_http::AppState::new(oauth, auth).with_rate_limiter(rate);
+    if with_gateway {
+        state = state.with_gateway(Arc::new(gateway));
+    }
 
     Fixture {
         router: re0auth_http::router(state).layer(MockConnectInfo(std::net::SocketAddr::from((
@@ -300,9 +307,21 @@ fn chrono_like_now() -> i64 {
 }
 
 async fn get(fixture: &Fixture, uri: &str, token: Option<&str>) -> (StatusCode, Vec<u8>) {
+    request_with_token(fixture, uri, token, None).await
+}
+
+async fn request_with_token(
+    fixture: &Fixture,
+    uri: &str,
+    token: Option<&str>,
+    accept: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
     let mut request = Request::builder().uri(uri);
     if let Some(token) = token {
         request = request.header("authorization", format!("Bearer {token}"));
+    }
+    if let Some(accept) = accept {
+        request = request.header("accept", accept);
     }
     let response = fixture
         .router
@@ -756,11 +775,43 @@ async fn a_missing_view_path_is_upstream_contract_changed() {
 
 /// The anonymous budget must be charged before the JWT is verified; otherwise a
 /// caller over quota still costs a signature check plus three queries.
-struct DenyAll;
+#[derive(Default)]
+struct RecordingRateLimiter {
+    calls: Mutex<Vec<(Lane, String)>>,
+}
 
-impl re0auth_api::rate::RateLimiter for DenyAll {
-    fn check(&self, _lane: re0auth_api::rate::Lane, _key: &str) -> re0auth_api::rate::RateDecision {
-        re0auth_api::rate::RateDecision::Deny {
+impl RecordingRateLimiter {
+    fn clear(&self) {
+        self.calls.lock().expect("rate calls").clear();
+    }
+
+    fn calls(&self) -> Vec<(Lane, String)> {
+        self.calls.lock().expect("rate calls").clone()
+    }
+}
+
+impl RateLimiter for RecordingRateLimiter {
+    fn check(&self, lane: Lane, key: &str) -> RateDecision {
+        self.calls
+            .lock()
+            .expect("rate calls")
+            .push((lane, key.to_string()));
+        RateDecision::Allow
+    }
+}
+
+#[derive(Default)]
+struct DenyAll {
+    calls: Mutex<Vec<(Lane, String)>>,
+}
+
+impl RateLimiter for DenyAll {
+    fn check(&self, lane: Lane, key: &str) -> RateDecision {
+        self.calls
+            .lock()
+            .expect("rate calls")
+            .push((lane, key.to_string()));
+        RateDecision::Deny {
             retry_after_secs: 7,
             limit: 1,
             window_secs: 60,
@@ -773,26 +824,154 @@ impl re0auth_api::rate::RateLimiter for DenyAll {
 }
 
 #[tokio::test]
-async fn s12_over_quota_callers_are_rejected_before_token_verification() {
-    let fixture = fixture_with_rate(Arc::new(DenyAll)).await;
-    // A forged token would normally be rejected as 401; the point is that the
-    // limiter answers first.
-    let (status, _) = get(
-        &fixture,
-        "/api/v1/upstreams/probe/scores",
-        Some("not-a-real-token"),
-    )
-    .await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-    assert!(fixture.connector.calls().is_empty());
+async fn every_gateway_route_stops_at_one_anonymous_charge_when_over_quota() {
+    let rate = Arc::new(DenyAll::default());
+    let fixture = fixture_with_rate(rate.clone()).await;
+    let paths = [
+        ("/api/v1/upstreams", None),
+        ("/api/v1/upstreams/probe/scores/schema", None),
+        ("/api/v1/upstreams/probe/scores", None),
+        ("/api/v1/raw/probe/scores", None),
+        ("/api/v1/assets/probe/jacket", Some("image/png")),
+    ];
+
+    for (uri, accept) in paths {
+        let (status, body) =
+            request_with_token(&fixture, uri, Some("not-a-real-token"), accept).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{uri}");
+        let problem: serde_json::Value = serde_json::from_slice(&body).expect("problem");
+        assert_eq!(problem["code"], "rate_limited");
+        assert_eq!(
+            rate.calls.lock().expect("rate calls").as_slice(),
+            &[(Lane::Unauthenticated, "127.0.0.1".to_string())],
+            "{uri}"
+        );
+        rate.calls.lock().expect("rate calls").clear();
+        assert!(fixture.connector.calls().is_empty(), "{uri}");
+    }
 }
 
 #[tokio::test]
-async fn catalog_and_schema_reject_over_quota_callers_before_token_verification() {
-    let fixture = fixture_with_rate(Arc::new(DenyAll)).await;
+async fn catalog_and_schema_charge_only_anonymous_and_client_lanes() {
+    let rate = Arc::new(RecordingRateLimiter::default());
+    let fixture = fixture_with_rate(rate.clone()).await;
+    let token = access_token(&fixture, SCOPE);
+    let client_key = fixture.client_id.0.to_string();
+    let expected = vec![
+        (Lane::Unauthenticated, "127.0.0.1".to_string()),
+        (Lane::Authenticated, client_key),
+    ];
+
+    for (uri, expected_status) in [
+        ("/api/v1/upstreams", StatusCode::OK),
+        (
+            "/api/v1/upstreams/probe/scores/schema",
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let (status, _) = get(&fixture, uri, Some(&token)).await;
+        assert_eq!(status, expected_status, "{uri}");
+        assert_eq!(rate.calls(), expected, "{uri}");
+        rate.clear();
+        assert!(fixture.connector.calls().is_empty(), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn data_routes_charge_anonymous_client_and_user_lanes_exactly_once() {
+    let rate = Arc::new(RecordingRateLimiter::default());
+    let fixture = fixture_with_rate(rate.clone()).await;
+    fixture.connector.set_response(
+        "scores",
+        Ok(UpstreamPayload {
+            content_type: "application/json".to_string(),
+            body: br#"{"rks":15.2}"#.to_vec(),
+        }),
+    );
+    fixture.connector.set_asset_stream(
+        "jacket",
+        "image/png",
+        [bytes::Bytes::from_static(b"\x89PNG\r\n\x1a\nbody")],
+    );
+    let token = access_token(&fixture, SCOPE);
+    let expected = vec![
+        (Lane::Unauthenticated, "127.0.0.1".to_string()),
+        (Lane::Authenticated, fixture.client_id.0.to_string()),
+        (Lane::PerUser, fixture.user.0.to_string()),
+    ];
+
+    let (status, body) = get(&fixture, "/api/v1/upstreams/probe/scores", Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(rate.calls(), expected);
+    rate.clear();
+
+    let (status, _) = get(&fixture, "/api/v1/raw/probe/scores", Some(&token)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(rate.calls(), expected);
+    rate.clear();
+
+    let (status, body) = request_with_token(
+        &fixture,
+        "/api/v1/assets/probe/jacket",
+        Some(&token),
+        Some("image/png"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(rate.calls(), expected);
+}
+
+#[tokio::test]
+async fn without_gateway_data_routes_charge_once_and_return_unknown_connector() {
+    let rate = Arc::new(RecordingRateLimiter::default());
+    let fixture = fixture_with_gateway(rate.clone(), false).await;
+    for (uri, accept) in [
+        ("/api/v1/upstreams/probe/scores", None),
+        ("/api/v1/raw/probe/scores", None),
+        ("/api/v1/assets/probe/jacket", Some("image/png")),
+    ] {
+        let (status, body) = request_with_token(&fixture, uri, Some("forged"), accept).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        let problem: serde_json::Value = serde_json::from_slice(&body).expect("problem");
+        assert_eq!(problem["error"], "unknown_connector");
+        assert_eq!(
+            rate.calls(),
+            vec![(Lane::Unauthenticated, "127.0.0.1".to_string())],
+            "{uri}"
+        );
+        rate.clear();
+        assert!(fixture.connector.calls().is_empty(), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn backend_absence_does_not_duplicate_any_gateway_lane() {
+    let rate = Arc::new(RecordingRateLimiter::default());
+    let fixture = fixture_with_rate(rate.clone()).await;
+    let token = access_token(&fixture, SCOPE);
+    let (status, _) = get(&fixture, "/api/v1/upstreams/probe/scores", Some(&token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        rate.calls(),
+        vec![
+            (Lane::Unauthenticated, "127.0.0.1".to_string()),
+            (Lane::Authenticated, fixture.client_id.0.to_string()),
+            (Lane::PerUser, fixture.user.0.to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn catalog_and_schema_reject_missing_and_forged_tokens_before_upstream() {
+    let fixture = fixture().await;
     for uri in ["/api/v1/upstreams", "/api/v1/upstreams/probe/scores/schema"] {
-        let (status, _) = get(&fixture, uri, Some("not-a-real-token")).await;
-        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        for token in [None, Some("forged")] {
+            let (status, body) = get(&fixture, uri, token).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} {token:?}");
+            let problem: serde_json::Value = serde_json::from_slice(&body).expect("problem");
+            assert_eq!(problem["code"], "invalid_token");
+            assert!(fixture.connector.calls().is_empty());
+        }
     }
 }
 

@@ -3,6 +3,7 @@
 //! HTTP layer. Parses and renders; it does not implement business rules.
 
 mod admin;
+mod authz;
 mod binding_routes;
 pub mod catalog;
 mod client_address;

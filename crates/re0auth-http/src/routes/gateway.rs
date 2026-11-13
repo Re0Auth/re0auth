@@ -13,30 +13,19 @@ use percent_encoding::percent_decode_str;
 use re0auth_api::connector::AssetResponse;
 use re0auth_api::rate::Lane;
 use re0auth_app::gateway::{GatewayRequest, Pagination};
-use re0auth_app::oauth::OAuthError;
 
-use crate::parsers::{bearer_token, has_malformed_escape};
+use crate::authz::{GatewayIdentity, gateway_identity};
+use crate::parsers::has_malformed_escape;
 use crate::rate::{charge, charge_unauthenticated};
 use crate::request_id;
-use crate::{
-    ApiError, AppState, Shape, error_response, gateway_error, invalid_request, no_store,
-    oauth_error,
-};
+use crate::{ApiError, AppState, Shape, error_response, gateway_error, invalid_request, no_store};
 
 async fn require_catalog_token(
     state: &AppState,
     addr: SocketAddr,
     headers: &HeaderMap,
 ) -> Result<(), ApiError> {
-    charge_unauthenticated(state, &state.client_address(addr, headers), Shape::Problem)?;
-    let token = bearer_token(headers)
-        .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Problem))?;
-    let (_, _, client_id) = state
-        .oauth
-        .verify_gateway_token(&token)
-        .await
-        .map_err(|error| oauth_error(error, Shape::Problem))?;
-    charge(state, Lane::Authenticated, &client_id, Shape::Problem)?;
+    gateway_identity(state, addr, headers).await?;
     Ok(())
 }
 
@@ -134,13 +123,14 @@ pub(crate) async fn fetch_upstream(
 ) -> Result<Response, ApiError> {
     let params = parse_query(raw.as_deref())?;
     let pagination = pagination(&params)?;
-    charge_unauthenticated(
-        &state,
-        &state.client_address(addr, &headers),
-        Shape::Problem,
-    )?;
     fetch(
-        state, connector, resource, headers, false, &params, pagination,
+        state,
+        addr,
+        (connector, resource),
+        headers,
+        false,
+        &params,
+        pagination,
     )
     .await
 }
@@ -176,26 +166,23 @@ pub(crate) async fn fetch_asset(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let params = parse_query(raw.as_deref())?;
-    charge_unauthenticated(
-        &state,
-        &state.client_address(addr, &headers),
-        Shape::Problem,
-    )?;
     let Some(gateway) = state.gateway.clone() else {
+        charge_unauthenticated(
+            &state,
+            &state.client_address(addr, &headers),
+            Shape::Problem,
+        )?;
         return Err(error_response(
             StatusCode::NOT_FOUND,
             "unknown_connector",
             "no connector is configured",
         ));
     };
-    let token = bearer_token(&headers)
-        .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Problem))?;
-    let (user_id, granted, client_id) = state
-        .oauth
-        .verify_gateway_token(&token)
-        .await
-        .map_err(|error| oauth_error(error, Shape::Problem))?;
-    charge(&state, Lane::Authenticated, &client_id, Shape::Problem)?;
+    let GatewayIdentity {
+        user_id,
+        granted_scopes,
+        client_id,
+    } = gateway_identity(&state, addr, &headers).await?;
     charge(
         &state,
         Lane::PerUser,
@@ -203,7 +190,7 @@ pub(crate) async fn fetch_asset(
         Shape::Problem,
     )?;
     let connector_id = re0auth_app::gateway::connector_id_for_name(&connector);
-    let scopes: Vec<String> = granted
+    let scopes: Vec<String> = granted_scopes
         .split_ascii_whitespace()
         .map(ToString::to_string)
         .collect();
@@ -277,13 +264,14 @@ pub(crate) async fn fetch_raw(
 ) -> Result<Response, ApiError> {
     let params = parse_query(raw.as_deref())?;
     let pagination = pagination(&params)?;
-    charge_unauthenticated(
-        &state,
-        &state.client_address(addr, &headers),
-        Shape::Problem,
-    )?;
     fetch(
-        state, connector, resource, headers, true, &params, pagination,
+        state,
+        addr,
+        (connector, resource),
+        headers,
+        true,
+        &params,
+        pagination,
     )
     .await
 }
@@ -359,35 +347,30 @@ fn pagination(params: &BTreeMap<String, Vec<String>>) -> Result<Pagination, ApiE
 
 async fn fetch(
     state: AppState,
-    connector: String,
-    resource: String,
+    addr: SocketAddr,
+    (connector, resource): (String, String),
     headers: HeaderMap,
     raw: bool,
     params: &BTreeMap<String, Vec<String>>,
     pagination: Pagination,
 ) -> Result<Response, ApiError> {
     let Some(gateway) = state.gateway.clone() else {
+        charge_unauthenticated(
+            &state,
+            &state.client_address(addr, &headers),
+            Shape::Problem,
+        )?;
         return Err(error_response(
             StatusCode::NOT_FOUND,
             "unknown_connector",
             "no connector is configured",
         ));
     };
-    let token = bearer_token(&headers)
-        .ok_or_else(|| oauth_error(OAuthError::InvalidToken, Shape::Problem))?;
-    let (user_id, granted, client_id) = state
-        .oauth
-        .verify_gateway_token(&token)
-        .await
-        .map_err(|error| oauth_error(error, Shape::Problem))?;
-    // Authenticated lane, keyed by the client that owns the token. Keyed by IP
-    // instead, one bot behind many addresses could bypass its budget, and a
-    // shared address (a school, a carrier NAT) would punish unrelated callers.
-    charge(&state, Lane::Authenticated, &client_id, Shape::Problem)?;
-    // The user lane is charged as well: many bots may share one client id, so a
-    // client ceiling alone would let them hammer one player without limit.
-    // Checked after the client lane so a single abusive integration still hits
-    // its own ceiling first.
+    let GatewayIdentity {
+        user_id,
+        granted_scopes,
+        client_id,
+    } = gateway_identity(&state, addr, &headers).await?;
     charge(
         &state,
         Lane::PerUser,
@@ -395,7 +378,7 @@ async fn fetch(
         Shape::Problem,
     )?;
     let connector_id = re0auth_app::gateway::connector_id_for_name(&connector);
-    let scopes: Vec<String> = granted
+    let scopes: Vec<String> = granted_scopes
         .split_ascii_whitespace()
         .map(ToString::to_string)
         .collect();

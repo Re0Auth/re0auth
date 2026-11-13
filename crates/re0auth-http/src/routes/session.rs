@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use url::form_urlencoded;
 use uuid::Uuid;
 
+use crate::authz::{SessionPrincipal, session_principal};
 use crate::cookies::{
     append_set_cookie, clear_session_cookies, login_intent_cookie, login_intent_from,
     with_session_cookies,
@@ -238,8 +239,8 @@ pub struct MeUserView {
 pub(crate) async fn me(
     State(state): State<AppState>,
     headers: HeaderMap,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     let csrf = csrf_cookie(&headers, state.auth.secure_cookies())
         .ok_or_else(|| auth_error(AuthError::LoginRequired))?;
     if !state.auth.validate_csrf(&context.session, &csrf) {
@@ -268,9 +269,8 @@ pub(crate) async fn me(
 )]
 pub(crate) async fn authorizations(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     let views = state
         .auth
         .list_authorizations(context.user.id)
@@ -298,8 +298,8 @@ pub(crate) async fn revoke_authorization(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(client_id): Path<String>,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let client_id = Uuid::parse_str(&client_id)
         .map(ClientId)
@@ -326,8 +326,8 @@ pub(crate) async fn revoke_authorization(
 pub(crate) async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let secure = state.auth.secure_cookies();
     let raw =
@@ -352,8 +352,8 @@ pub(crate) async fn logout(
 pub(crate) async fn logout_all(
     State(state): State<AppState>,
     headers: HeaderMap,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     state
         .auth
@@ -380,8 +380,8 @@ pub(crate) async fn logout_all(
 pub(crate) async fn delete_account(
     State(state): State<AppState>,
     headers: HeaderMap,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     // F-6 cascade before the row goes: deleting locally first would leave a live
     // upstream credential with no local record to retry from. A refusal aborts the
@@ -442,8 +442,8 @@ pub(crate) async fn detach_identity(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let identity = Uuid::parse_str(&id)
         .map(IdentityId)
@@ -488,9 +488,8 @@ pub(crate) struct AttachStartView {
 )]
 pub(crate) async fn identities(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     let views: Vec<IdentityView> = state
         .auth
         .list_identities(context.user.id)
@@ -523,7 +522,7 @@ pub(crate) async fn begin_identity_attach(
     headers: HeaderMap,
     Json(body): Json<AttachBody>,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
+    let SessionPrincipal(context) = session_principal(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let start = state
         .auth

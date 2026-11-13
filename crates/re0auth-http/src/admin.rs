@@ -26,6 +26,7 @@ use re0auth_api::{AuditId, BindingId, ClientId, ConnectorId, UserId};
 use re0auth_app::admin_service::{AdminService, ClientPatch, NewClientInput, Page};
 use re0auth_app::auth::SessionContext;
 
+use crate::authz::AdminPrincipal;
 use crate::{
     ApiError, AppState, Shape, admin_error, admin_required, auth_error, invalid_request, no_store,
     problem_response, request_id, require_csrf, session_context_from_headers,
@@ -182,9 +183,8 @@ fn check_redirect_uris(values: &[String]) -> Result<(), ApiError> {
 )]
 pub(crate) async fn stats(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    AdminPrincipal(_context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    admin_session(&state, &headers).await?;
     let view = service(&state)?.stats().await.map_err(admin_error)?;
     Ok(no_store(Json(view).into_response()))
 }
@@ -210,10 +210,9 @@ pub(crate) async fn stats(
 )]
 pub(crate) async fn list_clients(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Query(params): Query<Params>,
+    AdminPrincipal(_context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    admin_session(&state, &headers).await?;
     let page = service(&state)?
         .list_clients(
             uuid_param(&params, "cursor", "cursor must be a UUID", ClientId)?,
@@ -257,9 +256,9 @@ pub(crate) struct CreateClientBody {
 pub(crate) async fn create_client(
     State(state): State<AppState>,
     headers: HeaderMap,
+    AdminPrincipal(context): AdminPrincipal,
     body: Result<Json<CreateClientBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let context = admin_session(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let body = json_body(body)?;
     // A new client is not usable until an admin approves it. Defaulting to
@@ -310,10 +309,9 @@ pub(crate) async fn create_client(
 )]
 pub(crate) async fn get_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
+    AdminPrincipal(_context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    admin_session(&state, &headers).await?;
     let id = path_id(&id, "client id must be a UUID", ClientId)?;
     let view = service(&state)?
         .get_client(&id)
@@ -361,9 +359,9 @@ pub(crate) async fn update_client(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    AdminPrincipal(context): AdminPrincipal,
     body: Result<Json<UpdateClientBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let context = admin_session(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let body = json_body(body)?;
     let id = path_id(&id, "client id must be a UUID", ClientId)?;
@@ -414,8 +412,8 @@ pub(crate) async fn rotate_client_secret(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    AdminPrincipal(context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = admin_session(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let id = path_id(&id, "client id must be a UUID", ClientId)?;
     let rotated = service(&state)?
@@ -446,10 +444,9 @@ pub(crate) async fn rotate_client_secret(
 )]
 pub(crate) async fn list_users(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Query(params): Query<Params>,
+    AdminPrincipal(_context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    admin_session(&state, &headers).await?;
     let page = service(&state)?
         .list_users(
             uuid_param(&params, "cursor", "cursor must be a UUID", UserId)?,
@@ -492,9 +489,9 @@ pub(crate) async fn update_user(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    AdminPrincipal(context): AdminPrincipal,
     body: Result<Json<UpdateUserBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let context = admin_session(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let body = json_body(body)?;
     let target = path_id(&id, "user id must be a UUID", UserId)?;
@@ -537,9 +534,8 @@ pub(crate) async fn update_user(
 )]
 pub(crate) async fn list_connectors(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    AdminPrincipal(_context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    admin_session(&state, &headers).await?;
     let items = service(&state)?
         .list_connectors()
         .await
@@ -569,10 +565,9 @@ pub(crate) async fn list_connectors(
 )]
 pub(crate) async fn get_connector(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Path(id): Path<String>,
+    AdminPrincipal(_context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    admin_session(&state, &headers).await?;
     let id = path_id(&id, "connector id must be a UUID", ConnectorId)?;
     let view = service(&state)?
         .get_connector(&id)
@@ -605,10 +600,9 @@ pub(crate) async fn get_connector(
 )]
 pub(crate) async fn list_bindings(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Query(params): Query<Params>,
+    AdminPrincipal(_context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    admin_session(&state, &headers).await?;
     let query = BindingQuery {
         user: uuid_param(&params, "user", "user filter must be a UUID", UserId)?,
         upstream: params.get("connector").cloned(),
@@ -651,8 +645,8 @@ pub(crate) async fn revoke_binding(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    AdminPrincipal(context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = admin_session(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let id = path_id(&id, "binding id must be a UUID", BindingId)?;
     service(&state)?
@@ -689,10 +683,9 @@ pub(crate) async fn revoke_binding(
 )]
 pub(crate) async fn list_audit(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Query(params): Query<Params>,
+    AdminPrincipal(_context): AdminPrincipal,
 ) -> Result<Response, ApiError> {
-    admin_session(&state, &headers).await?;
     let filter = AuditFilter {
         actor: uuid_param(&params, "actor", "actor filter must be a UUID", UserId)?,
         client: uuid_param(&params, "client", "client filter must be a UUID", ClientId)?,
@@ -754,9 +747,9 @@ pub(crate) struct KillswitchBody {
 pub(crate) async fn killswitch(
     State(state): State<AppState>,
     headers: HeaderMap,
+    AdminPrincipal(context): AdminPrincipal,
     body: Result<Json<KillswitchBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let context = admin_session(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let body = json_body(body)?;
     let Some(binding) = state.binding.as_ref() else {

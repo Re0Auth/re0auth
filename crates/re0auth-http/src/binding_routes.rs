@@ -17,9 +17,10 @@ use uuid::Uuid;
 use re0auth_app::auth::{AuthError, BindingRevocationSummary};
 use re0auth_app::binding::BindingError;
 
+use crate::authz::{SessionPrincipal, session_principal};
 use crate::{
     ApiError, AppState, Shape, auth_error, invalid_request, no_store, problem_response, request_id,
-    require_csrf, session_context_from_headers,
+    require_csrf,
 };
 
 /// The body of a binding start request.
@@ -80,7 +81,7 @@ pub(crate) async fn begin(
     headers: HeaderMap,
     Json(body): Json<BeginBody>,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
+    let SessionPrincipal(context) = session_principal(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
 
     let Some(binding) = state.binding.as_ref() else {
@@ -120,9 +121,8 @@ pub(crate) async fn begin(
 )]
 pub(crate) async fn upstreams(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    SessionPrincipal(_context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    session_context_from_headers(&state, &headers).await?;
     let Some(binding) = state.binding.as_ref() else {
         return Err(not_configured());
     };
@@ -177,7 +177,7 @@ pub(crate) async fn complete(
     // INV-BIND-04: completing the flow is a session-bound operation, not a
     // capability carried by `state`. A leaked or forwarded authorization URL
     // must not let its starter claim an account the victim authorized.
-    let context = session_context_from_headers(&state, &headers).await?;
+    let SessionPrincipal(context) = session_principal(&state, &headers).await?;
 
     let done = binding
         .complete(context.user.id, state_value, code)
@@ -200,9 +200,8 @@ pub(crate) async fn complete(
 )]
 pub(crate) async fn bindings(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     let views = state
         .auth
         .list_bindings(context.user.id)
@@ -231,8 +230,8 @@ pub(crate) async fn revoke_binding(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     let binding_id = Uuid::parse_str(&id)
         .map(BindingId)
@@ -279,8 +278,8 @@ pub(crate) async fn revoke_binding(
 pub(crate) async fn revoke_all_bindings(
     State(state): State<AppState>,
     headers: HeaderMap,
+    SessionPrincipal(context): SessionPrincipal,
 ) -> Result<Response, ApiError> {
-    let context = session_context_from_headers(&state, &headers).await?;
     require_csrf(&state, &context, &headers)?;
     // F-6: the killswitch asks the upstream first and keeps the local row when
     // the upstream will not confirm. Deleting first would destroy the only copy

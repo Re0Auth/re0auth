@@ -7,7 +7,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 use axum::body::{Body, to_bytes};
 use axum::extract::connect_info::MockConnectInfo;
@@ -17,9 +17,12 @@ use re0auth_adapters::clock::SystemClock;
 use re0auth_adapters::crypto::RsaTokenSigner;
 use re0auth_adapters::random::OsRandom;
 use re0auth_adapters::storage::SqliteStore;
-use re0auth_api::ports::{Storage, User, UserRole};
+use re0auth_api::audit::SecurityFact;
+use re0auth_api::ports::{
+    Identity, RepoResult, Session, SessionRepo, Storage, User, UserRepo, UserRole,
+};
 use re0auth_api::secret::ClientSecretHasher;
-use re0auth_api::{Clock, UserId};
+use re0auth_api::{Clock, IdentityId, Unix, UserId};
 use re0auth_app::admin_service::AdminService;
 use re0auth_app::auth::AuthService;
 use re0auth_app::oauth::OAuthService;
@@ -39,6 +42,281 @@ impl Clock for TestClock {
     }
 }
 
+#[derive(Default)]
+struct QueryCounts {
+    find_active: AtomicUsize,
+    touch: AtomicUsize,
+    user_get: AtomicUsize,
+}
+
+impl QueryCounts {
+    fn reset(&self) {
+        self.find_active.store(0, Ordering::SeqCst);
+        self.touch.store(0, Ordering::SeqCst);
+        self.user_get.store(0, Ordering::SeqCst);
+    }
+
+    fn snapshot(&self) -> (usize, usize, usize) {
+        (
+            self.find_active.load(Ordering::SeqCst),
+            self.touch.load(Ordering::SeqCst),
+            self.user_get.load(Ordering::SeqCst),
+        )
+    }
+}
+
+struct CountingSessionRepo {
+    inner: SqliteStore,
+    counts: Arc<QueryCounts>,
+}
+
+struct CountingUserRepo {
+    inner: SqliteStore,
+    counts: Arc<QueryCounts>,
+}
+
+struct CountingStore {
+    inner: SqliteStore,
+    sessions: CountingSessionRepo,
+    users: CountingUserRepo,
+}
+
+impl CountingStore {
+    fn new(inner: SqliteStore, counts: Arc<QueryCounts>) -> Self {
+        Self {
+            sessions: CountingSessionRepo {
+                inner: inner.clone(),
+                counts: counts.clone(),
+            },
+            users: CountingUserRepo {
+                inner: inner.clone(),
+                counts,
+            },
+            inner,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl UserRepo for CountingUserRepo {
+    async fn create(&self, user: &User) -> RepoResult<()> {
+        self.inner.users().create(user).await
+    }
+
+    async fn create_with_identity(
+        &self,
+        user: &User,
+        identity: &Identity,
+        fact: &SecurityFact,
+    ) -> RepoResult<()> {
+        self.inner
+            .users()
+            .create_with_identity(user, identity, fact)
+            .await
+    }
+
+    async fn get(&self, id: &UserId) -> RepoResult<Option<User>> {
+        self.counts.user_get.fetch_add(1, Ordering::SeqCst);
+        self.inner.users().get(id).await
+    }
+
+    async fn link_identity(&self, identity: &Identity, fact: &SecurityFact) -> RepoResult<()> {
+        self.inner.users().link_identity(identity, fact).await
+    }
+
+    async fn find_by_identity(&self, issuer: &str, subject: &str) -> RepoResult<Option<User>> {
+        self.inner.users().find_by_identity(issuer, subject).await
+    }
+
+    async fn list_identities(&self, user: &UserId) -> RepoResult<Vec<Identity>> {
+        self.inner.users().list_identities(user).await
+    }
+
+    async fn unlink_identity(
+        &self,
+        user: &UserId,
+        id: &IdentityId,
+        fact: &SecurityFact,
+    ) -> RepoResult<bool> {
+        self.inner.users().unlink_identity(user, id, fact).await
+    }
+
+    async fn delete_with_fact(&self, id: &UserId, fact: &SecurityFact) -> RepoResult<bool> {
+        self.inner.users().delete_with_fact(id, fact).await
+    }
+
+    async fn delete(&self, id: &UserId) -> RepoResult<bool> {
+        self.inner.users().delete(id).await
+    }
+
+    async fn list(&self, before: Option<&UserId>, limit: u32) -> RepoResult<Vec<User>> {
+        self.inner.users().list(before, limit).await
+    }
+
+    async fn count(&self) -> RepoResult<u64> {
+        self.inner.users().count().await
+    }
+
+    async fn set_role(
+        &self,
+        id: &UserId,
+        role: UserRole,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        self.inner.users().set_role(id, role, fact, now).await
+    }
+
+    async fn set_status(
+        &self,
+        id: &UserId,
+        status: re0auth_api::ports::UserStatus,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        self.inner.users().set_status(id, status, fact, now).await
+    }
+
+    async fn set_role_and_status(
+        &self,
+        id: &UserId,
+        role: UserRole,
+        status: re0auth_api::ports::UserStatus,
+        role_fact: &SecurityFact,
+        status_fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        self.inner
+            .users()
+            .set_role_and_status(id, role, status, role_fact, status_fact, now)
+            .await
+    }
+
+    async fn set_status_and_revoke_sessions(
+        &self,
+        id: &UserId,
+        status: re0auth_api::ports::UserStatus,
+        fact: &SecurityFact,
+        now: Unix,
+    ) -> RepoResult<()> {
+        self.inner
+            .users()
+            .set_status_and_revoke_sessions(id, status, fact, now)
+            .await
+    }
+
+    async fn count_admins(&self) -> RepoResult<u64> {
+        self.inner.users().count_admins().await
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRepo for CountingSessionRepo {
+    async fn create(&self, session: &Session) -> RepoResult<()> {
+        self.inner.sessions().create(session).await
+    }
+
+    async fn find_active(&self, id_hash: &[u8], now: Unix) -> RepoResult<Option<Session>> {
+        self.counts.find_active.fetch_add(1, Ordering::SeqCst);
+        self.inner.sessions().find_active(id_hash, now).await
+    }
+
+    async fn touch(&self, id_hash: &[u8], now: Unix, idle_expires_at: Unix) -> RepoResult<()> {
+        self.counts.touch.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .sessions()
+            .touch(id_hash, now, idle_expires_at)
+            .await
+    }
+
+    async fn revoke(&self, id_hash: &[u8], now: Unix) -> RepoResult<()> {
+        self.inner.sessions().revoke(id_hash, now).await
+    }
+
+    async fn revoke_all(&self, user: &UserId, now: Unix) -> RepoResult<u64> {
+        self.inner.sessions().revoke_all(user, now).await
+    }
+
+    async fn purge_expired(&self, before: Unix) -> RepoResult<u64> {
+        self.inner.sessions().purge_expired(before).await
+    }
+}
+
+#[async_trait::async_trait]
+impl Storage for CountingStore {
+    fn users(&self) -> &dyn UserRepo {
+        &self.users
+    }
+
+    fn sessions(&self) -> &dyn SessionRepo {
+        &self.sessions
+    }
+
+    fn auth_codes(&self) -> &dyn re0auth_api::ports::AuthCodeRepo {
+        self.inner.auth_codes()
+    }
+
+    fn refresh_tokens(&self) -> &dyn re0auth_api::ports::RefreshTokenRepo {
+        self.inner.refresh_tokens()
+    }
+
+    fn access_tokens(&self) -> &dyn re0auth_api::ports::AccessTokenRepo {
+        self.inner.access_tokens()
+    }
+
+    fn bindings(&self) -> &dyn re0auth_api::ports::BindingRepo {
+        self.inner.bindings()
+    }
+
+    fn connectors(&self) -> &dyn re0auth_api::ports::ConnectorRepo {
+        self.inner.connectors()
+    }
+
+    fn clients(&self) -> &dyn re0auth_api::ports::ClientRepo {
+        self.inner.clients()
+    }
+
+    fn device_codes(&self) -> &dyn re0auth_api::ports::DeviceCodeRepo {
+        self.inner.device_codes()
+    }
+
+    fn device_attempts(&self) -> &dyn re0auth_api::ports::DeviceAttemptRepo {
+        self.inner.device_attempts()
+    }
+
+    fn login_transactions(&self) -> &dyn re0auth_api::ports::LoginTransactionRepo {
+        self.inner.login_transactions()
+    }
+
+    fn pending_bindings(&self) -> &dyn re0auth_api::ports::PendingBindingRepo {
+        self.inner.pending_bindings()
+    }
+
+    fn approval_tickets(&self) -> &dyn re0auth_api::ports::ApprovalTicketRepo {
+        self.inner.approval_tickets()
+    }
+
+    fn consents(&self) -> &dyn re0auth_api::ports::ConsentRepo {
+        self.inner.consents()
+    }
+
+    fn pending_authorizations(&self) -> &dyn re0auth_api::ports::PendingAuthorizationRepo {
+        self.inner.pending_authorizations()
+    }
+
+    fn audits(&self) -> &dyn re0auth_api::ports::AuditRepo {
+        self.inner.audits()
+    }
+
+    fn signing_keys(&self) -> &dyn re0auth_api::ports::SigningKeyRepo {
+        self.inner.signing_keys()
+    }
+
+    async fn ping(&self) -> RepoResult<()> {
+        self.inner.ping().await
+    }
+}
+
 struct KeyGuard(PathBuf);
 
 impl Drop for KeyGuard {
@@ -54,10 +332,19 @@ struct App {
     admin_cookie: String,
     admin_csrf: String,
     user_cookie: String,
+    query_counts: Option<Arc<QueryCounts>>,
     _key: KeyGuard,
 }
 
 async fn app() -> App {
+    app_with_admin(true).await
+}
+
+async fn app_with_admin(with_admin: bool) -> App {
+    build_app(with_admin, false).await
+}
+
+async fn build_app(with_admin: bool, count_queries: bool) -> App {
     let clock = TestClock(Arc::new(AtomicI64::new(SystemClock.now())));
     let key_path = std::env::temp_dir().join(format!("re0auth-admin-{}.pem", uuid::Uuid::now_v7()));
     let key = KeyGuard(key_path.clone());
@@ -95,12 +382,19 @@ async fn app() -> App {
         .await
         .expect("user");
 
+    let query_counts = Arc::new(QueryCounts::default());
+    let storage: Arc<dyn Storage> = if count_queries {
+        Arc::new(CountingStore::new(store.clone(), query_counts.clone()))
+    } else {
+        Arc::new(store.clone())
+    };
+
     // The same hasher serves the OAuth engine and client-secret creation, so a
     // rotated secret verifies against exactly what issued it.
     let hasher: Arc<dyn ClientSecretHasher> =
         Arc::new(HmacClientSecretHasher::new(TEST_MASTER).expect("hasher"));
     let oauth = OAuthService::new(
-        Arc::new(store.clone()),
+        storage.clone(),
         signer.clone(),
         Arc::new(clock.clone()),
         Arc::new(OsRandom),
@@ -108,7 +402,7 @@ async fn app() -> App {
         ISSUER,
     );
     let auth = AuthService::new(
-        Arc::new(store.clone()),
+        storage.clone(),
         vec![],
         signer,
         Arc::new(clock.clone()),
@@ -116,7 +410,7 @@ async fn app() -> App {
         ISSUER,
     );
     let admin = AdminService::new(
-        Arc::new(store.clone()),
+        storage.clone(),
         Arc::new(clock.clone()),
         Arc::new(OsRandom),
         hasher,
@@ -124,10 +418,12 @@ async fn app() -> App {
 
     let (admin_cookie, admin_csrf) = session(&store, &clock, admin_id).await;
     let (user_cookie, _) = session(&store, &clock, user_id).await;
+    query_counts.reset();
 
-    let state = AppState::new(oauth, auth)
-        .with_admin(Arc::new(admin))
-        .with_metrics(true);
+    let mut state = AppState::new(oauth, auth).with_metrics(true);
+    if with_admin {
+        state = state.with_admin(Arc::new(admin));
+    }
     App {
         router: router(state).layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 7], 4444)))),
         admin_id,
@@ -135,6 +431,7 @@ async fn app() -> App {
         admin_cookie,
         admin_csrf,
         user_cookie,
+        query_counts: count_queries.then_some(query_counts),
         _key: key,
     }
 }
@@ -217,6 +514,114 @@ async fn write(
         body,
     )
     .await
+}
+
+#[tokio::test]
+async fn every_admin_operation_rejects_anonymous_and_member_callers() {
+    let app = app().await;
+    let id = UserId::new().0.to_string();
+    let operations = vec![
+        (Method::GET, "/api/admin/stats".to_string(), None),
+        (Method::GET, "/api/admin/clients".to_string(), None),
+        (
+            Method::POST,
+            "/api/admin/clients".to_string(),
+            Some(json!({"name": "bot"})),
+        ),
+        (Method::GET, format!("/api/admin/clients/{id}"), None),
+        (
+            Method::PATCH,
+            format!("/api/admin/clients/{id}"),
+            Some(json!({})),
+        ),
+        (
+            Method::POST,
+            format!("/api/admin/clients/{id}/rotate-secret"),
+            None,
+        ),
+        (Method::GET, "/api/admin/users".to_string(), None),
+        (
+            Method::PATCH,
+            format!("/api/admin/users/{id}"),
+            Some(json!({"role": "user"})),
+        ),
+        (Method::GET, "/api/admin/connectors".to_string(), None),
+        (Method::GET, format!("/api/admin/connectors/{id}"), None),
+        (Method::GET, "/api/admin/bindings".to_string(), None),
+        (Method::DELETE, format!("/api/admin/bindings/{id}"), None),
+        (
+            Method::POST,
+            "/api/admin/killswitch".to_string(),
+            Some(json!({})),
+        ),
+        (Method::GET, "/api/admin/audit".to_string(), None),
+    ];
+
+    for (method, uri, body) in operations {
+        let (status, anonymous, _) =
+            send(&app, method.clone(), &uri, None, None, None, body.as_ref()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "anonymous {method} {uri}");
+        assert_eq!(anonymous["code"], "login_required");
+
+        let (status, member, _) = send(
+            &app,
+            method.clone(),
+            &uri,
+            Some(&app.user_cookie),
+            None,
+            None,
+            body.as_ref(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "member {method} {uri}");
+        assert_eq!(member["code"], "forbidden");
+    }
+}
+
+#[tokio::test]
+async fn missing_admin_service_does_not_hide_authentication_failures() {
+    let app = app_with_admin(false).await;
+
+    let (status, body, _) = send(
+        &app,
+        Method::GET,
+        "/api/admin/stats",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "login_required");
+
+    let (status, body) = get(&app, "/api/admin/stats", &app.user_cookie).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "forbidden");
+
+    let (status, body) = get(&app, "/api/admin/stats", &app.admin_cookie).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "not_found");
+}
+
+#[tokio::test]
+async fn principals_resolve_a_session_and_user_exactly_once() {
+    let app = build_app(true, true).await;
+    let counts = app.query_counts.as_ref().expect("query counts");
+
+    let (status, body) = get(&app, "/api/me", &app.user_cookie).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(counts.snapshot(), (1, 1, 1));
+
+    counts.reset();
+    let (status, body) = get(&app, "/api/admin/stats", &app.admin_cookie).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(counts.snapshot(), (1, 1, 1));
+
+    counts.reset();
+    let (status, _, _) = send(&app, Method::GET, "/api/me", None, None, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(counts.snapshot(), (0, 0, 0));
 }
 
 #[tokio::test]
