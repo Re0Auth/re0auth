@@ -10,7 +10,7 @@ publish = false
 async-trait.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
-re0auth-api = { version = "0.18.0", path = "../re0auth-api" }
+re0auth-api = { version = "0.19.0", path = "../re0auth-api" }
 secrecy.workspace = true
 serde_json.workspace = true
 

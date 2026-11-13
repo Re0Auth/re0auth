@@ -17,8 +17,8 @@ jsonwebtoken.workspace = true
 moka.workspace = true
 pem.workspace = true
 getrandom.workspace = true
-re0auth-api = { version = "0.18.0", path = "../re0auth-api" }
-re0auth-runtime = { version = "0.1.0", path = "../re0auth-runtime" }
+re0auth-api = { version = "0.19.0", path = "../re0auth-api" }
+re0auth-runtime = { version = "0.2.0", path = "../re0auth-runtime" }
 aws-lc-rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,6 +32,6 @@ zeroize.workspace = true
 [dev-dependencies]
 hex.workspace = true
 proptest.workspace = true
-re0auth-contract = { version = "0.1.0", path = "../re0auth-contract" }
+re0auth-contract = { version = "0.2.0", path = "../re0auth-contract" }
 tokio.workspace = true
 uuid.workspace = true
