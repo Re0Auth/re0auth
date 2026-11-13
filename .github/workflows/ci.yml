@@ -36,7 +36,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm run build
 
-      # rust-toolchain.toml pins 1.99.1; rustup installs it on first use.
+      # rust-toolchain.toml pins 1.100.0; rustup installs it on first use.
       - name: toolchain
         run: rustup show
 
